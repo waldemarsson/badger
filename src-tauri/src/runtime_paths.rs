@@ -41,7 +41,6 @@ pub fn runtime_paths(home_dir: &Path) -> RuntimePaths {
 #[cfg(test)]
 mod tests {
     use super::{repo_root_from_manifest_dir, resolve_runtime_paths, RuntimePaths};
-    use crate::startup_backup::backup_root_dir;
     use std::path::Path;
 
     #[test]
@@ -57,7 +56,10 @@ mod tests {
         );
         assert_eq!(log_dir, Path::new("/workspace/.timetracker-dev/logs"));
         assert_eq!(
-            backup_root_dir(&db_path),
+            db_path
+                .parent()
+                .expect("database path should have a parent")
+                .join("backups"),
             Path::new("/workspace/.timetracker-dev/backups")
         );
     }
@@ -76,7 +78,10 @@ mod tests {
         );
         assert_eq!(log_dir, Path::new("/home/tester/.timetracker/logs"));
         assert_eq!(
-            backup_root_dir(&db_path),
+            db_path
+                .parent()
+                .expect("database path should have a parent")
+                .join("backups"),
             Path::new("/home/tester/.timetracker/backups")
         );
         assert_eq!(
@@ -92,9 +97,12 @@ mod tests {
 
         let paths = resolve_runtime_paths(home_dir, manifest_dir, false);
 
-        assert_eq!(
-            backup_root_dir(&paths.db_path),
-            Path::new("/home/tester/.timetracker/backups")
-        );
+        let backup_dir = paths
+            .db_path
+            .parent()
+            .expect("database path should have a parent")
+            .join("backups");
+
+        assert_eq!(backup_dir, Path::new("/home/tester/.timetracker/backups"));
     }
 }

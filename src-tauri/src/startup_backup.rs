@@ -57,21 +57,18 @@ pub fn list_startup_backups(db_path: &Path) -> Result<Vec<StoredBackupSummary>, 
     let mut dated_dirs = dated_backup_directories(&backup_root)?;
     dated_dirs.sort_by(|(left, _), (right, _)| right.cmp(left));
 
-    Ok(dated_dirs
+    dated_dirs
         .into_iter()
-        .filter_map(|(date, path)| {
+        .map(|(date, path)| {
             let backup_path = path.join("backup.json");
-            let metadata = fs::metadata(&backup_path).ok()?;
-            if !metadata.is_file() {
-                return None;
-            }
+            let metadata = fs::metadata(&backup_path)?;
 
-            Some(StoredBackupSummary {
+            Ok(StoredBackupSummary {
                 date: date.format("%Y-%m-%d").to_string(),
                 size_bytes: metadata.len(),
             })
         })
-        .collect())
+        .collect()
 }
 
 fn dated_backup_directories(backup_root: &Path) -> Result<Vec<(NaiveDate, PathBuf)>, AppError> {
@@ -94,6 +91,12 @@ fn dated_backup_directories(backup_root: &Path) -> Result<Vec<(NaiveDate, PathBu
         let Ok(date) = NaiveDate::parse_from_str(name, "%Y-%m-%d") else {
             continue;
         };
+
+        let backup_path = path.join("backup.json");
+        match fs::metadata(&backup_path) {
+            Ok(metadata) if metadata.is_file() => {}
+            Ok(_) | Err(_) => continue,
+        }
 
         dated_dirs.push((date, path));
     }
@@ -182,6 +185,54 @@ mod tests {
             ]
         );
         assert!(!backup_root_dir(&db_path).join("2026-05-07").exists());
+
+        fs::remove_dir_all(&test_dir).expect("test directory cleanup should succeed");
+    }
+
+    #[test]
+    fn startup_backup_trim_ignores_dated_directories_without_backup_file() {
+        let test_dir = unique_test_dir("startup-backup-trim-ignores-empty-dates");
+        let db_path = test_dir.join("timetracker.db");
+        let backup_root = backup_root_dir(&db_path);
+
+        write_daily_backup(&db_path, "2026-05-08", r#"{"day":"older"}"#)
+            .expect("older backup write should succeed");
+        write_daily_backup(&db_path, "2026-05-09", r#"{"day":"newer"}"#)
+            .expect("newer backup write should succeed");
+        fs::create_dir_all(backup_root.join("2026-05-10"))
+            .expect("empty dated directory should be created");
+
+        trim_old_backups(&db_path, 1).expect("trim should succeed");
+
+        assert_eq!(
+            list_startup_backups(&db_path).expect("listing backups should succeed"),
+            vec![StoredBackupSummary {
+                date: "2026-05-09".to_string(),
+                size_bytes: r#"{"day":"newer"}"#.len() as u64,
+            }]
+        );
+        assert!(!backup_root.join("2026-05-08").exists());
+
+        fs::remove_dir_all(&test_dir).expect("test directory cleanup should succeed");
+    }
+
+    #[test]
+    fn startup_backup_trim_with_zero_keeps_no_backups() {
+        let test_dir = unique_test_dir("startup-backup-trim-zero");
+        let db_path = test_dir.join("timetracker.db");
+
+        write_daily_backup(&db_path, "2026-05-08", r#"{"day":"older"}"#)
+            .expect("older backup write should succeed");
+        write_daily_backup(&db_path, "2026-05-09", r#"{"day":"newer"}"#)
+            .expect("newer backup write should succeed");
+
+        trim_old_backups(&db_path, 0).expect("trim should succeed");
+
+        assert!(list_startup_backups(&db_path)
+            .expect("listing backups should succeed")
+            .is_empty());
+        assert!(!backup_root_dir(&db_path).join("2026-05-08").exists());
+        assert!(!backup_root_dir(&db_path).join("2026-05-09").exists());
 
         fs::remove_dir_all(&test_dir).expect("test directory cleanup should succeed");
     }

@@ -151,6 +151,7 @@ if (!issueIdentifier.trim()) errs.issue = 'Required';
 const h = parseFloat(hours);
 if (!hours) errs.hours = 'Required';
 else if (isNaN(h) || h <= 0) errs.hours = 'Must be > 0';
+else if (!Number.isInteger(h)) errs.hours = 'Must be a whole hour';
 return errs;
 }
 
@@ -355,7 +356,7 @@ disabled={!newProjectId}
 <input type="text" bind:value={newNotes} placeholder="Notes…" class="form-input w-full" />
 </td>
 <td>
-<input type="number" step="0.25" min="0.25" max="24" bind:value={newHours} placeholder="0" class="form-input w-full text-right" />
+<input type="number" step="1" min="1" max="24" bind:value={newHours} placeholder="0" class="form-input w-full text-right" />
 {#if newErrors.hours}<span class="form-error text-right block">{newErrors.hours}</span>{/if}
 </td>
 <td>
@@ -411,7 +412,7 @@ disabled={!editProjectId}
 <input type="text" bind:value={editNotes} placeholder="Notes…" class="form-input w-full" />
 </td>
 <td>
-<input type="number" step="0.25" min="0.25" max="24" bind:value={editHours} placeholder="0" class="form-input w-full text-right" />
+<input type="number" step="1" min="1" max="24" bind:value={editHours} placeholder="0" class="form-input w-full text-right" />
 {#if editErrors.hours}<span class="form-error text-right block">{editErrors.hours}</span>{/if}
 </td>
 <td>

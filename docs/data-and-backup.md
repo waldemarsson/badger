@@ -35,9 +35,9 @@ Installed and other non-debug builds:
 
 ## Automatic startup backups
 
-TimeTracker automatically creates a daily backup on application startup. This behavior is controlled by the startup backup retention setting, which defaults to `3`:
+TimeTracker automatically creates a backup on each application startup. This behavior is controlled by the startup backup retention setting, which defaults to `3`:
 
-- **Retention > 0**: A backup is created at `backups/YYYY-MM-DD/backup.json` beside the active database if one does not already exist for today. After creation, old backups are automatically trimmed to keep only the most recent `N` backups.
+- **Retention > 0**: A backup is written to `backups/YYYY-MM-DD/backup.json` beside the active database, overwriting any existing backup for today. After creation, old backups are automatically trimmed to keep only the most recent `N` backups.
 - **Retention = 0**: Automatic startup backups are disabled entirely.
 
 The retention setting can be adjusted in the Settings > Backup & Restore tab.

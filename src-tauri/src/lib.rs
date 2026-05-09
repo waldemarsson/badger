@@ -5,6 +5,7 @@ pub mod db;
 pub mod error;
 pub mod logger;
 pub mod runtime_paths;
+pub mod startup_backup;
 
 #[cfg(debug_assertions)]
 pub mod dev_seed;

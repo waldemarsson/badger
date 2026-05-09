@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 pub struct RuntimePaths {
     pub db_path: PathBuf,
     pub log_dir: PathBuf,
+    pub backup_dir: PathBuf,
 }
 
 pub fn repo_root_from_manifest_dir(manifest_dir: &Path) -> PathBuf {
@@ -27,6 +28,7 @@ pub fn resolve_runtime_paths(
     RuntimePaths {
         db_path: base_dir.join("timetracker.db"),
         log_dir: base_dir.join("logs"),
+        backup_dir: base_dir.join("backups"),
     }
 }
 
@@ -55,6 +57,10 @@ mod tests {
             Path::new("/workspace/.timetracker-dev/timetracker.db")
         );
         assert_eq!(paths.log_dir, Path::new("/workspace/.timetracker-dev/logs"));
+        assert_eq!(
+            paths.backup_dir,
+            Path::new("/workspace/.timetracker-dev/backups")
+        );
     }
 
     #[test]
@@ -70,8 +76,29 @@ mod tests {
         );
         assert_eq!(paths.log_dir, Path::new("/home/tester/.timetracker/logs"));
         assert_eq!(
+            paths.backup_dir,
+            Path::new("/home/tester/.timetracker/backups")
+        );
+        assert_eq!(
             repo_root_from_manifest_dir(manifest_dir),
             Path::new("/workspace")
+        );
+    }
+
+    #[test]
+    fn runtime_paths_startup_backup_dir_lives_beside_database() {
+        let home_dir = Path::new("/home/tester");
+        let manifest_dir = Path::new("/workspace/src-tauri");
+
+        let paths = resolve_runtime_paths(home_dir, manifest_dir, false);
+
+        assert_eq!(
+            paths.backup_dir,
+            paths
+                .db_path
+                .parent()
+                .expect("database path should have a parent")
+                .join("backups")
         );
     }
 }

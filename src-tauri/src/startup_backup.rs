@@ -1,24 +1,35 @@
 use chrono::NaiveDate;
 use std::{
-    fs, io,
+    fs,
     path::{Path, PathBuf},
 };
 
-pub fn backup_root_for_db_path(db_path: &Path) -> PathBuf {
+use crate::AppError;
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct StoredBackupSummary {
+    pub date: String,
+    pub size_bytes: u64,
+}
+
+pub fn backup_root_dir(db_path: &Path) -> PathBuf {
     db_path
         .parent()
         .expect("database path should have a parent")
         .join("backups")
 }
 
-pub fn daily_backup_path(backup_root: &Path, date: NaiveDate) -> PathBuf {
+fn daily_backup_path(backup_root: &Path, date: NaiveDate) -> PathBuf {
     backup_root
         .join(date.format("%Y-%m-%d").to_string())
         .join("backup.json")
 }
 
-pub fn write_daily_backup(backup_root: &Path, date: NaiveDate, json: &str) -> io::Result<PathBuf> {
-    let backup_path = daily_backup_path(backup_root, date);
+pub fn write_daily_backup(db_path: &Path, date: &str, json: &str) -> Result<PathBuf, AppError> {
+    let date = NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .map_err(|err| AppError::Custom(format!("Invalid backup date '{date}': {err}")))?;
+    let backup_root = backup_root_dir(db_path);
+    let backup_path = daily_backup_path(&backup_root, date);
     let backup_dir = backup_path
         .parent()
         .expect("backup file path should have a parent directory");
@@ -29,8 +40,9 @@ pub fn write_daily_backup(backup_root: &Path, date: NaiveDate, json: &str) -> io
     Ok(backup_path)
 }
 
-pub fn trim_daily_backups(backup_root: &Path, keep_latest: usize) -> io::Result<()> {
-    let mut dated_dirs = dated_backup_directories(backup_root)?;
+pub fn trim_old_backups(db_path: &Path, keep_latest: usize) -> Result<(), AppError> {
+    let backup_root = backup_root_dir(db_path);
+    let mut dated_dirs = dated_backup_directories(&backup_root)?;
     dated_dirs.sort_by(|(left, _), (right, _)| right.cmp(left));
 
     for (_, path) in dated_dirs.into_iter().skip(keep_latest) {
@@ -40,22 +52,33 @@ pub fn trim_daily_backups(backup_root: &Path, keep_latest: usize) -> io::Result<
     Ok(())
 }
 
-pub fn list_daily_backups(backup_root: &Path) -> io::Result<Vec<PathBuf>> {
+pub fn list_startup_backups(db_path: &Path) -> Result<Vec<StoredBackupSummary>, AppError> {
+    let backup_root = backup_root_dir(db_path);
     if !backup_root.exists() {
         return Ok(Vec::new());
     }
 
-    let mut dated_dirs = dated_backup_directories(backup_root)?;
+    let mut dated_dirs = dated_backup_directories(&backup_root)?;
     dated_dirs.sort_by(|(left, _), (right, _)| right.cmp(left));
 
     Ok(dated_dirs
         .into_iter()
-        .map(|(_, path)| path.join("backup.json"))
-        .filter(|path| path.is_file())
+        .filter_map(|(date, path)| {
+            let backup_path = path.join("backup.json");
+            let metadata = fs::metadata(&backup_path).ok()?;
+            if !metadata.is_file() {
+                return None;
+            }
+
+            Some(StoredBackupSummary {
+                date: date.format("%Y-%m-%d").to_string(),
+                size_bytes: metadata.len(),
+            })
+        })
         .collect())
 }
 
-fn dated_backup_directories(backup_root: &Path) -> io::Result<Vec<(NaiveDate, PathBuf)>> {
+fn dated_backup_directories(backup_root: &Path) -> Result<Vec<(NaiveDate, PathBuf)>, AppError> {
     if !backup_root.exists() {
         return Ok(Vec::new());
     }
@@ -84,7 +107,6 @@ fn dated_backup_directories(backup_root: &Path) -> io::Result<Vec<(NaiveDate, Pa
 
 #[cfg(test)]
 mod tests {
-    use chrono::NaiveDate;
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -92,7 +114,8 @@ mod tests {
     };
 
     use super::{
-        backup_root_for_db_path, list_daily_backups, trim_daily_backups, write_daily_backup,
+        backup_root_dir, list_startup_backups, trim_old_backups, write_daily_backup,
+        StoredBackupSummary,
     };
 
     fn unique_test_dir(name: &str) -> PathBuf {
@@ -111,7 +134,7 @@ mod tests {
         let db_path = Path::new("/workspace/.timetracker-dev/timetracker.db");
 
         assert_eq!(
-            backup_root_for_db_path(db_path),
+            backup_root_dir(db_path),
             Path::new("/workspace/.timetracker-dev/backups")
         );
     }
@@ -119,12 +142,11 @@ mod tests {
     #[test]
     fn startup_backup_overwrites_same_day_backup_file() {
         let test_dir = unique_test_dir("startup-backup-overwrite");
-        let backup_root = test_dir.join("backups");
-        let date = NaiveDate::from_ymd_opt(2026, 5, 9).unwrap();
+        let db_path = test_dir.join("timetracker.db");
 
-        let first_path = write_daily_backup(&backup_root, date, r#"{"version":1}"#)
+        let first_path = write_daily_backup(&db_path, "2026-05-09", r#"{"version":1}"#)
             .expect("first backup write should succeed");
-        let second_path = write_daily_backup(&backup_root, date, r#"{"version":2}"#)
+        let second_path = write_daily_backup(&db_path, "2026-05-09", r#"{"version":2}"#)
             .expect("second backup write should succeed");
 
         assert_eq!(first_path, second_path);
@@ -139,37 +161,31 @@ mod tests {
     #[test]
     fn startup_backup_trims_old_backups_to_newest_days() {
         let test_dir = unique_test_dir("startup-backup-trim");
-        let backup_root = test_dir.join("backups");
+        let db_path = test_dir.join("timetracker.db");
 
-        write_daily_backup(
-            &backup_root,
-            NaiveDate::from_ymd_opt(2026, 5, 7).unwrap(),
-            r#"{"day":"oldest"}"#,
-        )
-        .expect("oldest backup write should succeed");
-        write_daily_backup(
-            &backup_root,
-            NaiveDate::from_ymd_opt(2026, 5, 8).unwrap(),
-            r#"{"day":"middle"}"#,
-        )
-        .expect("middle backup write should succeed");
-        write_daily_backup(
-            &backup_root,
-            NaiveDate::from_ymd_opt(2026, 5, 9).unwrap(),
-            r#"{"day":"newest"}"#,
-        )
-        .expect("newest backup write should succeed");
+        write_daily_backup(&db_path, "2026-05-07", r#"{"day":"oldest"}"#)
+            .expect("oldest backup write should succeed");
+        write_daily_backup(&db_path, "2026-05-08", r#"{"day":"middle"}"#)
+            .expect("middle backup write should succeed");
+        write_daily_backup(&db_path, "2026-05-09", r#"{"day":"newest"}"#)
+            .expect("newest backup write should succeed");
 
-        trim_daily_backups(&backup_root, 2).expect("trim should succeed");
+        trim_old_backups(&db_path, 2).expect("trim should succeed");
 
         assert_eq!(
-            list_daily_backups(&backup_root).expect("listing backups should succeed"),
+            list_startup_backups(&db_path).expect("listing backups should succeed"),
             vec![
-                backup_root.join("2026-05-09").join("backup.json"),
-                backup_root.join("2026-05-08").join("backup.json"),
+                StoredBackupSummary {
+                    date: "2026-05-09".to_string(),
+                    size_bytes: r#"{"day":"newest"}"#.len() as u64,
+                },
+                StoredBackupSummary {
+                    date: "2026-05-08".to_string(),
+                    size_bytes: r#"{"day":"middle"}"#.len() as u64,
+                },
             ]
         );
-        assert!(!backup_root.join("2026-05-07").exists());
+        assert!(!backup_root_dir(&db_path).join("2026-05-07").exists());
 
         fs::remove_dir_all(&test_dir).expect("test directory cleanup should succeed");
     }
@@ -177,9 +193,9 @@ mod tests {
     #[test]
     fn startup_backup_listing_is_empty_when_directory_is_missing() {
         let test_dir = unique_test_dir("startup-backup-empty-list");
-        let backup_root = test_dir.join("backups");
+        let db_path = test_dir.join("timetracker.db");
 
-        assert!(list_daily_backups(&backup_root)
+        assert!(list_startup_backups(&db_path)
             .expect("listing missing backups directory should succeed")
             .is_empty());
 

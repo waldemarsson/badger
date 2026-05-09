@@ -43,6 +43,7 @@ pub fn runtime_paths(home_dir: &Path) -> RuntimePaths {
 #[cfg(test)]
 mod tests {
     use super::{repo_root_from_manifest_dir, resolve_runtime_paths};
+    use crate::startup_backup::backup_root_dir;
     use std::path::Path;
 
     #[test]
@@ -92,13 +93,6 @@ mod tests {
 
         let paths = resolve_runtime_paths(home_dir, manifest_dir, false);
 
-        assert_eq!(
-            paths.backup_dir,
-            paths
-                .db_path
-                .parent()
-                .expect("database path should have a parent")
-                .join("backups")
-        );
+        assert_eq!(paths.backup_dir, backup_root_dir(&paths.db_path));
     }
 }

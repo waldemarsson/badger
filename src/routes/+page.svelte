@@ -1,6 +1,7 @@
 <script lang="ts">
 import { invoke } from '@tauri-apps/api/core';
 import { onMount } from 'svelte';
+import { loadInitialTimesheetData } from '$lib/timesheet-startup';
 import type { Customer, Project, Issue, TimeEntryRow } from '$lib/types';
 import Combobox from '$lib/components/Combobox.svelte';
 import Pencil from 'lucide-svelte/icons/pencil';
@@ -13,6 +14,8 @@ let customers = $state<Customer[]>([]);
 let projects = $state<Project[]>([]);
 let issues = $state<Issue[]>([]);
 let entries = $state<TimeEntryRow[]>([]);
+let entriesLoading = $state(true);
+let canReloadEntries = false;
 
 // DATE FILTER
 let dateFilter = $state('this_month');
@@ -247,16 +250,41 @@ deleteError = 'Failed to delete entry.';
 }
 
 onMount(async () => {
-customers = await invoke<Customer[]>('list_customers');
-await resetNewRow();
-await loadEntries();
+entriesLoading = true;
+const initial = await loadInitialTimesheetData({
+listCustomers: () => invoke<Customer[]>('list_customers'),
+listProjects: (customerId) => loadProjects(customerId),
+listIssues: (projectId) => loadIssues(projectId),
+listTimeEntries: (startDate, endDate) =>
+invoke<TimeEntryRow[]>('list_time_entries', { startDate, endDate }),
+getDateRange
+});
+
+customers = initial.customers;
+projects = initial.projects;
+issues = initial.issues;
+entries = initial.entries;
+newDate = today();
+newErrors = {};
+newSaveError = '';
+newHours = '';
+newNotes = '';
+newCustomerId = initial.newCustomerId;
+newProjectId = initial.newProjectId;
+newIssueIdentifier = '';
+entriesLoading = false;
+canReloadEntries = true;
 });
 
 $effect(() => {
 void dateFilter;
 void customStart;
 void customEnd;
-loadEntries();
+if (!canReloadEntries) return;
+entriesLoading = true;
+void loadEntries().finally(() => {
+entriesLoading = false;
+});
 });
 
 let totalHours = $derived(entries.reduce((sum, e) => sum + e.hours, 0));
@@ -372,6 +400,16 @@ disabled={!newProjectId}
 </td>
 </tr>
 
+{#if entriesLoading}
+<tr>
+<td colspan="7">
+<div class="empty-state">
+<p class="font-semibold">Loading entries…</p>
+<p>Please wait while TimeTracker loads your timesheet.</p>
+</div>
+</td>
+</tr>
+{:else}
 {#each entries as entry (entry.id)}
 {#if editId === entry.id}
 <tr class="table-row-editing">
@@ -458,6 +496,7 @@ disabled={!editProjectId}
 </div>
 </td>
 </tr>
+{/if}
 {/if}
 
 </tbody>

@@ -35,7 +35,13 @@ pub fn write_daily_backup(db_path: &Path, date: &str, json: &str) -> Result<Path
         .expect("backup file path should have a parent directory");
 
     fs::create_dir_all(backup_dir)?;
-    fs::write(&backup_path, json)?;
+
+    // Write atomically: write to temp file in same directory, then rename.
+    // This preserves the previous valid backup.json if the write fails,
+    // and ensures we never leave a partially written backup.json in place.
+    let temp_path = backup_dir.join(".backup.json.tmp");
+    fs::write(&temp_path, json)?;
+    fs::rename(&temp_path, &backup_path)?;
 
     Ok(backup_path)
 }
@@ -249,5 +255,51 @@ mod tests {
         if test_dir.exists() {
             fs::remove_dir_all(&test_dir).expect("test directory cleanup should succeed");
         }
+    }
+
+    #[test]
+    fn startup_backup_atomic_write_leaves_no_temp_file() {
+        let test_dir = unique_test_dir("startup-backup-atomic");
+        let db_path = test_dir.join("timetracker.db");
+
+        write_daily_backup(&db_path, "2026-05-09", r#"{"version":1}"#)
+            .expect("backup write should succeed");
+
+        let backup_dir = backup_root_dir(&db_path).join("2026-05-09");
+        let temp_file = backup_dir.join(".backup.json.tmp");
+
+        assert!(!temp_file.exists(), "temp file should not exist after write");
+        assert!(backup_dir.join("backup.json").exists(), "backup.json should exist");
+
+        fs::remove_dir_all(&test_dir).expect("test directory cleanup should succeed");
+    }
+
+    #[test]
+    fn startup_backup_overwrite_preserves_file_on_same_day() {
+        let test_dir = unique_test_dir("startup-backup-preserve");
+        let db_path = test_dir.join("timetracker.db");
+
+        // Write first backup
+        write_daily_backup(&db_path, "2026-05-09", r#"{"version":1}"#)
+            .expect("first backup write should succeed");
+
+        let backup_path = backup_root_dir(&db_path)
+            .join("2026-05-09")
+            .join("backup.json");
+        let first_content = fs::read_to_string(&backup_path)
+            .expect("first backup should be readable");
+
+        assert_eq!(first_content, r#"{"version":1}"#);
+
+        // Overwrite with second backup
+        write_daily_backup(&db_path, "2026-05-09", r#"{"version":2}"#)
+            .expect("second backup write should succeed");
+
+        let second_content = fs::read_to_string(&backup_path)
+            .expect("second backup should be readable");
+
+        assert_eq!(second_content, r#"{"version":2}"#);
+
+        fs::remove_dir_all(&test_dir).expect("test directory cleanup should succeed");
     }
 }

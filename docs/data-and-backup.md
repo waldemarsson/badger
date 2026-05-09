@@ -19,7 +19,15 @@ The database is initialized on startup with:
 - foreign keys enabled
 - idempotent schema creation
 
-The file lives at:
+The database location depends on the build type:
+
+Development (`npm run dev` / debug builds):
+
+```text
+.timetracker-dev/timetracker.db
+```
+
+Installed and other non-debug builds:
 
 ```text
 ~/.timetracker/timetracker.db

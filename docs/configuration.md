@@ -2,14 +2,23 @@
 
 ## Runtime locations
 
-TimeTracker writes its local runtime data under the user's home directory:
+TimeTracker uses different runtime roots depending on how the app is started:
+
+Development (`npm run dev` / debug builds):
+
+```text
+.timetracker-dev/timetracker.db
+.timetracker-dev/logs/
+```
+
+Non-debug builds (installed app / release bundle):
 
 ```text
 ~/.timetracker/timetracker.db
 ~/.timetracker/logs/
 ```
 
-The database file is created on startup if it does not exist. Log files are written with daily rotation.
+In development, `.timetracker-dev/` lives at the repo root. The database file is created on startup if it does not exist, and log files are written with daily rotation.
 
 ## Key configuration files
 

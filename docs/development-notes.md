@@ -28,6 +28,8 @@ That pattern matters because it keeps backend tests:
 - seed tooling is available during local development
 - release builds do not expose the seed command
 
+Debug builds also keep their runtime database and logs under repo-local `.timetracker-dev/`, which keeps seed workflows away from the live `~/.timetracker/` data used by non-debug builds.
+
 The seed workflow populates sample customers, projects, issues, and time entries anchored to recent dates so reporting screens have realistic data to display.
 
 ## Report and restore behavior worth knowing

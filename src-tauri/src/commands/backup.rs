@@ -75,7 +75,12 @@ pub async fn inner_backup_data(pool: &Pool<Sqlite>) -> Result<String, AppError> 
     .fetch_all(pool)
     .await?;
 
-    let backup = BackupData { customers, projects, issues, time_entries };
+    let backup = BackupData {
+        customers,
+        projects,
+        issues,
+        time_entries,
+    };
     serde_json::to_string(&backup).map_err(|e| AppError::Custom(e.to_string()))
 }
 
@@ -83,7 +88,11 @@ pub async fn inner_backup_data(pool: &Pool<Sqlite>) -> Result<String, AppError> 
 ///
 /// - `replace`: deletes all existing data (cascades via FK) then re-inserts from backup.
 /// - `merge`: upserts records from backup without deleting unrelated existing data.
-pub async fn inner_restore_data(mode: &str, json: &str, pool: &Pool<Sqlite>) -> Result<(), AppError> {
+pub async fn inner_restore_data(
+    mode: &str,
+    json: &str,
+    pool: &Pool<Sqlite>,
+) -> Result<(), AppError> {
     let data: BackupData = serde_json::from_str(json)
         .map_err(|e| AppError::Custom(format!("Invalid backup JSON: {}", e)))?;
 
@@ -104,41 +113,49 @@ pub async fn inner_restore_data(mode: &str, json: &str, pool: &Pool<Sqlite>) -> 
                 .await?;
         }
         for p in &data.projects {
-            sqlx::query("INSERT INTO projects (id, CustomerId, Name, UseAsDefault) VALUES (?, ?, ?, ?)")
-                .bind(p.id)
-                .bind(p.customer_id)
-                .bind(&p.name)
-                .bind(p.use_as_default)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query(
+                "INSERT INTO projects (id, CustomerId, Name, UseAsDefault) VALUES (?, ?, ?, ?)",
+            )
+            .bind(p.id)
+            .bind(p.customer_id)
+            .bind(&p.name)
+            .bind(p.use_as_default)
+            .execute(&mut *tx)
+            .await?;
         }
         for i in &data.issues {
-            sqlx::query("INSERT INTO issues (id, ProjectId, ExternalId, Title) VALUES (?, ?, ?, ?)")
-                .bind(i.id)
-                .bind(i.project_id)
-                .bind(&i.external_id)
-                .bind(&i.title)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query(
+                "INSERT INTO issues (id, ProjectId, ExternalId, Title) VALUES (?, ?, ?, ?)",
+            )
+            .bind(i.id)
+            .bind(i.project_id)
+            .bind(&i.external_id)
+            .bind(&i.title)
+            .execute(&mut *tx)
+            .await?;
         }
         for e in &data.time_entries {
-            sqlx::query("INSERT INTO time_entries (id, IssueId, Date, Hours, Notes) VALUES (?, ?, ?, ?, ?)")
-                .bind(e.id)
-                .bind(e.issue_id)
-                .bind(&e.date)
-                .bind(e.hours)
-                .bind(&e.notes)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query(
+                "INSERT INTO time_entries (id, IssueId, Date, Hours, Notes) VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(e.id)
+            .bind(e.issue_id)
+            .bind(&e.date)
+            .bind(e.hours)
+            .bind(&e.notes)
+            .execute(&mut *tx)
+            .await?;
         }
     } else if mode == "merge" {
         for c in &data.customers {
-            sqlx::query("INSERT OR REPLACE INTO customers (id, Name, UseAsDefault) VALUES (?, ?, ?)")
-                .bind(c.id)
-                .bind(&c.name)
-                .bind(c.use_as_default)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query(
+                "INSERT OR REPLACE INTO customers (id, Name, UseAsDefault) VALUES (?, ?, ?)",
+            )
+            .bind(c.id)
+            .bind(&c.name)
+            .bind(c.use_as_default)
+            .execute(&mut *tx)
+            .await?;
         }
         for p in &data.projects {
             sqlx::query("INSERT OR REPLACE INTO projects (id, CustomerId, Name, UseAsDefault) VALUES (?, ?, ?, ?)")
@@ -178,7 +195,10 @@ pub async fn inner_restore_data(mode: &str, json: &str, pool: &Pool<Sqlite>) -> 
 
 /// Serialises all data to JSON and writes it to the given file path.
 #[tauri::command]
-pub async fn backup_data_to_file(path: String, pool: State<'_, Pool<Sqlite>>) -> Result<(), AppError> {
+pub async fn backup_data_to_file(
+    path: String,
+    pool: State<'_, Pool<Sqlite>>,
+) -> Result<(), AppError> {
     let json = inner_backup_data(&pool).await?;
     std::fs::write(&path, &json)?;
     Ok(())
@@ -193,7 +213,11 @@ pub async fn read_backup_file(path: String) -> Result<String, AppError> {
 
 /// Applies a JSON backup to the database in the given mode (`replace` or `merge`).
 #[tauri::command]
-pub async fn restore_data(mode: String, json: String, pool: State<'_, Pool<Sqlite>>) -> Result<(), AppError> {
+pub async fn restore_data(
+    mode: String,
+    json: String,
+    pool: State<'_, Pool<Sqlite>>,
+) -> Result<(), AppError> {
     inner_restore_data(&mode, &json, &pool).await
 }
 
@@ -231,7 +255,9 @@ mod tests {
             .await
             .expect("restore failed");
 
-        let restored = inner_backup_data(&pool).await.expect("second backup failed");
+        let restored = inner_backup_data(&pool)
+            .await
+            .expect("second backup failed");
         let original: BackupData = serde_json::from_str(&json).unwrap();
         let result: BackupData = serde_json::from_str(&restored).unwrap();
 

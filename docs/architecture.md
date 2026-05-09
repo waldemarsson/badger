@@ -54,10 +54,20 @@ The frontend keeps TypeScript interfaces in `src/lib/types.ts` aligned with the 
 
 ## Storage model
 
-The application stores everything in a local SQLite database at:
+TimeTracker keeps runtime files in different locations by build type:
+
+Development (`npm run dev` / debug builds):
+
+```text
+.timetracker-dev/timetracker.db
+.timetracker-dev/logs/
+```
+
+Non-debug builds:
 
 ```text
 ~/.timetracker/timetracker.db
+~/.timetracker/logs/
 ```
 
 The schema is created on startup if it does not exist. The main tables are:
@@ -85,4 +95,4 @@ The frontend does not talk to SQLite directly and does not read or write backup 
 
 ### Logging is file-based
 
-The backend initializes daily-rotating logs under `~/.timetracker/logs/` and keeps the logging guard alive in managed Tauri state so writes do not stop early.
+The backend initializes daily-rotating logs under repo-local `.timetracker-dev/logs/` in debug builds and `~/.timetracker/logs/` in non-debug builds. It keeps the logging guard alive in managed Tauri state so writes do not stop early.

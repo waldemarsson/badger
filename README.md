@@ -11,6 +11,8 @@ npm run dev
 
 The app starts the Vite dev server and launches the Tauri shell against it.
 
+Development runs started with `npm run dev` store their SQLite database and logs under repo-local `.timetracker-dev/` so they stay isolated from the live `~/.timetracker/` data used by non-debug builds.
+
 ## Common commands
 
 | Command | Purpose |

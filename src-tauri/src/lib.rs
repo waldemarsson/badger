@@ -3,6 +3,7 @@ pub mod commands;
 pub mod db;
 pub mod error;
 pub mod logger;
+pub mod runtime_paths;
 
 #[cfg(debug_assertions)]
 pub mod dev_seed;
@@ -42,8 +43,8 @@ pub fn run() {
             // init_logger() returns a WorkerGuard. It MUST be stored in managed
             // state — dropping it here would stop log writes before app exits.
             let home = app.path().home_dir()?;
-            let log_dir = home.join(".timetracker").join("logs");
-            let guard = logger::init_logger(&log_dir);
+            let runtime_paths = runtime_paths::runtime_paths(&home);
+            let guard = logger::init_logger(&runtime_paths.log_dir);
             app.manage(guard);
 
             // ── Database ─────────────────────────────────────────────────────
@@ -52,11 +53,10 @@ pub fn run() {
             // Fallback if this import fails:
             //   tokio::runtime::Builder::new_current_thread()
             //       .build().unwrap().block_on(db::init_db(&db_path))
-            let db_path = home.join(".timetracker").join("timetracker.db");
-            let pool = tauri::async_runtime::block_on(db::init_db(&db_path))?;
+            let pool = tauri::async_runtime::block_on(db::init_db(&runtime_paths.db_path))?;
             app.manage(pool);
 
-            tracing::info!("TimeTracker started. DB: {:?}", db_path);
+            tracing::info!("TimeTracker started. DB: {:?}", runtime_paths.db_path);
             Ok(())
         })
         .invoke_handler({
@@ -128,7 +128,6 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
-
 #[cfg(test)]
 mod tests {
     #[tokio::test]

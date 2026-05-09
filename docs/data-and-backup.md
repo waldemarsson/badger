@@ -1,0 +1,70 @@
+# Data and backup
+
+## Data model
+
+TimeTracker stores its working data in a local SQLite database. The schema is intentionally small and centered on the time-entry workflow:
+
+- `customers` — top-level client records, including a single default marker
+- `projects` — customer-owned projects, also with a default marker
+- `issues` — project-owned work items with an optional external identifier
+- `time_entries` — dated hour records linked to issues
+
+Deletes cascade downward from customers to projects, issues, and time entries, so the hierarchy stays consistent without manual cleanup across tables.
+
+## Database behavior
+
+The database is initialized on startup with:
+
+- WAL journal mode
+- foreign keys enabled
+- idempotent schema creation
+
+The file lives at:
+
+```text
+~/.timetracker/timetracker.db
+```
+
+## Backup format
+
+Backup export writes a JSON document containing four arrays:
+
+- `customers`
+- `projects`
+- `issues`
+- `time_entries`
+
+The backup commands preserve record identifiers so a restore can rebuild the same relationships between records.
+
+## Restore modes
+
+The restore workflow supports two modes:
+
+### Merge
+
+- Upserts records from the backup
+- Keeps unrelated existing records that are not present in the import
+- Useful when you want to bring backup data into a database that already contains other records
+
+### Replace
+
+- Deletes all current customer data first
+- Relies on cascading foreign keys to clear projects, issues, and time entries
+- Re-inserts the full backup afterward
+
+Use replace carefully: it wipes the current dataset before restoring.
+
+## Where backup and restore live in the UI
+
+The active backup and restore workflow is currently exposed in the Settings page, where the frontend:
+
+- opens a save dialog for export
+- opens a file picker for import
+- previews record counts before restore
+- lets the user choose merge or replace mode
+
+There is also a dedicated `/backup` route in the app, but it is still a placeholder and does not contain the live workflow yet.
+
+## Error handling
+
+Rust command errors are serialized as strings and surfaced back to the frontend. That means backup and restore failures are presented as user-visible text rather than hidden behind silent retries or background recovery.

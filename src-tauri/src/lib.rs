@@ -1,4 +1,5 @@
 // src-tauri/src/lib.rs
+pub mod app_settings;
 pub mod commands;
 pub mod db;
 pub mod error;

@@ -39,6 +39,11 @@ CREATE TABLE IF NOT EXISTS time_entries (
     Hours     REAL    NOT NULL,
     Notes     TEXT
 );
+
+CREATE TABLE IF NOT EXISTS app_settings (
+    key       TEXT    PRIMARY KEY,
+    value     INTEGER NOT NULL
+);
 ";
 
 /// Opens (or creates) the SQLite database at `db_path` with WAL mode and FK enforcement,
@@ -86,6 +91,10 @@ mod tests {
         assert!(
             names.contains(&"time_entries"),
             "time_entries table missing"
+        );
+        assert!(
+            names.contains(&"app_settings"),
+            "app_settings table missing"
         );
     }
 

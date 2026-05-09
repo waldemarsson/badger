@@ -41,8 +41,8 @@ CREATE TABLE IF NOT EXISTS time_entries (
 );
 
 CREATE TABLE IF NOT EXISTS app_settings (
-    key       TEXT    PRIMARY KEY,
-    value     INTEGER NOT NULL
+    Key       TEXT    PRIMARY KEY,
+    Value     TEXT    NOT NULL
 );
 ";
 
@@ -109,5 +109,35 @@ mod tests {
             .expect("PRAGMA foreign_keys failed");
 
         assert_eq!(row.0, 1, "Foreign keys must be ON (1), got 0");
+    }
+
+    #[tokio::test]
+    async fn test_app_settings_schema_uses_expected_columns() {
+        let pool = crate::test_db().await;
+
+        let rows: Vec<(i64, String, String, i64, Option<String>, i64)> =
+            sqlx::query_as("PRAGMA table_info(app_settings)")
+                .fetch_all(&pool)
+                .await
+                .expect("PRAGMA table_info(app_settings) failed");
+
+        assert_eq!(
+            rows.len(),
+            2,
+            "app_settings should have exactly two columns"
+        );
+
+        assert_eq!(rows[0].1, "Key");
+        assert_eq!(rows[0].2, "TEXT");
+        assert_eq!(
+            rows[0].3, 0,
+            "Key should not be declared NOT NULL separately"
+        );
+        assert_eq!(rows[0].5, 1, "Key should be the primary key");
+
+        assert_eq!(rows[1].1, "Value");
+        assert_eq!(rows[1].2, "TEXT");
+        assert_eq!(rows[1].3, 1, "Value should be NOT NULL");
+        assert_eq!(rows[1].5, 0, "Value should not be part of the primary key");
     }
 }

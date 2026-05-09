@@ -34,6 +34,7 @@ export default defineConfig(
       "build/**",
       "node_modules/**",
       "src-tauri/**",
+      "target/**",
     ],
   }
 );

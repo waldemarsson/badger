@@ -35,9 +35,9 @@
 
   // Expansion state: Set of customer_ids that are expanded
   // Set is not deeply reactive with $state — use a plain $state wrapper
-  let expandedCustomers = $state(new Set<number>());
+  let expandedCustomers = $state<number[]>([]);
   // Expansion state for projects: keyed "customerId-projectId"
-  let expandedProjects  = $state(new Set<string>());
+  let expandedProjects  = $state<string[]>([]);
 
   // ── Derived ────────────────────────────────────────────────────────────
   const label = $derived(monthLabel(year, month));
@@ -65,17 +65,18 @@
   type CustomerNode = { id: number; name: string; hours: number; projects: ProjectNode[] };
 
   const tree = $derived((() => {
-    const customerMap = new Map<number, CustomerNode>();
+    const customers: CustomerNode[] = [];
     for (const row of rows) {
-      if (!customerMap.has(row.customer_id)) {
-        customerMap.set(row.customer_id, {
+      let customer = customers.find((entry) => entry.id === row.customer_id);
+      if (!customer) {
+        customer = {
           id: row.customer_id,
           name: row.customer_name,
           hours: 0,
           projects: [],
-        });
+        };
+        customers.push(customer);
       }
-      const customer = customerMap.get(row.customer_id)!;
 
       let project = customer.projects.find(p => p.id === row.project_id);
       if (!project) {
@@ -87,7 +88,7 @@
       project.hours  += row.hours;
       customer.hours += row.hours;
     }
-    return Array.from(customerMap.values());
+    return customers;
   })());
 
   const grandTotal = $derived(tree.reduce((a, c) => a + c.hours, 0));
@@ -100,8 +101,11 @@
       copyMessage = '';
       copyError = '';
       // Expand all customers by default on each month load
-      expandedCustomers = new Set(rows.map(r => r.customer_id));
-      expandedProjects  = new Set();
+      expandedCustomers = rows.reduce<number[]>((ids, row) => {
+        if (!ids.includes(row.customer_id)) ids.push(row.customer_id);
+        return ids;
+      }, []);
+      expandedProjects  = [];
     } finally {
       loading = false;
     }
@@ -131,16 +135,16 @@
 
   // ── Expansion toggles ──────────────────────────────────────────────────
   function toggleCustomer(id: number) {
-    const next = new Set(expandedCustomers);
-    if (next.has(id)) next.delete(id); else next.add(id);
-    expandedCustomers = next;
+    expandedCustomers = expandedCustomers.includes(id)
+      ? expandedCustomers.filter((entry) => entry !== id)
+      : [...expandedCustomers, id];
   }
 
   function toggleProject(customerId: number, projectId: number) {
     const key = `${customerId}-${projectId}`;
-    const next = new Set(expandedProjects);
-    if (next.has(key)) next.delete(key); else next.add(key);
-    expandedProjects = next;
+    expandedProjects = expandedProjects.includes(key)
+      ? expandedProjects.filter((entry) => entry !== key)
+      : [...expandedProjects, key];
   }
 
   function projectIssueLines(project: ProjectNode): string[] {
@@ -243,7 +247,7 @@
                       class="p-1 rounded text-slate-400 hover:text-slate-700 transition mr-1"
                       onclick={() => toggleCustomer(customer.id)}
                     >
-                      {#if expandedCustomers.has(customer.id)}
+                      {#if expandedCustomers.includes(customer.id)}
                         <ChevronDown size={14} />
                       {:else}
                         <ChevronRight size={14} />
@@ -256,7 +260,7 @@
                   </td>
                 </tr>
 
-                {#if expandedCustomers.has(customer.id)}
+                {#if expandedCustomers.includes(customer.id)}
                   {#each customer.projects as project (project.id)}
                     <!-- Project row (Level 1) — pl-6 indent -->
                     <tr class="table-row bg-white">
@@ -265,10 +269,10 @@
                           <button
                             class="p-1 rounded text-slate-400 hover:text-slate-700 transition"
                             onclick={() => toggleProject(customer.id, project.id)}
-                            title={expandedProjects.has(`${customer.id}-${project.id}`) ? 'Collapse project' : 'Expand project'}
-                            aria-label={expandedProjects.has(`${customer.id}-${project.id}`) ? 'Collapse project' : 'Expand project'}
+                            title={expandedProjects.includes(`${customer.id}-${project.id}`) ? 'Collapse project' : 'Expand project'}
+                            aria-label={expandedProjects.includes(`${customer.id}-${project.id}`) ? 'Collapse project' : 'Expand project'}
                           >
-                            {#if expandedProjects.has(`${customer.id}-${project.id}`)}
+                            {#if expandedProjects.includes(`${customer.id}-${project.id}`)}
                               <ChevronDown size={14} />
                             {:else}
                               <ChevronRight size={14} />
@@ -302,7 +306,7 @@
                       </td>
                     </tr>
 
-                    {#if expandedProjects.has(`${customer.id}-${project.id}`)}
+                    {#if expandedProjects.includes(`${customer.id}-${project.id}`)}
                       {#each project.issues as issue (issue.id)}
                         <!-- Issue row (Level 2) — pl-12 indent, no toggle -->
                         <tr class="table-row-history">

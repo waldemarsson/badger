@@ -2,60 +2,15 @@
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import type { WeeklyReportRow } from '$lib/types';
+  import {
+    dayLabelsForWeek,
+    getCurrentIsoWeek,
+    getMondayIsoWeek,
+    isoWeekToMonday,
+    weekLabel
+  } from '$lib/weekly-report';
   import ChevronLeft  from 'lucide-svelte/icons/chevron-left';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
-
-  // ── Date utilities ─────────────────────────────────────────────────────
-
-  const MONTH_ABBR = ['Jan','Feb','Mar','Apr','May','Jun',
-                      'Jul','Aug','Sep','Oct','Nov','Dec'];
-
-  /** Monday of the given ISO year+week. */
-  function isoWeekToMonday(year: number, week: number): Date {
-    const jan4 = new Date(year, 0, 4);
-    const jan4Weekday = (jan4.getDay() + 6) % 7; // Mon=0..Sun=6
-    const week1Mon = new Date(jan4);
-    week1Mon.setDate(jan4.getDate() - jan4Weekday);
-    const monday = new Date(week1Mon);
-    monday.setDate(week1Mon.getDate() + (week - 1) * 7);
-    return monday;
-  }
-
-  /** ISO {year, week} for any Monday date. Thursday determines the ISO year. */
-  function getMondayIsoWeek(monday: Date): { year: number; week: number } {
-    const thu = new Date(monday);
-    thu.setDate(monday.getDate() + 3);
-    const isoYear = thu.getFullYear();
-    const jan4 = new Date(isoYear, 0, 4);
-    const jan4Weekday = (jan4.getDay() + 6) % 7;
-    const week1Mon = new Date(jan4);
-    week1Mon.setDate(jan4.getDate() - jan4Weekday);
-    const diffMs  = monday.getTime() - week1Mon.getTime();
-    const week = Math.round(diffMs / (7 * 86400000)) + 1;
-    return { year: isoYear, week };
-  }
-
-  /** ISO year+week for today. */
-  function getCurrentIsoWeek(): { year: number; week: number } {
-    const today = new Date();
-    const weekday = (today.getDay() + 6) % 7; // Mon=0
-    const monday  = new Date(today);
-    monday.setDate(today.getDate() - weekday);
-    return getMondayIsoWeek(monday);
-  }
-
-  /** "W15 2026 · Apr 6–12" or "W1 2026 · Dec 29 – Jan 4" for cross-month weeks. */
-  function weekLabel(year: number, week: number): string {
-    const monday = isoWeekToMonday(year, week);
-    const sunday = new Date(monday);
-    sunday.setDate(monday.getDate() + 6);
-    const mAbbr = MONTH_ABBR[monday.getMonth()];
-    const sAbbr = MONTH_ABBR[sunday.getMonth()];
-    const range = monday.getMonth() === sunday.getMonth()
-      ? `${mAbbr} ${monday.getDate()}–${sunday.getDate()}`
-      : `${mAbbr} ${monday.getDate()} – ${sAbbr} ${sunday.getDate()}`;
-    return `W${week} ${year} · ${range}`;
-  }
 
   // ── Hours display ──────────────────────────────────────────────────────
   function formatHours(h: number): string {
@@ -81,12 +36,7 @@
 
   /** Returns the date for each day column as "Mon\n30" style labels */
   const dayLabels = $derived((() => {
-    const monday = isoWeekToMonday(isoYear, isoWeek);
-    return DAYS.map(([name,], i) => {
-      const d = new Date(monday);
-      d.setDate(monday.getDate() + i);
-      return { name, date: d.getDate(), month: MONTH_ABBR[d.getMonth()] };
-    });
+    return dayLabelsForWeek(isoYear, isoWeek, DAYS.map(([name]) => name));
   })());
 
   // Day-column totals (sum of all rows per day, ignoring adjacent days)
@@ -102,20 +52,21 @@
   type CustomerGroup = { customerId: number; customerName: string; projects: ProjectGroup[] };
 
   const grouped = $derived((() => {
-    const customers = new Map<number, CustomerGroup>();
+    const customers: CustomerGroup[] = [];
     for (const row of rows) {
-      if (!customers.has(row.customer_id)) {
-        customers.set(row.customer_id, { customerId: row.customer_id, customerName: row.customer_name, projects: [] });
+      let customer = customers.find((entry) => entry.customerId === row.customer_id);
+      if (!customer) {
+        customer = { customerId: row.customer_id, customerName: row.customer_name, projects: [] };
+        customers.push(customer);
       }
-      const cust = customers.get(row.customer_id)!;
-      let proj = cust.projects.find(p => p.projectId === row.project_id);
+      let proj = customer.projects.find(p => p.projectId === row.project_id);
       if (!proj) {
         proj = { projectId: row.project_id, projectName: row.project_name, rows: [] };
-        cust.projects.push(proj);
+        customer.projects.push(proj);
       }
       proj.rows.push(row);
     }
-    return Array.from(customers.values());
+    return customers;
   })());
 
   // ── Data loading ───────────────────────────────────────────────────────
@@ -201,7 +152,7 @@
             <thead class="table-head">
               <tr>
                 <th class="table-heading min-w-[12rem] flex-1">Issue</th>
-                {#each dayLabels as col}
+                {#each dayLabels as col (col.name)}
                   <th class="table-heading-right w-20 leading-tight">
                     <span class="block">{col.name}</span>
                     <span class="block text-[0.65rem] font-normal text-slate-400">{col.month} {col.date}</span>
@@ -229,7 +180,7 @@
                   {#each group.rows as row (row.issue_id)}
                     <tr class="table-row">
                       <td class="table-cell pl-8">{row.issue_title}</td>
-                      {#each DAYS as [, field]}
+                      {#each DAYS as [, field] (field)}
                         <td class={cellClass(row, field)}>{cellValue(row, field)}</td>
                       {/each}
                       <td class="table-cell text-right font-medium text-slate-950">
@@ -244,7 +195,7 @@
               {#if rows.length > 0}
                 <tr class="border-t-2 border-slate-300">
                   <td class="table-cell-strong">Total</td>
-                  {#each dayTotals as total}
+                  {#each dayTotals as total, index (DAYS[index][1])}
                     <td class="table-cell text-right font-semibold text-slate-950">
                       {total > 0 ? formatHours(total) : ''}
                     </td>

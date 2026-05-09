@@ -1,5 +1,6 @@
 <script lang="ts">
   import "../app.css";
+  import { resolve } from '$app/paths';
   import { page } from '$app/stores';
 
   let { children } = $props();
@@ -16,9 +17,9 @@
   <div class="nav-shell">
     <span class="nav-brand">TimeTracker</span>
     <div class="flex flex-wrap gap-1">
-      {#each navLinks as link}
+      {#each navLinks as link (link.href)}
         <a
-          href={link.href}
+          href={resolve(link.href)}
           class="nav-link"
           class:nav-link-active={$page.url.pathname === link.href}
         >{link.label}</a>

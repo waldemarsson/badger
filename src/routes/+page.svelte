@@ -1,6 +1,7 @@
 <script lang="ts">
 import { invoke } from '@tauri-apps/api/core';
 import { onMount } from 'svelte';
+import { getMonthBounds, getWeekBounds, today } from '$lib/date-ranges';
 import { loadInitialTimesheetData } from '$lib/timesheet-startup';
 import type { Customer, Project, Issue, TimeEntryRow } from '$lib/types';
 import Combobox from '$lib/components/Combobox.svelte';
@@ -50,34 +51,9 @@ let editIssues = $state<Issue[]>([]);
 // DELETE ERROR
 let deleteError = $state('');
 
-function today(): string {
-return new Date().toISOString().slice(0, 10);
-}
-
 function formatHours(h: number): string {
 const r = Math.round(h * 10000) / 10000;
 return Number.isInteger(r) ? String(Math.round(r)) : String(r);
-}
-
-function getWeekBounds(weekOffset = 0): { start: string; end: string } {
-const d = new Date();
-d.setDate(d.getDate() + weekOffset * 7);
-const day = d.getDay();
-const diff = day === 0 ? -6 : 1 - day;
-const mon = new Date(d);
-mon.setDate(d.getDate() + diff);
-const sun = new Date(mon);
-sun.setDate(mon.getDate() + 6);
-const fmt = (dt: Date) => dt.toISOString().slice(0, 10);
-return { start: fmt(mon), end: fmt(sun) };
-}
-
-function getMonthBounds(monthOffset = 0): { start: string; end: string } {
-const now = new Date();
-const first = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
-const last = new Date(now.getFullYear(), now.getMonth() + monthOffset + 1, 0);
-const fmt = (dt: Date) => dt.toISOString().slice(0, 10);
-return { start: fmt(first), end: fmt(last) };
 }
 
 function getDateRange(): { start: string; end: string } {

@@ -30,8 +30,13 @@
     customers.find(c => c.id === selectedCustomerId) ?? null
   );
 
-  onMount(async () => {
-    customers = await invoke<Customer[]>('list_customers');
+  onMount(() => {
+    void Promise.allSettled([
+      invoke<Customer[]>('list_customers').then((loadedCustomers) => {
+        customers = loadedCustomers;
+      }),
+      loadStartupBackupSettings(),
+    ]);
   });
 
   $effect(() => {
@@ -137,6 +142,14 @@
   // ── Backup state ──────────────────────────────────────────────────────────────
   let backupState = $state<'idle' | 'saving' | 'success' | 'error'>('idle');
   let backupError = $state('');
+  type StoredStartupBackup = { date: string; size_bytes: number };
+  let startupBackupRetention = $state('');
+  let startupBackupRetentionState = $state<'loading' | 'idle' | 'saving' | 'success' | 'error'>('loading');
+  let startupBackupRetentionError = $state('');
+  let startupBackupRetentionMessage = $state('');
+  let storedStartupBackups = $state<StoredStartupBackup[]>([]);
+  let storedStartupBackupsState = $state<'loading' | 'ready' | 'error'>('loading');
+  let storedStartupBackupsError = $state('');
 
   // ── Dev seed state (dev-only) ────────────────────────────────────────────
   let seedState = $state<'idle' | 'seeding' | 'success' | 'error'>('idle');
@@ -146,7 +159,6 @@
   type RestorePreview = { customers: number; projects: number; issues: number; time_entries: number };
   type RestoreMode    = 'replace' | 'merge';
 
-  let restoreFilePath   = $state<string | null>(null);
   let restoreFileName   = $state<string>('');
   let restoreJsonText   = $state<string>('');
   let restorePreview    = $state<RestorePreview | null>(null);
@@ -165,6 +177,103 @@
         time_entries: Array.isArray(data.time_entries) ? data.time_entries.length : 0,
       };
     } catch { return null; }
+  }
+
+  function formatBackupDate(date: string) {
+    const parsed = new Date(`${date}T00:00:00`);
+    if (Number.isNaN(parsed.getTime())) return date;
+    return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(parsed);
+  }
+
+  function formatBackupSize(sizeBytes: number) {
+    if (sizeBytes < 1024) return `${sizeBytes} B`;
+
+    const units = ['KB', 'MB', 'GB', 'TB'];
+    let value = sizeBytes / 1024;
+    let unitIndex = 0;
+
+    while (value >= 1024 && unitIndex < units.length - 1) {
+      value /= 1024;
+      unitIndex += 1;
+    }
+
+    return `${value.toFixed(value >= 10 || unitIndex === 0 ? 1 : 2)} ${units[unitIndex]}`;
+  }
+
+  function validateStartupBackupRetention(value: string) {
+    const normalized = value.trim();
+
+    if (!normalized) return 'Retention is required.';
+    if (!/^\d+$/.test(normalized)) return 'Retention must be a non-negative whole number.';
+
+    const parsed = Number(normalized);
+    if (!Number.isSafeInteger(parsed)) return 'Retention is too large.';
+
+    return null;
+  }
+
+  async function loadStartupBackupSettings() {
+    startupBackupRetentionError = '';
+    startupBackupRetentionMessage = '';
+    startupBackupRetentionState = 'loading';
+    storedStartupBackupsState = 'loading';
+    storedStartupBackupsError = '';
+
+    const [retentionResult, backupsResult] = await Promise.allSettled([
+      invoke<number>('get_startup_backup_retention'),
+      invoke<StoredStartupBackup[]>('list_startup_backups'),
+    ]);
+
+    if (retentionResult.status === 'fulfilled') {
+      startupBackupRetention = String(retentionResult.value);
+      startupBackupRetentionState = 'idle';
+    } else {
+      startupBackupRetentionState = 'error';
+      startupBackupRetentionError = `Could not load startup backup retention. ${String(retentionResult.reason)}`;
+    }
+
+    if (backupsResult.status === 'fulfilled') {
+      storedStartupBackups = backupsResult.value;
+      storedStartupBackupsState = 'ready';
+    } else {
+      storedStartupBackups = [];
+      storedStartupBackupsState = 'error';
+      storedStartupBackupsError = `Could not load stored startup backups. ${String(backupsResult.reason)}`;
+    }
+  }
+
+  function handleStartupBackupRetentionInput() {
+    startupBackupRetentionError = '';
+    startupBackupRetentionMessage = '';
+    if (startupBackupRetentionState !== 'loading') {
+      startupBackupRetentionState = 'idle';
+    }
+  }
+
+  async function saveStartupBackupRetention() {
+    startupBackupRetentionError = '';
+    startupBackupRetentionMessage = '';
+
+    const validationError = validateStartupBackupRetention(startupBackupRetention);
+    if (validationError) {
+      startupBackupRetentionState = 'error';
+      startupBackupRetentionError = validationError;
+      return;
+    }
+
+    startupBackupRetentionState = 'saving';
+
+    try {
+      const savedRetention = await invoke<number>('set_startup_backup_retention', {
+        value: Number(startupBackupRetention.trim()),
+      });
+      startupBackupRetention = String(savedRetention);
+      startupBackupRetentionState = 'success';
+      startupBackupRetentionMessage = 'Startup backup retention saved.';
+    } catch (e) {
+      startupBackupRetentionState = 'error';
+      startupBackupRetentionError = String(e);
+    }
   }
 
   async function exportBackup() {
@@ -199,7 +308,6 @@
         restoreParseError = 'Could not read backup file. Make sure it is a valid TimeTracker backup.';
         return;
       }
-      restoreFilePath  = path;
       restoreFileName  = path.split('/').pop() ?? path;
       restoreJsonText  = json;
       restorePreview   = preview;
@@ -211,7 +319,6 @@
   }
 
   function clearRestoreFile() {
-    restoreFilePath   = null;
     restoreFileName   = '';
     restoreJsonText   = '';
     restorePreview    = null;
@@ -240,7 +347,7 @@
       seedState = 'success';
       // Refresh customer list to reflect seeded data (matches existing inline pattern)
       customers = await invoke<Customer[]>('list_customers');
-    } catch (e: any) {
+    } catch (e) {
       seedError = String(e);
       seedState = 'error';
     }
@@ -445,6 +552,97 @@
 
     {:else if activeTab === 'backup'}
       <div class="space-y-4">
+
+        <section class="panel-card space-y-4">
+          <div>
+            <h2 class="panel-title">Startup Backups</h2>
+            <p class="panel-copy">Automatic backups are created on startup. Set how many daily backups to keep and review the stored backup files below.</p>
+          </div>
+
+          <div class="grid gap-4 lg:grid-cols-[minmax(0,18rem)_1fr]">
+            <div class="space-y-3">
+              <div>
+                <label class="form-label mb-2" for="startup-backup-retention">Retention (days)</label>
+                <input
+                  id="startup-backup-retention"
+                  class="form-input"
+                  type="text"
+                  inputmode="numeric"
+                  autocomplete="off"
+                  bind:value={startupBackupRetention}
+                  oninput={handleStartupBackupRetentionInput}
+                  onkeydown={(e) => e.key === 'Enter' && saveStartupBackupRetention()}
+                  disabled={startupBackupRetentionState === 'loading' || startupBackupRetentionState === 'saving'}
+                />
+                <p class="mt-2 text-xs text-slate-500">Enter a whole number greater than or equal to 0.</p>
+              </div>
+
+              <button
+                class="btn-primary"
+                onclick={saveStartupBackupRetention}
+                disabled={startupBackupRetentionState === 'loading' || startupBackupRetentionState === 'saving'}
+              >
+                {startupBackupRetentionState === 'saving' ? 'Saving…' : 'Save Retention'}
+              </button>
+
+              {#if startupBackupRetentionState === 'success'}
+                <div class="alert-panel alert-success">
+                  <p class="alert-success-title">Retention updated</p>
+                  <p class="alert-success-copy">{startupBackupRetentionMessage}</p>
+                </div>
+              {/if}
+
+              {#if startupBackupRetentionError}
+                <div class="alert-panel alert-error">
+                  <p class="alert-error-title">Retention unavailable</p>
+                  <p class="alert-error-copy">{startupBackupRetentionError}</p>
+                </div>
+              {/if}
+            </div>
+
+            <div class="panel-muted space-y-3">
+              <div>
+                <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Stored Backups</p>
+                <p class="mt-1 text-sm text-slate-500">Read-only list of the startup backups stored beside your database.</p>
+              </div>
+
+              {#if storedStartupBackupsState === 'loading'}
+                <p class="text-sm text-slate-500">Loading startup backups…</p>
+              {:else if storedStartupBackupsState === 'error'}
+                <div class="stack-error">{storedStartupBackupsError}</div>
+              {:else if storedStartupBackups.length === 0}
+                <div class="empty-state">
+                  <p class="font-semibold text-slate-700">No startup backups yet</p>
+                  <p>Automatic startup backups will appear here after they are created.</p>
+                </div>
+              {:else}
+                <div class="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                  <table class="table-base">
+                    <thead class="table-head">
+                      <tr>
+                        <th class="table-heading">Date</th>
+                        <th class="table-heading text-right">Size</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {#each storedStartupBackups as backup (backup.date)}
+                        <tr class="table-row">
+                          <td class="table-cell">
+                            <div class="font-semibold text-slate-900">{formatBackupDate(backup.date)}</div>
+                            <div class="text-xs text-slate-500">{backup.date}</div>
+                          </td>
+                          <td class="table-cell text-right font-medium text-slate-700">
+                            {formatBackupSize(backup.size_bytes)}
+                          </td>
+                        </tr>
+                      {/each}
+                    </tbody>
+                  </table>
+                </div>
+              {/if}
+            </div>
+          </div>
+        </section>
 
         <!-- Backup Section -->
         <section class="panel-card space-y-4">

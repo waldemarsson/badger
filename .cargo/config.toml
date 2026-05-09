@@ -1,0 +1,4 @@
+[env]
+# Forces sqlx to use offline query metadata (`.sqlx/`) instead of a live database.
+# Required because we don't have a SQLite file at compile time.
+SQLX_OFFLINE = "true"

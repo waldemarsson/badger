@@ -1,0 +1,341 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body {
+    min-height: 100%;
+  }
+
+  body {
+    @apply m-0 min-h-screen bg-slate-50 font-sans text-slate-950 antialiased;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply text-slate-950;
+  }
+
+  p {
+    @apply text-slate-600;
+  }
+}
+
+@layer components {
+  .page-shell {
+    max-width: 118rem;
+    @apply mx-auto w-full px-3 sm:px-4 lg:px-6;
+  }
+
+  .page-view {
+    @apply w-full space-y-4;
+  }
+
+  .page-hero {
+    @apply rounded-[1.5rem] bg-slate-950 px-5 py-5 text-white shadow-lg shadow-slate-950/10 ring-1 ring-slate-900/70 sm:px-6;
+  }
+
+  .page-hero-kicker {
+    @apply text-sm font-semibold uppercase tracking-[0.24em] text-slate-300;
+  }
+
+  .page-hero-title {
+    @apply text-3xl font-semibold tracking-tight text-white sm:text-[2rem];
+  }
+
+  .page-hero-copy {
+    @apply max-w-3xl text-sm leading-6 text-slate-300;
+  }
+
+  .hero-stat {
+    @apply min-w-28 rounded-xl border border-white/10 bg-white/5 px-3 py-2 shadow-sm backdrop-blur-sm;
+  }
+
+  .hero-stat-label {
+    @apply text-[0.7rem] font-semibold uppercase tracking-[0.18em] text-slate-400;
+  }
+
+  .hero-stat-value {
+    @apply mt-1 text-xl font-semibold tracking-tight text-white sm:text-2xl;
+  }
+
+  .panel-card {
+    @apply rounded-[1.375rem] border border-slate-200/80 bg-white p-5 shadow-sm shadow-slate-200/50;
+  }
+
+  .panel-muted {
+    @apply rounded-xl border border-slate-200 bg-slate-50/80 p-4;
+  }
+
+  .panel-title {
+    @apply text-xl font-semibold tracking-tight text-slate-950;
+  }
+
+  .panel-copy {
+    @apply mt-1 text-sm leading-6 text-slate-600;
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center justify-center rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-300 disabled:cursor-not-allowed disabled:bg-slate-400 disabled:hover:translate-y-0;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 shadow-sm transition hover:-translate-y-0.5 hover:border-slate-400 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-slate-200 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0;
+  }
+
+  .btn-danger {
+    @apply inline-flex items-center justify-center rounded-xl border border-red-200 bg-white px-4 py-2.5 text-sm font-medium text-red-700 shadow-sm transition hover:-translate-y-0.5 hover:border-red-300 hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-red-100 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0;
+  }
+
+  .btn-inverse {
+    @apply inline-flex items-center justify-center rounded-2xl border border-white/15 bg-white/5 px-4 py-3 text-sm font-medium text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-white/20 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0;
+  }
+
+  /* Compact variants for use inside table rows */
+  .btn-secondary-sm {
+    @apply inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-3 py-1 text-xs font-medium text-slate-700 shadow-sm transition hover:-translate-y-0.5 hover:border-slate-400 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-slate-200 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0;
+  }
+
+  .btn-danger-sm {
+    @apply inline-flex items-center justify-center rounded-lg border border-red-200 bg-white px-3 py-1 text-xs font-medium text-red-700 shadow-sm transition hover:-translate-y-0.5 hover:border-red-300 hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-red-100 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0;
+  }
+
+  /* Square icon-only button variants for table action columns */
+  .btn-icon-secondary {
+    @apply inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white p-2 text-slate-500 shadow-sm transition hover:-translate-y-0.5 hover:border-slate-400 hover:bg-slate-50 hover:text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0;
+  }
+
+  .btn-icon-danger {
+    @apply inline-flex items-center justify-center rounded-lg border border-red-200 bg-white p-2 text-red-500 shadow-sm transition hover:-translate-y-0.5 hover:border-red-300 hover:bg-red-50 hover:text-red-700 focus:outline-none focus:ring-2 focus:ring-red-100 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0;
+  }
+
+  .btn-icon-confirm {
+    @apply inline-flex items-center justify-center rounded-lg border border-emerald-300 bg-white p-2 text-emerald-600 shadow-sm transition hover:-translate-y-0.5 hover:border-emerald-400 hover:bg-emerald-50 hover:text-emerald-800 focus:outline-none focus:ring-2 focus:ring-emerald-200 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0;
+  }
+
+  /* Star/default toggle — amber when active, secondary-style when inactive */
+  .btn-icon-star {
+    @apply inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white p-2 text-slate-400 shadow-sm transition hover:-translate-y-0.5 hover:border-amber-300 hover:bg-amber-50 hover:text-amber-500 focus:outline-none focus:ring-2 focus:ring-amber-100 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0;
+  }
+
+  .btn-icon-star.active {
+    @apply border-amber-300 bg-amber-50 text-amber-500 hover:border-amber-400 hover:bg-amber-100 hover:text-amber-600;
+  }
+
+  .form-select {
+    @apply w-full appearance-none rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-950 shadow-sm outline-none transition focus:border-slate-500 focus:ring-4 focus:ring-slate-200 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.625rem center;
+    background-size: 1rem;
+    padding-right: 2rem;
+    cursor: pointer;
+  }
+
+  .form-label {
+    @apply text-sm font-semibold text-slate-800;
+  }
+
+  .form-input {
+    @apply w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-950 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-slate-500 focus:ring-4 focus:ring-slate-200 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500;
+  }
+
+  /* Expand the native calendar picker hit area to fill the entire date input box */
+  .form-input[type="date"] {
+    cursor: pointer;
+    position: relative;
+  }
+
+  .form-input[type="date"]::-webkit-calendar-picker-indicator {
+    position: absolute;
+    inset: 0;
+    width: auto;
+    height: auto;
+    cursor: pointer;
+    opacity: 0;
+  }
+
+  .form-input-readonly {
+    @apply w-full rounded-xl border border-slate-200 bg-slate-100 px-3 py-2 text-sm text-slate-600 shadow-sm;
+  }
+
+  .form-textarea {
+    min-height: 2.625rem;
+    @apply w-full resize-y rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm leading-5 text-slate-950 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-slate-500 focus:ring-4 focus:ring-slate-200 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500;
+  }
+
+  .form-error {
+    @apply text-sm text-red-700;
+  }
+
+  .alert-panel {
+    @apply rounded-2xl border px-5 py-4 shadow-sm;
+  }
+
+  .alert-error {
+    @apply border-red-200 bg-red-50;
+  }
+
+  .alert-warning {
+    @apply border-amber-200 bg-amber-50;
+  }
+
+  .alert-success {
+    @apply border-green-200 bg-green-50;
+  }
+
+  .alert-error-title {
+    @apply text-lg font-semibold text-red-900;
+  }
+
+  .alert-warning-title {
+    @apply text-sm font-semibold text-amber-900;
+  }
+
+  .alert-success-title {
+    @apply text-sm font-semibold text-green-900;
+  }
+
+  .alert-error-copy {
+    @apply text-sm text-red-700;
+  }
+
+  .alert-warning-copy {
+    @apply text-sm text-amber-800;
+  }
+
+  .alert-success-copy {
+    @apply text-sm text-green-800;
+  }
+
+  .table-card {
+    @apply rounded-[1.375rem] border border-slate-200/80 bg-white shadow-sm shadow-slate-200/50;
+  }
+
+  .table-scroll-region {
+    overflow: visible;
+  }
+
+  @media (max-width: 1023px) {
+    .table-scroll-region {
+      overflow-x: auto;
+    }
+  }
+
+  .table-toolbar {
+    @apply border-b border-slate-200 bg-slate-50/80 px-4 py-3.5;
+  }
+
+  .table-title {
+    @apply text-sm font-semibold uppercase tracking-[0.18em] text-slate-700;
+  }
+
+  .table-base {
+    @apply min-w-full divide-y divide-slate-200;
+  }
+
+  .table-head {
+    @apply bg-slate-100/80;
+  }
+
+  .table-heading {
+    @apply px-3 py-2 text-left text-[0.72rem] font-semibold uppercase tracking-[0.18em] text-slate-600;
+  }
+
+  .table-heading-right {
+    @apply px-3 py-2 text-right text-[0.72rem] font-semibold uppercase tracking-[0.18em] text-slate-600;
+  }
+
+  .table-cell {
+    @apply px-3 py-2 align-top text-sm text-slate-700;
+  }
+
+  .table-cell-strong {
+    @apply px-3 py-2 align-top text-sm font-medium text-slate-950;
+  }
+
+  .table-cell-muted {
+    @apply px-3 py-2 align-top text-sm text-slate-600;
+  }
+
+  .table-row {
+    @apply border-t border-slate-200 align-top transition-colors;
+  }
+
+  .table-row-new {
+    @apply bg-slate-50/70;
+  }
+
+  .table-row-editing {
+    @apply bg-slate-50/80;
+  }
+
+  .table-row-history > td {
+    padding-top: 0.25rem;
+    padding-bottom: 0.25rem;
+    vertical-align: middle;
+  }
+
+  .table-row-history:nth-child(even) > td {
+    background-color: #f1f5f9;
+  }
+
+  /* Tighter padding for inline-edit and new-entry form rows */
+  .table-row-new > td,
+  .table-row-editing > td {
+    padding: 0.5rem 0.75rem;
+    vertical-align: top;
+  }
+
+  .stack-error {
+    @apply rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700;
+  }
+
+  .empty-state {
+    @apply rounded-xl border border-dashed border-slate-300 bg-slate-50/80 px-4 py-6 text-center text-sm text-slate-600;
+  }
+
+  .list-card {
+    @apply rounded-xl border border-slate-200 bg-white p-4 shadow-sm transition hover:border-slate-300 hover:shadow-md;
+  }
+
+  .list-card-selected {
+    @apply border-slate-900 bg-slate-50 shadow-md shadow-slate-200/60;
+  }
+
+  .restore-stat {
+    @apply flex flex-col items-center gap-1;
+  }
+
+  .restore-stat-number {
+    @apply text-2xl font-semibold tracking-tight text-slate-950;
+  }
+
+  .restore-stat-label {
+    @apply text-xs text-slate-500 uppercase tracking-[0.14em];
+  }
+
+  .badge {
+    @apply rounded-full bg-slate-950 px-2.5 py-1 text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-white;
+  }
+
+  .nav-shell {
+    max-width: 118rem;
+    @apply mx-auto flex w-full flex-col gap-3 px-3 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-4 lg:px-6;
+  }
+
+  .nav-brand {
+    @apply text-sm font-semibold uppercase tracking-[0.24em] text-slate-500;
+  }
+
+  .nav-link {
+    @apply rounded-xl px-4 py-2.5 text-sm font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-950;
+  }
+
+  .nav-link-active {
+    @apply bg-slate-950 text-white shadow-sm hover:bg-slate-900 hover:text-white;
+  }
+}

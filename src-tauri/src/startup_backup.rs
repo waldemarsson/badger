@@ -54,10 +54,6 @@ pub fn trim_old_backups(db_path: &Path, keep_latest: usize) -> Result<(), AppErr
 
 pub fn list_startup_backups(db_path: &Path) -> Result<Vec<StoredBackupSummary>, AppError> {
     let backup_root = backup_root_dir(db_path);
-    if !backup_root.exists() {
-        return Ok(Vec::new());
-    }
-
     let mut dated_dirs = dated_backup_directories(&backup_root)?;
     dated_dirs.sort_by(|(left, _), (right, _)| right.cmp(left));
 

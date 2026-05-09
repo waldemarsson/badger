@@ -16,13 +16,11 @@ fn validate_startup_backup_retention(retention: i64) -> Result<i64, AppError> {
 }
 
 fn parse_startup_backup_retention(value: &str) -> Result<i64, AppError> {
-    let retention = value.parse::<i64>().map_err(|_| {
+    value.parse::<i64>().map_err(|_| {
         AppError::Custom(format!(
             "Invalid startup backup retention value stored in app_settings: {value}"
         ))
-    })?;
-
-    validate_startup_backup_retention(retention)
+    })
 }
 
 pub async fn get_startup_backup_retention(pool: &Pool<Sqlite>) -> Result<i64, AppError> {
@@ -112,6 +110,29 @@ mod tests {
             error
                 .to_string()
                 .contains("Startup backup retention must be greater than or equal to 0."),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn app_settings_rejects_invalid_stored_values() {
+        let pool = crate::test_db().await;
+
+        sqlx::query("INSERT INTO app_settings (Key, Value) VALUES (?, ?)")
+            .bind(super::STARTUP_BACKUP_RETENTION_KEY)
+            .bind("invalid")
+            .execute(&pool)
+            .await
+            .expect("invalid retention row should insert");
+
+        let error = get_startup_backup_retention(&pool)
+            .await
+            .expect_err("invalid stored retention should fail to parse");
+
+        assert!(
+            error
+                .to_string()
+                .contains("Invalid startup backup retention value stored in app_settings"),
             "unexpected error: {error}"
         );
     }

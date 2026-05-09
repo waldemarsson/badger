@@ -115,11 +115,13 @@ mod tests {
     async fn test_app_settings_schema_uses_expected_columns() {
         let pool = crate::test_db().await;
 
-        let rows: Vec<(i64, String, String, i64, Option<String>, i64)> =
-            sqlx::query_as("PRAGMA table_info(app_settings)")
-                .fetch_all(&pool)
-                .await
-                .expect("PRAGMA table_info(app_settings) failed");
+        // PRAGMA table_info columns: cid, name, type, notnull, dflt_value, pk
+        type TableInfoRow = (i64, String, String, i64, Option<String>, i64);
+
+        let rows: Vec<TableInfoRow> = sqlx::query_as("PRAGMA table_info(app_settings)")
+            .fetch_all(&pool)
+            .await
+            .expect("PRAGMA table_info(app_settings) failed");
 
         assert_eq!(
             rows.len(),
@@ -127,17 +129,19 @@ mod tests {
             "app_settings should have exactly two columns"
         );
 
-        assert_eq!(rows[0].1, "Key");
-        assert_eq!(rows[0].2, "TEXT");
+        let (_, key_name, key_type, key_not_null, _, key_pk) = &rows[0];
+        assert_eq!(key_name, "Key");
+        assert_eq!(key_type, "TEXT");
         assert_eq!(
-            rows[0].3, 0,
+            *key_not_null, 0,
             "Key should not be declared NOT NULL separately"
         );
-        assert_eq!(rows[0].5, 1, "Key should be the primary key");
+        assert_eq!(*key_pk, 1, "Key should be the primary key");
 
-        assert_eq!(rows[1].1, "Value");
-        assert_eq!(rows[1].2, "TEXT");
-        assert_eq!(rows[1].3, 1, "Value should be NOT NULL");
-        assert_eq!(rows[1].5, 0, "Value should not be part of the primary key");
+        let (_, value_name, value_type, value_not_null, _, value_pk) = &rows[1];
+        assert_eq!(value_name, "Value");
+        assert_eq!(value_type, "TEXT");
+        assert_eq!(*value_not_null, 1, "Value should be NOT NULL");
+        assert_eq!(*value_pk, 0, "Value should not be part of the primary key");
     }
 }

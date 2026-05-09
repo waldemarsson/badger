@@ -18,10 +18,10 @@ Make it easy to copy project-specific issue names or project-specific hour value
 
 ## Recommended approach
 
-Add two explicit copy actions to each project row in the monthly report:
+Add two explicit icon-based copy actions to each project row in the monthly report:
 
-- `Copy issues`
-- `Copy hours`
+- copy issues icon
+- copy hours icon
 
 Each action should copy newline-delimited plain text for that specific project only, using the issue rows currently shown under that project.
 
@@ -35,12 +35,17 @@ Each action should copy newline-delimited plain text for that specific project o
 
 ### Project-level copy actions
 
-In the monthly report, each project row should get two copy controls:
+In the monthly report, each project row should get two copy controls shown as icons rather than text buttons:
 
-- `Copy issues`
-- `Copy hours`
+- one icon for copying issues
+- one icon for copying hours
 
 These actions belong only on project rows, not customer rows or the final total row.
+
+The icons should still be clear and accessible:
+
+- provide distinct tooltips or accessible labels for `Copy issues` and `Copy hours`
+- keep the controls visually lightweight so they do not overpower the report row
 
 ### Copy scope
 
@@ -103,4 +108,3 @@ Verify:
 ## Affected files
 
 - `src/routes/reports/monthly/+page.svelte`
-

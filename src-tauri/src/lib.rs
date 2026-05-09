@@ -10,7 +10,6 @@ pub mod startup_backup;
 #[cfg(debug_assertions)]
 pub mod dev_seed;
 
-use std::path::PathBuf;
 use tauri::Manager;
 
 pub use error::AppError;
@@ -38,21 +37,44 @@ pub(crate) async fn test_db() -> sqlx::SqlitePool {
 }
 
 async fn run_startup_backup(
-    db_path: &PathBuf,
+    db_path: &std::path::Path,
     pool: &sqlx::SqlitePool,
 ) -> Result<(), AppError> {
-    let retention = app_settings::get_startup_backup_retention(pool).await?;
+    let retention = match app_settings::get_startup_backup_retention(pool).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("Startup backup: failed to read retention setting: {}", e);
+            return Err(e);
+        }
+    };
+
     if retention == 0 {
         tracing::debug!("Startup backup disabled (retention = 0)");
         return Ok(());
     }
 
-    let json = commands::backup::inner_backup_data(pool).await?;
+    let json = match commands::backup::inner_backup_data(pool).await {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::error!("Startup backup: failed to export database: {}", e);
+            return Err(e);
+        }
+    };
+
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let backup_path = startup_backup::write_daily_backup(db_path, &today, &json)?;
+    let backup_path = match startup_backup::write_daily_backup(db_path, &today, &json) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!("Startup backup: failed to write backup file: {}", e);
+            return Err(e);
+        }
+    };
     tracing::info!("Startup backup written to: {:?}", backup_path);
 
-    startup_backup::trim_old_backups(db_path, retention as usize)?;
+    if let Err(e) = startup_backup::trim_old_backups(db_path, retention as usize) {
+        tracing::error!("Startup backup: failed to trim old backups: {}", e);
+        return Err(e);
+    }
     tracing::debug!("Startup backup trimmed to {} most recent", retention);
 
     Ok(())
@@ -79,7 +101,7 @@ pub fn run() {
             //       .build().unwrap().block_on(db::init_db(&db_path))
             let pool = tauri::async_runtime::block_on(db::init_db(&runtime_paths.db_path))?;
             app.manage(pool.clone());
-            app.manage(runtime_paths.db_path.clone());
+            app.manage(runtime_paths.clone());
 
             tracing::info!("TimeTracker started. DB: {:?}", runtime_paths.db_path);
 
@@ -89,9 +111,9 @@ pub fn run() {
             let db_path_for_backup = runtime_paths.db_path.clone();
             let pool_for_backup = pool.clone();
             tauri::async_runtime::spawn(async move {
-                match run_startup_backup(&db_path_for_backup, &pool_for_backup).await {
-                    Ok(()) => {}
-                    Err(e) => tracing::error!("Startup backup failed: {}", e),
+                if let Err(e) = run_startup_backup(&db_path_for_backup, &pool_for_backup).await {
+                    // Individual step errors already logged in run_startup_backup
+                    tracing::debug!("Startup backup task completed with error: {}", e);
                 }
             });
 

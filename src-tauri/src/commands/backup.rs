@@ -2,7 +2,7 @@
 use crate::AppError;
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Sqlite};
-use std::path::PathBuf;
+use std::path::Path;
 use tauri::State;
 
 /// A customer record as stored in a backup file.
@@ -237,8 +237,7 @@ pub async fn inner_set_startup_backup_retention(
 
 /// Lists all stored startup backups by reading the backup directory structure.
 pub async fn inner_list_startup_backups(
-    db_path: &PathBuf,
-    _pool: &Pool<Sqlite>,
+    db_path: &Path,
 ) -> Result<Vec<crate::startup_backup::StoredBackupSummary>, AppError> {
     crate::startup_backup::list_startup_backups(db_path)
 }
@@ -263,10 +262,9 @@ pub async fn set_startup_backup_retention(
 /// Lists all stored startup backups.
 #[tauri::command]
 pub async fn list_startup_backups(
-    db_path: State<'_, PathBuf>,
-    pool: State<'_, Pool<Sqlite>>,
+    runtime_paths: State<'_, crate::runtime_paths::RuntimePaths>,
 ) -> Result<Vec<crate::startup_backup::StoredBackupSummary>, AppError> {
-    inner_list_startup_backups(&db_path, &pool).await
+    inner_list_startup_backups(&runtime_paths.db_path).await
 }
 
 #[cfg(test)]
@@ -388,14 +386,12 @@ mod tests {
             .join(format!("list-startup-backups-{unique}"));
         let db_path = test_dir.join("timetracker.db");
 
-        let pool = crate::test_db().await;
-
         crate::startup_backup::write_daily_backup(&db_path, "2026-05-08", r#"{"test":"older"}"#)
             .expect("older backup write should succeed");
         crate::startup_backup::write_daily_backup(&db_path, "2026-05-09", r#"{"test":"newer"}"#)
             .expect("newer backup write should succeed");
 
-        let summaries = inner_list_startup_backups(&db_path, &pool)
+        let summaries = inner_list_startup_backups(&db_path)
             .await
             .expect("listing startup backups should succeed");
 

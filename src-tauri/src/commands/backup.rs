@@ -2,6 +2,7 @@
 use crate::AppError;
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Sqlite};
+use std::path::PathBuf;
 use tauri::State;
 
 /// A customer record as stored in a backup file.
@@ -221,6 +222,53 @@ pub async fn restore_data(
     inner_restore_data(&mode, &json, &pool).await
 }
 
+/// Reads the startup backup retention setting from the database.
+pub async fn inner_get_startup_backup_retention(pool: &Pool<Sqlite>) -> Result<i64, AppError> {
+    crate::app_settings::get_startup_backup_retention(pool).await
+}
+
+/// Writes the startup backup retention setting to the database.
+pub async fn inner_set_startup_backup_retention(
+    value: i64,
+    pool: &Pool<Sqlite>,
+) -> Result<i64, AppError> {
+    crate::app_settings::set_startup_backup_retention(pool, value).await
+}
+
+/// Lists all stored startup backups by reading the backup directory structure.
+pub async fn inner_list_startup_backups(
+    db_path: &PathBuf,
+    _pool: &Pool<Sqlite>,
+) -> Result<Vec<crate::startup_backup::StoredBackupSummary>, AppError> {
+    crate::startup_backup::list_startup_backups(db_path)
+}
+
+/// Reads the startup backup retention setting from the database.
+#[tauri::command]
+pub async fn get_startup_backup_retention(
+    pool: State<'_, Pool<Sqlite>>,
+) -> Result<i64, AppError> {
+    inner_get_startup_backup_retention(&pool).await
+}
+
+/// Writes the startup backup retention setting to the database.
+#[tauri::command]
+pub async fn set_startup_backup_retention(
+    value: i64,
+    pool: State<'_, Pool<Sqlite>>,
+) -> Result<i64, AppError> {
+    inner_set_startup_backup_retention(value, &pool).await
+}
+
+/// Lists all stored startup backups.
+#[tauri::command]
+pub async fn list_startup_backups(
+    db_path: State<'_, PathBuf>,
+    pool: State<'_, Pool<Sqlite>>,
+) -> Result<Vec<crate::startup_backup::StoredBackupSummary>, AppError> {
+    inner_list_startup_backups(&db_path, &pool).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,5 +338,73 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count.0, 2, "merge should preserve existing records");
+    }
+
+    #[tokio::test]
+    async fn test_startup_backup_retention_get_set_roundtrip() {
+        let pool = crate::test_db().await;
+
+        let default_retention = inner_get_startup_backup_retention(&pool)
+            .await
+            .expect("reading default retention should succeed");
+        assert_eq!(default_retention, 3);
+
+        let saved = inner_set_startup_backup_retention(7, &pool)
+            .await
+            .expect("setting retention to 7 should succeed");
+        assert_eq!(saved, 7);
+
+        let read_back = inner_get_startup_backup_retention(&pool)
+            .await
+            .expect("reading updated retention should succeed");
+        assert_eq!(read_back, 7);
+
+        let saved_zero = inner_set_startup_backup_retention(0, &pool)
+            .await
+            .expect("setting retention to 0 should succeed");
+        assert_eq!(saved_zero, 0);
+
+        let read_zero = inner_get_startup_backup_retention(&pool)
+            .await
+            .expect("reading retention of 0 should succeed");
+        assert_eq!(read_zero, 0);
+    }
+
+    #[tokio::test]
+    async fn test_list_startup_backups_reads_backup_directories() {
+        use std::{
+            fs,
+            path::Path,
+            time::{SystemTime, UNIX_EPOCH},
+        };
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos();
+        let test_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("test-artifacts")
+            .join(format!("list-startup-backups-{unique}"));
+        let db_path = test_dir.join("timetracker.db");
+
+        let pool = crate::test_db().await;
+
+        crate::startup_backup::write_daily_backup(&db_path, "2026-05-08", r#"{"test":"older"}"#)
+            .expect("older backup write should succeed");
+        crate::startup_backup::write_daily_backup(&db_path, "2026-05-09", r#"{"test":"newer"}"#)
+            .expect("newer backup write should succeed");
+
+        let summaries = inner_list_startup_backups(&db_path, &pool)
+            .await
+            .expect("listing startup backups should succeed");
+
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].date, "2026-05-09");
+        assert_eq!(summaries[0].size_bytes, r#"{"test":"newer"}"#.len() as u64);
+        assert_eq!(summaries[1].date, "2026-05-08");
+        assert_eq!(summaries[1].size_bytes, r#"{"test":"older"}"#.len() as u64);
+
+        fs::remove_dir_all(&test_dir).expect("test directory cleanup should succeed");
     }
 }

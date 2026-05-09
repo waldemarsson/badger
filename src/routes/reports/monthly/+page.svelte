@@ -203,7 +203,7 @@
                     <span class="font-semibold text-slate-950">{customer.name}</span>
                   </td>
                   <td class="table-cell text-right font-semibold text-slate-950">
-                    {formatHours(customer.hours)} hrs
+                    {formatHours(customer.hours)}
                   </td>
                 </tr>
 
@@ -225,7 +225,7 @@
                         <span class="text-slate-800">{project.name}</span>
                       </td>
                       <td class="table-cell text-right text-slate-800">
-                        {formatHours(project.hours)} hrs
+                        {formatHours(project.hours)}
                       </td>
                     </tr>
 
@@ -235,7 +235,7 @@
                         <tr class="table-row-history">
                           <td class="table-cell pl-12 text-slate-600">{issue.title}</td>
                           <td class="table-cell text-right text-slate-600">
-                            {formatHours(issue.hours)} hrs
+                            {formatHours(issue.hours)}
                           </td>
                         </tr>
                       {/each}
@@ -248,7 +248,7 @@
               {#if tree.length > 0}
                 <tr class="border-t-2 border-slate-300">
                   <td class="table-cell-strong px-3 py-2">Total</td>
-                  <td class="table-cell-strong px-3 py-2 text-right">{formatHours(grandTotal)} hrs</td>
+                  <td class="table-cell-strong px-3 py-2 text-right">{formatHours(grandTotal)}</td>
                 </tr>
               {/if}
             </tbody>

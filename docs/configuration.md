@@ -9,6 +9,7 @@ Development (`npm run dev` / debug builds):
 ```text
 .timetracker-dev/timetracker.db
 .timetracker-dev/logs/
+.timetracker-dev/backups/
 ```
 
 Non-debug builds (installed app / release bundle):
@@ -16,9 +17,10 @@ Non-debug builds (installed app / release bundle):
 ```text
 ~/.timetracker/timetracker.db
 ~/.timetracker/logs/
+~/.timetracker/backups/
 ```
 
-In development, `.timetracker-dev/` lives at the repo root. The database file is created on startup if it does not exist, and log files are written with daily rotation.
+In development, `.timetracker-dev/` lives at the repo root. The database file is created on startup if it does not exist, and log files are written with daily rotation. Automatic startup backups are stored in the `backups/` subdirectory when enabled.
 
 ## Key configuration files
 
@@ -62,6 +64,16 @@ This means compile-time query checking uses offline metadata instead of requirin
 ### Logging can be filtered through environment
 
 The logger uses `tracing_subscriber::EnvFilter::try_from_default_env()` and falls back to `info`. Set `RUST_LOG` when you need more or less backend logging detail during development.
+
+### Startup backup retention
+
+TimeTracker automatically creates a daily backup on application startup. The retention setting controls how many recent backups are kept:
+
+- **Default**: 3 backups
+- **Retention > 0**: Backup is created daily and old backups are trimmed to keep the specified number of recent backups
+- **Retention = 0**: Automatic startup backups are disabled
+
+The retention setting can be configured in the Settings > Backup & Restore tab. The setting is stored in the `app_settings` table with key `startup_backup_retention`.
 
 ### Ad-hoc macOS signing is enabled
 

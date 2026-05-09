@@ -33,6 +33,33 @@ Installed and other non-debug builds:
 ~/.timetracker/timetracker.db
 ```
 
+## Automatic startup backups
+
+TimeTracker automatically creates a daily backup on application startup. This behavior is controlled by the startup backup retention setting, which defaults to `3`:
+
+- **Retention > 0**: A backup is created at `backups/YYYY-MM-DD/backup.json` beside the active database if one does not already exist for today. After creation, old backups are automatically trimmed to keep only the most recent `N` backups.
+- **Retention = 0**: Automatic startup backups are disabled entirely.
+
+The retention setting can be adjusted in the Settings > Backup & Restore tab.
+
+### Startup backup locations
+
+The backup root directory is determined by the database location:
+
+Development (`npm run dev` / debug builds):
+
+```text
+.timetracker-dev/backups/YYYY-MM-DD/backup.json
+```
+
+Installed and other non-debug builds:
+
+```text
+~/.timetracker/backups/YYYY-MM-DD/backup.json
+```
+
+Startup backup creation, trimming, and listing are handled entirely in Rust and do not involve the frontend beyond displaying the available backups and retention setting in the UI.
+
 ## Backup format
 
 Backup export writes a JSON document containing four arrays:

@@ -36,6 +36,7 @@ The backend is organized around command modules:
 - `issues` and `time_entries` for core timesheet operations
 - `reports` for weekly and monthly rollups
 - `backup` for JSON export and import
+- `startup_backup` for automatic daily backups on application startup
 - `dev_seed` for debug-only sample data
 
 ## Data flow
@@ -61,6 +62,7 @@ Development (`npm run dev` / debug builds):
 ```text
 .timetracker-dev/timetracker.db
 .timetracker-dev/logs/
+.timetracker-dev/backups/
 ```
 
 Non-debug builds:
@@ -68,6 +70,7 @@ Non-debug builds:
 ```text
 ~/.timetracker/timetracker.db
 ~/.timetracker/logs/
+~/.timetracker/backups/
 ```
 
 The schema is created on startup if it does not exist. The main tables are:
@@ -96,3 +99,7 @@ The frontend does not talk to SQLite directly and does not read or write backup 
 ### Logging is file-based
 
 The backend initializes daily-rotating logs under repo-local `.timetracker-dev/logs/` in debug builds and `~/.timetracker/logs/` in non-debug builds. It keeps the logging guard alive in managed Tauri state so writes do not stop early.
+
+### Automatic startup backups
+
+On application startup, TimeTracker creates a daily backup if the retention setting is greater than zero and no backup exists for today. The backup is written to `backups/YYYY-MM-DD/backup.json` beside the active database. After backup creation, old backups are automatically trimmed to keep only the most recent backups based on the retention setting (default: 3). Setting retention to 0 disables automatic startup backups entirely. Backup creation, trimming, and listing logic stays in Rust; the frontend only displays the available backups and retention setting.

@@ -571,7 +571,11 @@
                   autocomplete="off"
                   bind:value={startupBackupRetention}
                   oninput={handleStartupBackupRetentionInput}
-                  onkeydown={(e) => e.key === 'Enter' && saveStartupBackupRetention()}
+                  onkeydown={async (e) => {
+                    if (e.key === 'Enter') {
+                      await saveStartupBackupRetention();
+                    }
+                  }}
                   disabled={startupBackupRetentionState === 'loading' || startupBackupRetentionState === 'saving'}
                 />
                 <p class="mt-2 text-xs text-slate-500">Enter a whole number greater than or equal to 0.</p>

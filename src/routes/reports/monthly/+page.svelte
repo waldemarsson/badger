@@ -2,9 +2,11 @@
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import type { MonthlyReportRow } from '$lib/types';
+  import Copy from 'lucide-svelte/icons/copy';
   import ChevronLeft  from 'lucide-svelte/icons/chevron-left';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import ChevronDown  from 'lucide-svelte/icons/chevron-down';
+  import Hash from 'lucide-svelte/icons/hash';
 
   // ── Utilities ──────────────────────────────────────────────────────────
 
@@ -28,6 +30,8 @@
   let month      = $state(now.getMonth() + 1); // 1-based
   let rows       = $state<MonthlyReportRow[]>([]);
   let loading    = $state(false);
+  let copyMessage = $state('');
+  let copyError = $state('');
 
   // Expansion state: Set of customer_ids that are expanded
   // Set is not deeply reactive with $state — use a plain $state wrapper
@@ -93,6 +97,8 @@
     loading = true;
     try {
       rows = await invoke<MonthlyReportRow[]>('monthly_report', { year, month });
+      copyMessage = '';
+      copyError = '';
       // Expand all customers by default on each month load
       expandedCustomers = new Set(rows.map(r => r.customer_id));
       expandedProjects  = new Set();
@@ -136,6 +142,39 @@
     if (next.has(key)) next.delete(key); else next.add(key);
     expandedProjects = next;
   }
+
+  function projectIssueLines(project: ProjectNode): string[] {
+    return project.issues.map((issue) => issue.title);
+  }
+
+  function projectHourLines(project: ProjectNode): string[] {
+    return project.issues.map((issue) => formatHours(issue.hours));
+  }
+
+  async function writeProjectCopy(lines: string[], successMessage: string): Promise<void> {
+    copyError = '';
+    copyMessage = '';
+
+    if (lines.length === 0) {
+      copyError = 'Nothing to copy for this project.';
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(lines.join('\n'));
+      copyMessage = successMessage;
+    } catch {
+      copyError = 'Copy failed.';
+    }
+  }
+
+  async function copyProjectIssues(project: ProjectNode): Promise<void> {
+    await writeProjectCopy(projectIssueLines(project), 'Issues copied.');
+  }
+
+  async function copyProjectHours(project: ProjectNode): Promise<void> {
+    await writeProjectCopy(projectHourLines(project), 'Hours copied.');
+  }
 </script>
 
 <div class="page-shell">
@@ -168,6 +207,16 @@
           {/each}
         </select>
       </div>
+
+      {#if copyMessage}
+        <div class="mx-4 mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+          {copyMessage}
+        </div>
+      {/if}
+
+      {#if copyError}
+        <div class="stack-error mx-4 mt-3">{copyError}</div>
+      {/if}
 
       <div class="table-scroll-region">
         {#if rows.length === 0 && !loading}
@@ -212,17 +261,41 @@
                     <!-- Project row (Level 1) — pl-6 indent -->
                     <tr class="table-row bg-white">
                       <td class="table-cell pl-6">
-                        <button
-                          class="p-1 rounded text-slate-400 hover:text-slate-700 transition mr-1"
-                          onclick={() => toggleProject(customer.id, project.id)}
-                        >
-                          {#if expandedProjects.has(`${customer.id}-${project.id}`)}
-                            <ChevronDown size={14} />
-                          {:else}
-                            <ChevronRight size={14} />
-                          {/if}
-                        </button>
-                        <span class="text-slate-800">{project.name}</span>
+                        <div class="flex items-center gap-2">
+                          <button
+                            class="p-1 rounded text-slate-400 hover:text-slate-700 transition"
+                            onclick={() => toggleProject(customer.id, project.id)}
+                            title={expandedProjects.has(`${customer.id}-${project.id}`) ? 'Collapse project' : 'Expand project'}
+                            aria-label={expandedProjects.has(`${customer.id}-${project.id}`) ? 'Collapse project' : 'Expand project'}
+                          >
+                            {#if expandedProjects.has(`${customer.id}-${project.id}`)}
+                              <ChevronDown size={14} />
+                            {:else}
+                              <ChevronRight size={14} />
+                            {/if}
+                          </button>
+
+                          <span class="text-slate-800">{project.name}</span>
+
+                          <div class="ml-auto flex items-center gap-1">
+                            <button
+                              class="btn-icon-secondary"
+                              onclick={() => void copyProjectIssues(project)}
+                              title="Copy issues"
+                              aria-label="Copy issues"
+                            >
+                              <Copy size={14} />
+                            </button>
+                            <button
+                              class="btn-icon-secondary"
+                              onclick={() => void copyProjectHours(project)}
+                              title="Copy hours"
+                              aria-label="Copy hours"
+                            >
+                              <Hash size={14} />
+                            </button>
+                          </div>
+                        </div>
                       </td>
                       <td class="table-cell text-right text-slate-800">
                         {formatHours(project.hours)}

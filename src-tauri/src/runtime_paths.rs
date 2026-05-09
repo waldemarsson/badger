@@ -55,13 +55,6 @@ mod tests {
             Path::new("/workspace/.timetracker-dev/timetracker.db")
         );
         assert_eq!(log_dir, Path::new("/workspace/.timetracker-dev/logs"));
-        assert_eq!(
-            db_path
-                .parent()
-                .expect("database path should have a parent")
-                .join("backups"),
-            Path::new("/workspace/.timetracker-dev/backups")
-        );
     }
 
     #[test]
@@ -78,13 +71,6 @@ mod tests {
         );
         assert_eq!(log_dir, Path::new("/home/tester/.timetracker/logs"));
         assert_eq!(
-            db_path
-                .parent()
-                .expect("database path should have a parent")
-                .join("backups"),
-            Path::new("/home/tester/.timetracker/backups")
-        );
-        assert_eq!(
             repo_root_from_manifest_dir(manifest_dir),
             Path::new("/workspace")
         );
@@ -97,12 +83,9 @@ mod tests {
 
         let paths = resolve_runtime_paths(home_dir, manifest_dir, false);
 
-        let backup_dir = paths
-            .db_path
-            .parent()
-            .expect("database path should have a parent")
-            .join("backups");
-
-        assert_eq!(backup_dir, Path::new("/home/tester/.timetracker/backups"));
+        assert_eq!(
+            crate::startup_backup::backup_root_dir(&paths.db_path),
+            Path::new("/home/tester/.timetracker/backups")
+        );
     }
 }

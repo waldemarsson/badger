@@ -1,5 +1,12 @@
+function formatLocal(value: Date): string {
+	const year = value.getFullYear();
+	const month = String(value.getMonth() + 1).padStart(2, '0');
+	const day = String(value.getDate()).padStart(2, '0');
+	return `${year}-${month}-${day}`;
+}
+
 export function today(): string {
-	return new Date().toISOString().slice(0, 10);
+	return formatLocal(new Date());
 }
 
 export function getWeekBounds(weekOffset = 0): { start: string; end: string } {
@@ -11,14 +18,12 @@ export function getWeekBounds(weekOffset = 0): { start: string; end: string } {
 	monday.setDate(date.getDate() + diff);
 	const sunday = new Date(monday);
 	sunday.setDate(monday.getDate() + 6);
-	const format = (value: Date) => value.toISOString().slice(0, 10);
-	return { start: format(monday), end: format(sunday) };
+	return { start: formatLocal(monday), end: formatLocal(sunday) };
 }
 
 export function getMonthBounds(monthOffset = 0): { start: string; end: string } {
 	const now = new Date();
 	const first = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
 	const last = new Date(now.getFullYear(), now.getMonth() + monthOffset + 1, 0);
-	const format = (value: Date) => value.toISOString().slice(0, 10);
-	return { start: format(first), end: format(last) };
+	return { start: formatLocal(first), end: formatLocal(last) };
 }

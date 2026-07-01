@@ -1,55 +1,47 @@
 // .devcontainer/devcontainer.json
 {
-  "name": ".NET DevContainer (AI + DinD)",
+  "name": "TimeTracker (Tauri + SvelteKit)",
   "build": {
     "dockerfile": "Dockerfile",
     "context": "..",
   },
   // ======================== Features ========================
   "features": {
-    // Docker-in-Docker — full isolated dockerd.
-    // "moby": true is REQUIRED to avoid TestContainers .NET NullReferenceException.
-    "ghcr.io/devcontainers/features/docker-in-docker:2": {
-      "moby": true,
-      "version": "latest",
-      "enableNonRootDocker": true,
-      "installDockerBuildx": true,
-      "dockerDashComposeVersion": "v2",
+    // Rust toolchain via rustup
+    "ghcr.io/devcontainers/features/rust:1": {
+      "version": "stable",
+      "profile": "default",
     },
-    // Node.js — required runtime for both Claude Code and Copilot CLI
+    // Node.js — SvelteKit frontend + required runtime for Claude Code and Copilot CLI
     "ghcr.io/devcontainers/features/node:1": {
-      "version": "24",
+      "version": "22",
     },
     // Claude Code — Anthropic's AI coding CLI
     "ghcr.io/anthropics/devcontainer-features/claude-code:1": {},
-    // GitHub Copilot CLI — official devcontainers feature
+    // GitHub Copilot CLI
     "ghcr.io/devcontainers/features/copilot-cli:1": {},
-    //"ghcr.io/rocker-org/devcontainer-features/apt-packages:1": {
-    //    "packages": "openssh-server,openjdk-21-jre"
-    //}
   },
   // Node.js must install before Claude Code and Copilot CLI (both npm-based).
-  // DinD last — it hooks the container entrypoint to start dockerd.
+  // Rust first so cargo is available to any subsequent steps.
   "overrideFeatureInstallOrder": [
-    "ghcr.io/rocker-org/devcontainer-features/apt-packages",
+    "ghcr.io/devcontainers/features/rust",
     "ghcr.io/devcontainers/features/node",
     "ghcr.io/anthropics/devcontainer-features/claude-code",
     "ghcr.io/devcontainers/features/copilot-cli",
-    "ghcr.io/devcontainers/features/docker-in-docker",
   ],
-  // ======================== Filesystem Isolation ========================
+  // ======================== Filesystem ========================
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
   "workspaceFolder": "/workspace",
   "mounts": [
-    // Named volumes for caches — persist across rebuilds, no host filesystem exposure
+    // Named volumes for build caches — persist across rebuilds
     {
-      "source": "devcontainer-nuget-${devcontainerId}",
-      "target": "/home/vscode/.nuget",
+      "source": "devcontainer-cargo-${devcontainerId}",
+      "target": "/home/vscode/.cargo/registry",
       "type": "volume",
     },
     {
-      "source": "devcontainer-credprovider-${devcontainerId}",
-      "target": "/home/vscode/.local/share/MicrosoftCredentialProvider",
+      "source": "devcontainer-npm-${devcontainerId}",
+      "target": "/home/vscode/.npm",
       "type": "volume",
     },
     {
@@ -57,61 +49,53 @@
       "target": "/home/vscode/.claude",
       "type": "volume",
     },
-    // Bind-mount the full Copilot state directory so host and container use the
-    // same skills, plugins, config, logs, DBs, and future files without needing
-    // per-subdirectory mounts.
+    // Bind-mount Copilot skills and agents so host and container stay in sync.
     // Run once on your Mac before first open:
-    //   mkdir -p ~/.copilot ~/.agents/skills
+    //   mkdir -p ~/.copilot/skills ~/.copilot/agents ~/.agents/skills
     {
-        "source": "${localEnv:HOME}/.copilot",
-        "target": "/home/vscode/.copilot",
-        "type": "bind"
+      "source": "${localEnv:HOME}/.copilot/skills",
+      "target": "/home/vscode/.copilot/skills",
+      "type": "bind",
     },
     {
-        "source": "${localEnv:HOME}/.agents/skills",
-        "target": "/home/vscode/.agents/skills",
-        "type": "bind"
+      "source": "${localEnv:HOME}/.copilot/agents",
+      "target": "/home/vscode/.copilot/agents",
+      "type": "bind",
     },
-    // Secrets file — bind-mounted read-only so postCreate.sh can distribute
-    // secrets without ever passing them as Docker env vars (-e flags).
     {
-      "source": "${localWorkspaceFolder}/.devcontainer/.env",
-      "target": "/run/secrets/dev.env",
+      "source": "${localEnv:HOME}/.agents/skills",
+      "target": "/home/vscode/.agents/skills",
       "type": "bind",
     },
   ],
   // ======================== Runtime ========================
-  "init": true,
   "remoteUser": "vscode",
   "containerEnv": {
-    "DOTNET_NOLOGO": "true",
-    "DOTNET_CLI_TELEMETRY_OPTOUT": "1",
-    "NUGET_CREDENTIALPROVIDER_SESSIONTOKENCACHE_ENABLED": "true",
     // Claude
     "ANTHROPIC_API_KEY": "${localEnv:ANTHROPIC_API_KEY}",
     "CLAUDE_CONFIG_DIR": "/home/vscode/.claude",
-    // Github Copilot
+    // GitHub Copilot
     "COPILOT_GITHUB_TOKEN": "${localEnv:COPILOT_GITHUB_TOKEN}",
-    // ── Azure PAT (non-interactive) ─────────────────────────────────────
-    // Uncomment and set AZURE_ARTIFACTS_PAT on your Mac to skip device-code login:
-    "ARTIFACTS_CREDENTIALPROVIDER_EXTERNAL_FEED_ENDPOINTS": "{\"endpointCredentials\":[{\"endpoint\":\"https://pkgs.dev.azure.com/roxtecinternational/_packaging/roxtecinternational/nuget/v3/index.json\",\"username\":\"az\",\"password\":\"${localEnv:AZURE_ARTIFACTS_PAT}\"}]}",
   },
   // ======================== VS Code Extensions ========================
   "customizations": {
     "vscode": {
       "extensions": [
-        "GitHub.copilot", // inline suggestions (include during 2025-26 consolidation)
-        "GitHub.copilot-chat", // chat + agents — will absorb inline in 2026
-        "ms-dotnettools.csdevkit",
-        "ms-dotnettools.csharp",
-        "ms-azuretools.vscode-docker",
+        "GitHub.copilot",
+        "GitHub.copilot-chat",
+        "rust-lang.rust-analyzer",
+        "svelte.svelte-vscode",
+        "tauri-apps.tauri-vscode",
+        "bradlc.vscode-tailwindcss",
+        "esbenp.prettier-vscode",
       ],
       "settings": {
-        "dotnet.defaultSolution": "disable",
+        "editor.defaultFormatter": "esbenp.prettier-vscode",
+        "[rust]": {
+          "editor.defaultFormatter": "rust-lang.rust-analyzer",
+        },
+        "rust-analyzer.cargo.buildScripts.enable": true,
       },
-    },
-    "jetbrains": {
-      "backend": "Rider",
     },
   },
   // ======================== Lifecycle ========================

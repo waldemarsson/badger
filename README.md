@@ -11,6 +11,18 @@ npm run dev
 
 The app starts the Vite dev server and launches the Tauri shell against it.
 
+## Install (macOS)
+
+Pre-built `.dmg` releases are published automatically on every push to `main`.
+
+1. Go to the [Releases](../../releases) page and download the latest `.dmg`.
+2. Open the `.dmg` and drag **TimeTracker** into your `Applications` folder.
+3. On first launch, right-click the app and choose **Open**, then **Open**
+   again to bypass Gatekeeper.
+
+The build is arm64-only (Apple Silicon) and unsigned/un-notarized, which is why
+the first-launch step above is required.
+
 Development runs started with `npm run dev` store their SQLite database and logs under repo-local `.timetracker-dev/` so they stay isolated from the live `~/.timetracker/` data used by non-debug builds.
 
 ## Common commands

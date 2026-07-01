@@ -17,11 +17,23 @@ Pre-built `.dmg` releases are published automatically on every push to `main`.
 
 1. Go to the [Releases](../../releases) page and download the latest `.dmg`.
 2. Open the `.dmg` and drag **TimeTracker** into your `Applications` folder.
-3. On first launch, right-click the app and choose **Open**, then **Open**
-   again to bypass Gatekeeper.
+3. On first launch macOS blocks the app because it is unsigned. Remove the
+   Gatekeeper quarantine flag from a terminal:
+
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/TimeTracker.app
+   ```
+
+   Then open the app normally. If macOS still reports the app as "damaged",
+   re-sign it ad-hoc and retry:
+
+   ```bash
+   codesign --force --deep --sign - /Applications/TimeTracker.app
+   xattr -dr com.apple.quarantine /Applications/TimeTracker.app
+   ```
 
 The build is arm64-only (Apple Silicon) and unsigned/un-notarized, which is why
-the first-launch step above is required.
+the quarantine step above is required.
 
 Development runs started with `npm run dev` store their SQLite database and logs under repo-local `.timetracker-dev/` so they stay isolated from the live `~/.timetracker/` data used by non-debug builds.
 

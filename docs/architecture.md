@@ -18,7 +18,8 @@ The main user-facing areas are:
 - `/` — timesheet entry and editing
 - `/todos` — kanban board of standalone todos (drag cards between status columns), optionally linked to an issue
 - `/reports/weekly` — ISO-week report view
-- `/reports/monthly` — month report view with expandable grouping
+- `/reports/monthly` — month report view with expandable grouping, the month's travel, and a copy-month text export
+- `/travel` — month-scoped list of business trips (date, from/to, optional km and kr) with inline add, edit, repeat, and delete
 - `/settings` — customer and project management (cards with inline add, rename, default, and delete), preferences (System/Light/Dark appearance), backup/restore, and dev-only seed tooling
 
 There is also a `/backup` route in the tree, but it is currently still a placeholder while the real backup and restore workflow lives under Settings.
@@ -35,6 +36,7 @@ The backend is organized around command modules:
 - `customers` and `projects` for reference data (names are trimmed and unique case-insensitively: customers globally, projects per customer)
 - `issues` and `time_entries` for core timesheet operations
 - `todos` for standalone todos and their optional issue link
+- `travel` for business trips, listed per month
 - `reports` for weekly and monthly rollups
 - `backup` for JSON export and import
 - `settings` for app preferences (theme) stored in `app_settings`
@@ -86,6 +88,7 @@ The schema is created on startup if it does not exist. The main tables are:
 - `issues`
 - `time_entries`
 - `todos`
+- `travel`
 
 Foreign keys are enabled, and cascading deletes are used to keep related records consistent.
 

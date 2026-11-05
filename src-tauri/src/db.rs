@@ -52,6 +52,15 @@ CREATE TABLE IF NOT EXISTS todos (
     IssueId   INTEGER REFERENCES issues(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS travel (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    Date      TEXT    NOT NULL,
+    FromPlace TEXT    NOT NULL,
+    ToPlace   TEXT    NOT NULL,
+    Km        REAL,
+    Amount    REAL
+);
+
 CREATE TABLE IF NOT EXISTS app_settings (
     Key       TEXT    PRIMARY KEY,
     Value     TEXT    NOT NULL

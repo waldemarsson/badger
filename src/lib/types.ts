@@ -89,3 +89,13 @@ export interface TodoRow {
 	customer_id: number | null;
 	customer_name: string | null;
 }
+
+/** A trip; km and amount (kr) are null when not entered. */
+export interface TravelRow {
+	id: number;
+	date: string; // YYYY-MM-DD
+	from_place: string;
+	to_place: string;
+	km: number | null;
+	amount: number | null;
+}

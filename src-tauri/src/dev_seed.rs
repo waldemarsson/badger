@@ -44,6 +44,27 @@ async fn seed_time_entry(
 }
 
 #[cfg(debug_assertions)]
+async fn seed_trip(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    date: NaiveDate,
+    from_place: &str,
+    to_place: &str,
+    km: Option<f64>,
+    amount: Option<f64>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT INTO travel (Date, FromPlace, ToPlace, Km, Amount) VALUES (?, ?, ?, ?, ?)")
+        .bind(date.format("%Y-%m-%d").to_string())
+        .bind(from_place)
+        .bind(to_place)
+        .bind(km)
+        .bind(amount)
+        .execute(&mut **tx)
+        .await?;
+
+    Ok(())
+}
+
+#[cfg(debug_assertions)]
 pub(crate) async fn seed_test_data_if_empty_with_anchor(
     pool: &Pool<Sqlite>,
     today: NaiveDate,
@@ -210,6 +231,20 @@ pub(crate) async fn seed_test_data_if_empty_with_anchor(
                     "Updated landing page sections, imagery, and copy layout.",
                 )
                 .await?;
+
+                if week_index % 2 == 0 {
+                    seed_trip(
+                        &mut tx,
+                        date,
+                        "Malmö",
+                        "Karlskrona",
+                        Some(500.0),
+                        Some(1300.0),
+                    )
+                    .await?;
+                } else if week_index % 4 == 1 {
+                    seed_trip(&mut tx, date, "Malmö", "Lund", Some(42.5), None).await?;
+                }
             }
             Weekday::Thu => {
                 seed_time_entry(
@@ -303,6 +338,10 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap();
+        let trip_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM travel")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         let defaults: Vec<(String, i64)> = sqlx::query_as(
             "SELECT Name, UseAsDefault FROM customers WHERE UseAsDefault = 1 ORDER BY Name",
         )
@@ -322,6 +361,7 @@ mod tests {
             "expected seeded issues across all projects"
         );
         assert_eq!(entry_count.0, 54, "expected the anchored seed volume");
+        assert_eq!(trip_count.0, 7, "expected seeded trips");
         assert_eq!(
             defaults.len(),
             1,

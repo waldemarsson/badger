@@ -7,3 +7,4 @@ pub mod reports;
 pub mod settings;
 pub mod time_entries;
 pub mod todos;
+pub mod travel;

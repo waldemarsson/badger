@@ -60,6 +60,17 @@ pub struct BackupTodo {
     pub done: bool,
 }
 
+/// A trip record as stored in a backup file.
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+pub struct BackupTravel {
+    pub id: i64,
+    pub date: String,
+    pub from_place: String,
+    pub to_place: String,
+    pub km: Option<f64>,
+    pub amount: Option<f64>,
+}
+
 fn default_todo_status() -> String {
     "not_started".to_string()
 }
@@ -74,6 +85,9 @@ pub struct BackupData {
     /// Absent in backups made before todos existed.
     #[serde(default)]
     pub todos: Vec<BackupTodo>,
+    /// Absent in backups made before travel existed.
+    #[serde(default)]
+    pub travel: Vec<BackupTravel>,
 }
 
 /// Reads all data from the database and serialises it to a JSON string.
@@ -108,12 +122,19 @@ pub async fn inner_backup_data(pool: &Pool<Sqlite>) -> Result<String, AppError> 
     .fetch_all(pool)
     .await?;
 
+    let travel = sqlx::query_as::<_, BackupTravel>(
+        "SELECT id, Date as date, FromPlace as from_place, ToPlace as to_place, Km as km, Amount as amount FROM travel ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await?;
+
     let backup = BackupData {
         customers,
         projects,
         issues,
         time_entries,
         todos,
+        travel,
     };
     serde_json::to_string(&backup).map_err(|e| AppError::Custom(e.to_string()))
 }
@@ -139,6 +160,7 @@ pub async fn inner_restore_data(
             .await?;
         // Todos are not reached by the cascade (their issue link is SET NULL).
         sqlx::query("DELETE FROM todos").execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM travel").execute(&mut *tx).await?;
 
         for c in &data.customers {
             sqlx::query("INSERT INTO customers (id, Name, UseAsDefault) VALUES (?, ?, ?)")
@@ -183,6 +205,7 @@ pub async fn inner_restore_data(
             .await?;
         }
         insert_todos(&data.todos, &mut tx).await?;
+        insert_travel(&data.travel, &mut tx).await?;
     } else if mode == "merge" {
         for c in &data.customers {
             sqlx::query(
@@ -223,6 +246,7 @@ pub async fn inner_restore_data(
                 .await?;
         }
         insert_todos(&data.todos, &mut tx).await?;
+        insert_travel(&data.travel, &mut tx).await?;
     } else {
         return Err(AppError::Custom(format!("Unknown restore mode: {}", mode)));
     }
@@ -248,6 +272,27 @@ async fn insert_todos(
         .bind(&t.due_date)
         .bind(&t.created_at)
         .bind(t.issue_id)
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Upserts trips by id. Travel has no foreign keys, so order does not matter.
+async fn insert_travel(
+    travel: &[BackupTravel],
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+) -> Result<(), AppError> {
+    for t in travel {
+        sqlx::query(
+            "INSERT OR REPLACE INTO travel (id, Date, FromPlace, ToPlace, Km, Amount) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(t.id)
+        .bind(&t.date)
+        .bind(&t.from_place)
+        .bind(&t.to_place)
+        .bind(t.km)
+        .bind(t.amount)
         .execute(&mut **tx)
         .await?;
     }
@@ -350,6 +395,10 @@ mod tests {
             .execute(pool)
             .await
             .unwrap();
+        sqlx::query("INSERT INTO travel (id, Date, FromPlace, ToPlace, Km, Amount) VALUES (1, '2024-01-05', 'Malmö', 'Karlskrona', 500.0, 1300.0), (2, '2024-01-10', 'Lund', 'Ystad', NULL, NULL)")
+            .execute(pool)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -384,6 +433,34 @@ mod tests {
             !json.contains("\"done\":"),
             "legacy flag must not be exported"
         );
+    }
+
+    #[tokio::test]
+    async fn test_backup_restore_roundtrips_travel_in_both_modes() {
+        let pool = crate::test_db().await;
+        seed_test_data(&pool).await;
+        let json = inner_backup_data(&pool).await.expect("backup failed");
+
+        for mode in ["replace", "merge"] {
+            sqlx::query("DELETE FROM travel")
+                .execute(&pool)
+                .await
+                .unwrap();
+            inner_restore_data(mode, &json, &pool)
+                .await
+                .expect("restore failed");
+
+            let result: BackupData =
+                serde_json::from_str(&inner_backup_data(&pool).await.unwrap()).unwrap();
+            assert_eq!(result.travel.len(), 2, "{mode}");
+            let t = &result.travel[0];
+            assert_eq!(
+                (t.date.as_str(), t.from_place.as_str(), t.to_place.as_str()),
+                ("2024-01-05", "Malmö", "Karlskrona")
+            );
+            assert_eq!((t.km, t.amount), (Some(500.0), Some(1300.0)));
+            assert_eq!((result.travel[1].km, result.travel[1].amount), (None, None));
+        }
     }
 
     #[tokio::test]
@@ -440,6 +517,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count.0, 0, "replace clears todos not in the backup");
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM travel")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count.0, 0, "replace clears travel not in the backup");
     }
 
     #[tokio::test]

@@ -75,23 +75,17 @@ Backup export writes a JSON document containing six arrays:
 
 The backup commands preserve record identifiers so a restore can rebuild the same relationships between records.
 
-## Restore modes
+## Restore
 
-The restore workflow supports two modes:
+Restore always overwrites. In one transaction it:
 
-### Merge
+- deletes all customers, which cascades to projects, issues, and time entries
+- clears todos and travel explicitly
+- re-inserts the full backup
 
-- Upserts records from the backup
-- Keeps unrelated existing records that are not present in the import
-- Useful when you want to bring backup data into a database that already contains other records
+Data not in the backup is lost. If the backup file is invalid, nothing is changed.
 
-### Replace
-
-- Deletes all current customer data first
-- Relies on cascading foreign keys to clear projects, issues, and time entries, and clears todos and travel explicitly
-- Re-inserts the full backup afterward
-
-Use replace carefully: it wipes the current dataset before restoring.
+There is no merge mode. It was removed because `INSERT OR REPLACE` deletes and re-inserts rows, which cascaded to local time entries and cleared todo links.
 
 ## Where backup and restore live in the UI
 
@@ -100,7 +94,7 @@ The active backup and restore workflow is currently exposed in the Settings page
 - opens a save dialog for export
 - opens a file picker for import
 - previews record counts before restore
-- lets the user choose merge or replace mode
+- warns that restore replaces all current data
 
 There is also a dedicated `/backup` route in the app, but it is still a placeholder and does not contain the live workflow yet.
 

@@ -67,5 +67,4 @@ Development runs started with `npm run dev` store their SQLite database and logs
 src/              SvelteKit frontend
 src-tauri/        Rust Tauri backend
 assets/           App assets used by the project
-.devcontainer/    Optional containerized development environment
 ```

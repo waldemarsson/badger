@@ -31,7 +31,6 @@ In development, `.timetracker-dev/` lives at the repo root. The database file is
 | `svelte.config.js` | SvelteKit static adapter setup with `index.html` fallback |
 | `.cargo/config.toml` | Forces SQLx offline mode |
 | `eslint.config.js` | Frontend linting rules and ignored generated/backend paths |
-| `.devcontainer/devcontainer.json` | Optional containerized development environment |
 
 ## Build and runtime settings that matter
 
@@ -86,9 +85,3 @@ The retention setting can be configured in the Settings > Backup & Restore tab. 
 ```
 
 That tells Tauri to build with ad-hoc signing rather than expecting a configured signing identity.
-
-## Optional devcontainer configuration
-
-The devcontainer adds an opinionated environment for working inside a container. It includes Node, Docker-in-Docker, Rust tooling, Copilot CLI, and Claude Code integration. It also bind-mounts `.devcontainer/.env` into `/run/secrets/dev.env` so the post-create script can source local secrets without copying them into the repo.
-
-Use this only if you want the container workflow; it is not required for normal project setup.

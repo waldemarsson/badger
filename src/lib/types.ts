@@ -17,7 +17,6 @@ export interface Project {
 export interface Issue {
 	id: number;
 	project_id: number;
-	external_id: string | null;
 	title: string;
 }
 

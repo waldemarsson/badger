@@ -6,7 +6,7 @@ TimeTracker stores its working data in a local SQLite database. The schema is in
 
 - `customers` — top-level client records, including a single default marker
 - `projects` — customer-owned projects, also with a default marker
-- `issues` — project-owned work items with an optional external identifier
+- `issues` — project-owned work items, identified by title
 - `time_entries` — dated hour records linked to issues
 - `todos` — standalone kanban todos (`Status`: not started / in progress / done, ordered by `Position`) with an optional link to an issue
 - `travel` — standalone business trips: date, from/to place, and optional km and amount (kr), stored as NULL when not entered

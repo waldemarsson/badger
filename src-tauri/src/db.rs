@@ -28,7 +28,6 @@ CREATE TABLE IF NOT EXISTS projects (
 CREATE TABLE IF NOT EXISTS issues (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     ProjectId   INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    ExternalId  TEXT,
     Title       TEXT    NOT NULL
 );
 
@@ -89,6 +88,7 @@ pub async fn init_db(db_path: &Path) -> Result<Pool<Sqlite>, sqlx::Error> {
     // raw_sql handles multiple semicolon-separated statements (sqlx 0.8 feature)
     sqlx::raw_sql(SCHEMA_SQL).execute(&pool).await?;
     migrate_todos_status(&pool).await?;
+    migrate_issues_drop_external_id(&pool).await?;
 
     Ok(pool)
 }
@@ -115,6 +115,22 @@ pub async fn migrate_todos_status(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+    Ok(())
+}
+
+/// Drops the unused `issues.ExternalId` column from databases created before it was removed.
+/// Idempotent: does nothing once the column is gone.
+pub async fn migrate_issues_drop_external_id(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
+    let columns: Vec<(String,)> = sqlx::query_as("SELECT name FROM pragma_table_info('issues')")
+        .fetch_all(pool)
+        .await?;
+    if !columns.iter().any(|(name,)| name == "ExternalId") {
+        return Ok(());
+    }
+
+    sqlx::query("ALTER TABLE issues DROP COLUMN ExternalId")
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -184,6 +200,53 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(done_col.0, 0, "Done column must be dropped");
+    }
+
+    #[tokio::test]
+    async fn test_migrate_issues_drops_external_id() {
+        use sqlx::sqlite::SqlitePoolOptions;
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE projects (id INTEGER PRIMARY KEY AUTOINCREMENT);
+             CREATE TABLE issues (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 ProjectId INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                 ExternalId TEXT, Title TEXT NOT NULL);
+             CREATE TABLE time_entries (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 IssueId INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE);
+             INSERT INTO projects (id) VALUES (1);
+             INSERT INTO issues (id, ProjectId, ExternalId, Title) VALUES (1, 1, '42', 'Kept'), (2, 1, NULL, 'Also kept');
+             INSERT INTO time_entries (IssueId) VALUES (1), (2);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        super::migrate_issues_drop_external_id(&pool).await.unwrap();
+        super::migrate_issues_drop_external_id(&pool).await.unwrap(); // idempotent
+
+        let columns: Vec<(String,)> =
+            sqlx::query_as("SELECT name FROM pragma_table_info('issues') ORDER BY cid")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            columns,
+            vec![("id".into(),), ("ProjectId".into(),), ("Title".into(),)]
+        );
+        let rows: Vec<(i64, String)> = sqlx::query_as("SELECT id, Title FROM issues ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(rows, vec![(1, "Kept".into()), (2, "Also kept".into())]);
+        let entries: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM time_entries")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(entries.0, 2, "time entries must survive the migration");
     }
 
     #[tokio::test]

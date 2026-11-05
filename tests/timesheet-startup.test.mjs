@@ -16,7 +16,7 @@ test('loadInitialTimesheetData loads initial entries once and resolves defaults'
 		},
 		listIssues: async (projectId) => {
 			calls.push(['listIssues', projectId]);
-			return [{ id: 100, project_id: projectId, external_id: null, title: 'Issue' }];
+			return [{ id: 100, project_id: projectId, title: 'Issue' }];
 		},
 		listTimeEntries: async (startDate, endDate) => {
 			calls.push(['listTimeEntries', startDate, endDate]);

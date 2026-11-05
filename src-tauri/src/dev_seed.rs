@@ -120,68 +120,54 @@ pub(crate) async fn seed_test_data_if_empty_with_anchor(
     .fetch_one(&mut *tx)
     .await?;
 
-    let planning_issue_id: i64 = sqlx::query_scalar(
-        "INSERT INTO issues (ProjectId, ExternalId, Title) VALUES (?, ?, ?) RETURNING id",
-    )
-    .bind(desktop_project_id)
-    .bind("101")
-    .bind("Backlog triage and sprint planning")
-    .fetch_one(&mut *tx)
-    .await?;
+    let planning_issue_id: i64 =
+        sqlx::query_scalar("INSERT INTO issues (ProjectId, Title) VALUES (?, ?) RETURNING id")
+            .bind(desktop_project_id)
+            .bind("Backlog triage and sprint planning")
+            .fetch_one(&mut *tx)
+            .await?;
 
-    let reporting_issue_id: i64 = sqlx::query_scalar(
-        "INSERT INTO issues (ProjectId, ExternalId, Title) VALUES (?, ?, ?) RETURNING id",
-    )
-    .bind(desktop_project_id)
-    .bind("204")
-    .bind("Weekly and monthly reporting improvements")
-    .fetch_one(&mut *tx)
-    .await?;
+    let reporting_issue_id: i64 =
+        sqlx::query_scalar("INSERT INTO issues (ProjectId, Title) VALUES (?, ?) RETURNING id")
+            .bind(desktop_project_id)
+            .bind("Weekly and monthly reporting improvements")
+            .fetch_one(&mut *tx)
+            .await?;
 
-    let settings_issue_id: i64 = sqlx::query_scalar(
-        "INSERT INTO issues (ProjectId, ExternalId, Title) VALUES (?, ?, ?) RETURNING id",
-    )
-    .bind(desktop_project_id)
-    .bind("233")
-    .bind("Settings polish and QA fixes")
-    .fetch_one(&mut *tx)
-    .await?;
+    let settings_issue_id: i64 =
+        sqlx::query_scalar("INSERT INTO issues (ProjectId, Title) VALUES (?, ?) RETURNING id")
+            .bind(desktop_project_id)
+            .bind("Settings polish and QA fixes")
+            .fetch_one(&mut *tx)
+            .await?;
 
-    let landing_issue_id: i64 = sqlx::query_scalar(
-        "INSERT INTO issues (ProjectId, ExternalId, Title) VALUES (?, ?, ?) RETURNING id",
-    )
-    .bind(marketing_project_id)
-    .bind("12")
-    .bind("Landing page refresh")
-    .fetch_one(&mut *tx)
-    .await?;
+    let landing_issue_id: i64 =
+        sqlx::query_scalar("INSERT INTO issues (ProjectId, Title) VALUES (?, ?) RETURNING id")
+            .bind(marketing_project_id)
+            .bind("Landing page refresh")
+            .fetch_one(&mut *tx)
+            .await?;
 
-    let content_issue_id: i64 = sqlx::query_scalar(
-        "INSERT INTO issues (ProjectId, ExternalId, Title) VALUES (?, ?, ?) RETURNING id",
-    )
-    .bind(marketing_project_id)
-    .bind("28")
-    .bind("Content updates and analytics review")
-    .fetch_one(&mut *tx)
-    .await?;
+    let content_issue_id: i64 =
+        sqlx::query_scalar("INSERT INTO issues (ProjectId, Title) VALUES (?, ?) RETURNING id")
+            .bind(marketing_project_id)
+            .bind("Content updates and analytics review")
+            .fetch_one(&mut *tx)
+            .await?;
 
-    let admin_issue_id: i64 = sqlx::query_scalar(
-        "INSERT INTO issues (ProjectId, ExternalId, Title) VALUES (?, ?, ?) RETURNING id",
-    )
-    .bind(operations_project_id)
-    .bind("7")
-    .bind("Admin workflow cleanup")
-    .fetch_one(&mut *tx)
-    .await?;
+    let admin_issue_id: i64 =
+        sqlx::query_scalar("INSERT INTO issues (ProjectId, Title) VALUES (?, ?) RETURNING id")
+            .bind(operations_project_id)
+            .bind("Admin workflow cleanup")
+            .fetch_one(&mut *tx)
+            .await?;
 
-    let export_issue_id: i64 = sqlx::query_scalar(
-        "INSERT INTO issues (ProjectId, ExternalId, Title) VALUES (?, ?, ?) RETURNING id",
-    )
-    .bind(operations_project_id)
-    .bind("19")
-    .bind("Billing export fixes")
-    .fetch_one(&mut *tx)
-    .await?;
+    let export_issue_id: i64 =
+        sqlx::query_scalar("INSERT INTO issues (ProjectId, Title) VALUES (?, ?) RETURNING id")
+            .bind(operations_project_id)
+            .bind("Billing export fixes")
+            .fetch_one(&mut *tx)
+            .await?;
 
     let start_date = seed_start_date(today);
     let total_days = (today - start_date).num_days();

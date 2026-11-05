@@ -27,7 +27,6 @@ pub struct BackupProject {
 pub struct BackupIssue {
     pub id: i64,
     pub project_id: i64,
-    pub external_id: Option<String>,
     pub title: String,
 }
 
@@ -105,7 +104,7 @@ pub async fn inner_backup_data(pool: &Pool<Sqlite>) -> Result<String, AppError> 
     .await?;
 
     let issues = sqlx::query_as::<_, BackupIssue>(
-        "SELECT id, ProjectId as project_id, ExternalId as external_id, Title as title FROM issues ORDER BY id",
+        "SELECT id, ProjectId as project_id, Title as title FROM issues ORDER BY id",
     )
     .fetch_all(pool)
     .await?;
@@ -177,10 +176,9 @@ pub async fn inner_restore_data(json: &str, pool: &Pool<Sqlite>) -> Result<(), A
         .await?;
     }
     for i in &data.issues {
-        sqlx::query("INSERT INTO issues (id, ProjectId, ExternalId, Title) VALUES (?, ?, ?, ?)")
+        sqlx::query("INSERT INTO issues (id, ProjectId, Title) VALUES (?, ?, ?)")
             .bind(i.id)
             .bind(i.project_id)
-            .bind(&i.external_id)
             .bind(&i.title)
             .execute(&mut *tx)
             .await?;
@@ -328,7 +326,7 @@ mod tests {
             .execute(pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO issues (id, ProjectId, ExternalId, Title) VALUES (1, 1, NULL, 'Test Issue')")
+        sqlx::query("INSERT INTO issues (id, ProjectId, Title) VALUES (1, 1, 'Test Issue')")
             .execute(pool)
             .await
             .unwrap();
@@ -422,6 +420,24 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rows, vec![("done".into(),), ("not_started".into(),)]);
+    }
+
+    #[tokio::test]
+    async fn test_restore_backup_with_legacy_external_id() {
+        let pool = crate::test_db().await;
+        let legacy = r#"{"customers":[{"id":1,"name":"C","use_as_default":false}],
+            "projects":[{"id":1,"customer_id":1,"name":"P","use_as_default":false}],
+            "issues":[{"id":1,"project_id":1,"external_id":"42","title":"Old issue"}],
+            "time_entries":[]}"#;
+
+        inner_restore_data(legacy, &pool)
+            .await
+            .expect("backup with external_id must restore");
+
+        let result: BackupData =
+            serde_json::from_str(&inner_backup_data(&pool).await.unwrap()).unwrap();
+        assert_eq!(result.issues.len(), 1);
+        assert_eq!(result.issues[0].title, "Old issue");
     }
 
     #[tokio::test]

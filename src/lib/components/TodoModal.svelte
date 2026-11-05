@@ -134,7 +134,7 @@
 			return;
 		}
 		try {
-			// Reuses an existing issue with this title (or external id), otherwise creates it.
+			// Reuses an existing issue with this title, otherwise creates it.
 			current = await invoke<TodoRow>('create_issue_for_todo', {
 				todoId: current.id,
 				projectId: parseInt(projectId),

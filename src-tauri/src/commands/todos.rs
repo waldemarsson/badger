@@ -235,7 +235,7 @@ pub async fn inner_delete_todo(id: i64, pool: &Pool<Sqlite>) -> Result<(), AppEr
     Ok(())
 }
 
-/// Creates (or reuses a same-title / same-ExternalId) issue in `project_id` and links the todo.
+/// Creates (or reuses a same-title) issue in `project_id` and links the todo.
 pub async fn inner_create_issue_for_todo(
     todo_id: i64,
     project_id: i64,

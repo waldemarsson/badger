@@ -231,7 +231,7 @@ mod tests {
         assert_eq!(entry.issue_title, "New Issue");
         assert_eq!(entry.project_id, project_id);
 
-        // Issue must have been auto-created (Path 4 of inner_resolve_issue)
+        // Issue must have been auto-created (New path of inner_resolve_issue)
         let issues = inner_list_issues(project_id, &pool).await.unwrap();
         assert_eq!(issues.len(), 1, "issue must be auto-created");
         assert_eq!(issues[0].title, "New Issue");

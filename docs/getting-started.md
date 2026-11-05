@@ -6,8 +6,6 @@
 - Rust stable with Cargo for the Tauri backend
 - macOS if you want to run the packaged desktop app outside a container
 
-The repository also includes an optional `.devcontainer/` setup for containerized development, but normal local development only needs Node and Rust.
-
 ## First-time setup
 
 Install JavaScript dependencies from the repo root:
@@ -63,7 +61,3 @@ make install
 ```
 
 `make install` expects the app bundle to exist already and copies it into `/Applications` after removing the previous installed copy.
-
-## Optional devcontainer workflow
-
-The `.devcontainer/` setup is meant for a preconfigured environment with Docker-in-Docker, Copilot CLI, Claude Code, Node, and Rust. Use it when you want a repeatable container setup, but it is not required to work on the app itself.

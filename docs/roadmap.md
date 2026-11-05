@@ -1,20 +1,12 @@
 # Roadmap
 
-Planned work, in no particular order.
+Planned work, in priority order.
 
-## Rewrite restore
+## 1. Edit customers and projects
 
-Rewrite backup restore, possibly removing merge mode for simplicity.
+## 2. Dark mode
 
-Context: merge mode uses `INSERT OR REPLACE`, which deletes and re-inserts each issue from the backup. That cascades to local time entries on those issues and clears links on local todos.
-
-## Dark mode
-
-## Agent instructions
-
-Instructions for coding agents covering Tauri, Svelte, UI/UX, and similar.
-
-## Travel
+## 3. Travel
 
 ### Page to manage travel
 
@@ -48,12 +40,16 @@ Travel:
 500 km - 1300 kr
 ```
 
-## Today / overview / start page
+## 4. Rewrite restore
 
-## Due reminders on todos
+Rewrite backup restore, possibly removing merge mode for simplicity.
 
-## Quick add / command palette
+Context: merge mode uses `INSERT OR REPLACE`, which deletes and re-inserts each issue from the backup. That cascades to local time entries on those issues and clears links on local todos.
+
+## 5. Today / overview / start page
+
+## 6. Due reminders on todos
+
+## 7. Quick add / command palette
 
 Quick add for todos and time entries.
-
-## Edit customers and projects

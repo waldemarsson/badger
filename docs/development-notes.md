@@ -38,17 +38,6 @@ The seed workflow populates sample customers, projects, issues, and time entries
 - Backup export/import also stays in Rust so file access and SQLite writes remain on the native side
 - The Settings page currently contains the active backup/restore UI even though a `/backup` route still exists as a placeholder
 
-## Devcontainer notes
-
-The repository's `.devcontainer/` setup is opinionated. It prepares:
-
-- Docker-in-Docker
-- Node and Rust tooling
-- Copilot CLI and Claude Code
-- a post-create script that sources secrets from `/run/secrets/dev.env`
-
-That environment is useful when you want a prebuilt contributor setup, but it is optional. Standard local development still revolves around `npm install`, `npm run dev`, and the Cargo checks listed in [Getting started](getting-started.md).
-
 ## Formatting and lint split
 
 Frontend formatting and linting are handled by the Node toolchain, while Rust quality checks are handled by Cargo commands. `eslint.config.js` explicitly ignores generated directories and the Rust backend tree, so JavaScript linting expectations stop at the frontend boundary.

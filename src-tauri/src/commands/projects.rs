@@ -1,4 +1,5 @@
 // src-tauri/src/commands/projects.rs
+use crate::commands::customers::{clean_name, is_duplicate};
 use crate::AppError;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Pool, Sqlite};
@@ -11,6 +12,27 @@ pub struct Project {
     pub customer_id: i64,
     pub name: String,
     pub use_as_default: bool,
+}
+
+/// Fails if another project of `customer_id` (other than `exclude_id`) already has this name.
+async fn ensure_unique(
+    customer_id: i64,
+    name: &str,
+    exclude_id: i64,
+    pool: &Pool<Sqlite>,
+) -> Result<(), AppError> {
+    let names: Vec<String> =
+        sqlx::query_scalar("SELECT Name FROM projects WHERE CustomerId = ? AND id != ?")
+            .bind(customer_id)
+            .bind(exclude_id)
+            .fetch_all(pool)
+            .await?;
+    if is_duplicate(name, &names) {
+        return Err(AppError::Custom(format!(
+            "A project named {name} already exists"
+        )));
+    }
+    Ok(())
 }
 
 // ── Inner functions (testable without a Tauri app) ────────────────────────────
@@ -36,12 +58,37 @@ pub async fn inner_create_project(
     name: &str,
     pool: &Pool<Sqlite>,
 ) -> Result<Project, AppError> {
+    let name = clean_name(name)?;
+    ensure_unique(customer_id, &name, 0, pool).await?;
     let row = sqlx::query_as::<_, Project>(
         "INSERT INTO projects (CustomerId, Name, UseAsDefault) VALUES (?, ?, 0) \
          RETURNING id, CustomerId as customer_id, Name as name, UseAsDefault as use_as_default",
     )
     .bind(customer_id)
     .bind(name)
+    .fetch_one(pool)
+    .await?;
+    Ok(row)
+}
+
+pub async fn inner_update_project(
+    id: i64,
+    name: &str,
+    pool: &Pool<Sqlite>,
+) -> Result<Project, AppError> {
+    let name = clean_name(name)?;
+    let customer_id: i64 = sqlx::query_scalar("SELECT CustomerId FROM projects WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| AppError::Custom("Project not found".to_string()))?;
+    ensure_unique(customer_id, &name, id, pool).await?;
+    let row = sqlx::query_as::<_, Project>(
+        "UPDATE projects SET Name = ? WHERE id = ? \
+         RETURNING id, CustomerId as customer_id, Name as name, UseAsDefault as use_as_default",
+    )
+    .bind(name)
+    .bind(id)
     .fetch_one(pool)
     .await?;
     Ok(row)
@@ -116,6 +163,15 @@ pub async fn create_project(
     pool: State<'_, Pool<Sqlite>>,
 ) -> Result<Project, AppError> {
     inner_create_project(customer_id, &name, pool.inner()).await
+}
+
+#[tauri::command]
+pub async fn update_project(
+    id: i64,
+    name: String,
+    pool: State<'_, Pool<Sqlite>>,
+) -> Result<Project, AppError> {
+    inner_update_project(id, &name, pool.inner()).await
 }
 
 #[tauri::command]
@@ -247,5 +303,61 @@ mod tests {
         crate::commands::customers::inner_delete_customer(customer.id, &pool)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_create_project_validates_name() {
+        let pool = crate::test_db().await;
+
+        let c1 = inner_create_customer("Acme", &pool).await.unwrap();
+        let c2 = inner_create_customer("Beta", &pool).await.unwrap();
+
+        let p = inner_create_project(c1.id, " Web ", &pool).await.unwrap();
+        assert_eq!(p.name, "Web", "name is stored trimmed");
+
+        let err = inner_create_project(c1.id, "\t", &pool).await.unwrap_err();
+        assert_eq!(err.to_string(), "Name is required");
+
+        let err = inner_create_project(c1.id, "WEB", &pool).await.unwrap_err();
+        assert_eq!(err.to_string(), "A project named WEB already exists");
+
+        // Same name under another customer is fine
+        inner_create_project(c2.id, "Web", &pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_update_project() {
+        let pool = crate::test_db().await;
+
+        let c1 = inner_create_customer("Acme", &pool).await.unwrap();
+        let c2 = inner_create_customer("Beta", &pool).await.unwrap();
+        let web = inner_create_project(c1.id, "Web", &pool).await.unwrap();
+        inner_create_project(c1.id, "App", &pool).await.unwrap();
+        inner_create_project(c2.id, "Portal", &pool).await.unwrap();
+
+        let renamed = inner_update_project(web.id, " Portal ", &pool)
+            .await
+            .unwrap();
+        assert_eq!(renamed.id, web.id);
+        assert_eq!(renamed.customer_id, c1.id);
+        assert_eq!(
+            renamed.name, "Portal",
+            "other customer's project name is allowed"
+        );
+
+        inner_update_project(web.id, "portal", &pool).await.unwrap();
+
+        let err = inner_update_project(web.id, "app", &pool)
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "A project named app already exists");
+
+        let err = inner_update_project(web.id, " ", &pool).await.unwrap_err();
+        assert_eq!(err.to_string(), "Name is required");
+
+        let err = inner_update_project(9999, "Ghost", &pool)
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "Project not found");
     }
 }

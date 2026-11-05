@@ -318,6 +318,35 @@
     @apply text-xs text-slate-500 uppercase tracking-[0.14em];
   }
 
+  /* Customers & Projects cards */
+  .entity-card {
+    @apply flex flex-col rounded-2xl bg-white shadow-sm ring-1 ring-slate-200 transition hover:shadow-md;
+  }
+
+  .entity-row {
+    @apply flex min-h-9 items-center gap-2 rounded-lg px-2 py-1 transition hover:bg-slate-50;
+  }
+
+  .row-actions {
+    @apply flex shrink-0 items-center gap-0.5 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100;
+  }
+
+  .btn-icon-ghost {
+    @apply inline-flex items-center justify-center rounded-md p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-300;
+  }
+
+  .btn-icon-ghost-danger {
+    @apply inline-flex items-center justify-center rounded-md p-1.5 text-slate-400 transition hover:bg-red-50 hover:text-red-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-200;
+  }
+
+  .name-input {
+    @apply w-full rounded-lg border border-slate-300 bg-white px-2 py-1 text-sm text-slate-950 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-sky-400 focus:ring-2 focus:ring-sky-100;
+  }
+
+  .name-input-error {
+    @apply border-red-300 focus:border-red-400 focus:ring-red-100;
+  }
+
   .badge {
     @apply rounded-full bg-slate-950 px-2.5 py-1 text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-white;
   }

@@ -126,11 +126,13 @@ pub fn run() {
                     // Customers (BE-06, BE-08)
                     commands::customers::list_customers,
                     commands::customers::create_customer,
+                    commands::customers::update_customer,
                     commands::customers::delete_customer,
                     commands::customers::set_default_customer,
                     // Projects (BE-06, BE-08)
                     commands::projects::list_projects,
                     commands::projects::create_project,
+                    commands::projects::update_project,
                     commands::projects::delete_project,
                     commands::projects::set_default_project,
                     // Issues (BE-04)
@@ -169,11 +171,13 @@ pub fn run() {
                     // Customers (BE-06, BE-08)
                     commands::customers::list_customers,
                     commands::customers::create_customer,
+                    commands::customers::update_customer,
                     commands::customers::delete_customer,
                     commands::customers::set_default_customer,
                     // Projects (BE-06, BE-08)
                     commands::projects::list_projects,
                     commands::projects::create_project,
+                    commands::projects::update_project,
                     commands::projects::delete_project,
                     commands::projects::set_default_project,
                     // Issues (BE-04)

@@ -2,11 +2,9 @@
 
 Planned work, in priority order.
 
-## 1. Edit customers and projects
+## 1. Dark mode
 
-## 2. Dark mode
-
-## 3. Travel
+## 2. Travel
 
 ### Page to manage travel
 
@@ -40,6 +38,10 @@ Travel:
 500 km - 1300 kr
 ```
 
+## 3. Migrate to SvelteKit 3
+
+Upgrade `@sveltejs/kit` 2 → 3. Its peer dependencies require Vite 8, `@sveltejs/vite-plugin-svelte` 7, `@sveltejs/adapter-static` 4, and Svelte ^5.57.1. Include the `$app/stores` → `$app/state` migration.
+
 ## 4. Rewrite restore
 
 Rewrite backup restore, possibly removing merge mode for simplicity.
@@ -53,3 +55,7 @@ Context: merge mode uses `INSERT OR REPLACE`, which deletes and re-inserts each 
 ## 7. Quick add / command palette
 
 Quick add for todos and time entries.
+
+## Done
+
+- Edit customers and projects — inline rename with name validation, and a grouped-card layout in Settings

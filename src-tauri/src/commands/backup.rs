@@ -139,130 +139,79 @@ pub async fn inner_backup_data(pool: &Pool<Sqlite>) -> Result<String, AppError> 
     serde_json::to_string(&backup).map_err(|e| AppError::Custom(e.to_string()))
 }
 
-/// Applies a JSON backup string to the database in either `replace` or `merge` mode.
+/// Replaces all data with the contents of a JSON backup.
 ///
-/// - `replace`: deletes all existing data (cascades via FK) then re-inserts from backup.
-/// - `merge`: upserts records from backup without deleting unrelated existing data.
-pub async fn inner_restore_data(
-    mode: &str,
-    json: &str,
-    pool: &Pool<Sqlite>,
-) -> Result<(), AppError> {
+/// Deletes everything first (customers cascade via FK; todos and travel are
+/// cleared explicitly), then re-inserts the backup in one transaction.
+pub async fn inner_restore_data(json: &str, pool: &Pool<Sqlite>) -> Result<(), AppError> {
     let data: BackupData = serde_json::from_str(json)
         .map_err(|e| AppError::Custom(format!("Invalid backup JSON: {}", e)))?;
 
     let mut tx = pool.begin().await?;
 
-    if mode == "replace" {
-        // Single delete cascades to projects → issues → time_entries via ON DELETE CASCADE.
-        sqlx::query("DELETE FROM customers")
-            .execute(&mut *tx)
-            .await?;
-        // Todos are not reached by the cascade (their issue link is SET NULL).
-        sqlx::query("DELETE FROM todos").execute(&mut *tx).await?;
-        sqlx::query("DELETE FROM travel").execute(&mut *tx).await?;
+    // Single delete cascades to projects → issues → time_entries via ON DELETE CASCADE.
+    sqlx::query("DELETE FROM customers")
+        .execute(&mut *tx)
+        .await?;
+    // Todos are not reached by the cascade (their issue link is SET NULL).
+    sqlx::query("DELETE FROM todos").execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM travel").execute(&mut *tx).await?;
 
-        for c in &data.customers {
-            sqlx::query("INSERT INTO customers (id, Name, UseAsDefault) VALUES (?, ?, ?)")
-                .bind(c.id)
-                .bind(&c.name)
-                .bind(c.use_as_default)
-                .execute(&mut *tx)
-                .await?;
-        }
-        for p in &data.projects {
-            sqlx::query(
-                "INSERT INTO projects (id, CustomerId, Name, UseAsDefault) VALUES (?, ?, ?, ?)",
-            )
-            .bind(p.id)
-            .bind(p.customer_id)
-            .bind(&p.name)
-            .bind(p.use_as_default)
+    for c in &data.customers {
+        sqlx::query("INSERT INTO customers (id, Name, UseAsDefault) VALUES (?, ?, ?)")
+            .bind(c.id)
+            .bind(&c.name)
+            .bind(c.use_as_default)
             .execute(&mut *tx)
             .await?;
-        }
-        for i in &data.issues {
-            sqlx::query(
-                "INSERT INTO issues (id, ProjectId, ExternalId, Title) VALUES (?, ?, ?, ?)",
-            )
+    }
+    for p in &data.projects {
+        sqlx::query(
+            "INSERT INTO projects (id, CustomerId, Name, UseAsDefault) VALUES (?, ?, ?, ?)",
+        )
+        .bind(p.id)
+        .bind(p.customer_id)
+        .bind(&p.name)
+        .bind(p.use_as_default)
+        .execute(&mut *tx)
+        .await?;
+    }
+    for i in &data.issues {
+        sqlx::query("INSERT INTO issues (id, ProjectId, ExternalId, Title) VALUES (?, ?, ?, ?)")
             .bind(i.id)
             .bind(i.project_id)
             .bind(&i.external_id)
             .bind(&i.title)
             .execute(&mut *tx)
             .await?;
-        }
-        for e in &data.time_entries {
-            sqlx::query(
-                "INSERT INTO time_entries (id, IssueId, Date, Hours, Notes) VALUES (?, ?, ?, ?, ?)",
-            )
-            .bind(e.id)
-            .bind(e.issue_id)
-            .bind(&e.date)
-            .bind(e.hours)
-            .bind(&e.notes)
-            .execute(&mut *tx)
-            .await?;
-        }
-        insert_todos(&data.todos, &mut tx).await?;
-        insert_travel(&data.travel, &mut tx).await?;
-    } else if mode == "merge" {
-        for c in &data.customers {
-            sqlx::query(
-                "INSERT OR REPLACE INTO customers (id, Name, UseAsDefault) VALUES (?, ?, ?)",
-            )
-            .bind(c.id)
-            .bind(&c.name)
-            .bind(c.use_as_default)
-            .execute(&mut *tx)
-            .await?;
-        }
-        for p in &data.projects {
-            sqlx::query("INSERT OR REPLACE INTO projects (id, CustomerId, Name, UseAsDefault) VALUES (?, ?, ?, ?)")
-                .bind(p.id)
-                .bind(p.customer_id)
-                .bind(&p.name)
-                .bind(p.use_as_default)
-                .execute(&mut *tx)
-                .await?;
-        }
-        for i in &data.issues {
-            sqlx::query("INSERT OR REPLACE INTO issues (id, ProjectId, ExternalId, Title) VALUES (?, ?, ?, ?)")
-                .bind(i.id)
-                .bind(i.project_id)
-                .bind(&i.external_id)
-                .bind(&i.title)
-                .execute(&mut *tx)
-                .await?;
-        }
-        for e in &data.time_entries {
-            sqlx::query("INSERT OR REPLACE INTO time_entries (id, IssueId, Date, Hours, Notes) VALUES (?, ?, ?, ?, ?)")
-                .bind(e.id)
-                .bind(e.issue_id)
-                .bind(&e.date)
-                .bind(e.hours)
-                .bind(&e.notes)
-                .execute(&mut *tx)
-                .await?;
-        }
-        insert_todos(&data.todos, &mut tx).await?;
-        insert_travel(&data.travel, &mut tx).await?;
-    } else {
-        return Err(AppError::Custom(format!("Unknown restore mode: {}", mode)));
     }
+    for e in &data.time_entries {
+        sqlx::query(
+            "INSERT INTO time_entries (id, IssueId, Date, Hours, Notes) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(e.id)
+        .bind(e.issue_id)
+        .bind(&e.date)
+        .bind(e.hours)
+        .bind(&e.notes)
+        .execute(&mut *tx)
+        .await?;
+    }
+    insert_todos(&data.todos, &mut tx).await?;
+    insert_travel(&data.travel, &mut tx).await?;
 
     tx.commit().await?;
     Ok(())
 }
 
-/// Upserts todos by id. Runs after issues so `IssueId` references resolve.
+/// Inserts todos. Runs after issues so `IssueId` references resolve.
 async fn insert_todos(
     todos: &[BackupTodo],
     tx: &mut sqlx::Transaction<'_, Sqlite>,
 ) -> Result<(), AppError> {
     for t in todos {
         sqlx::query(
-            "INSERT OR REPLACE INTO todos (id, Title, Notes, Status, Position, DueDate, CreatedAt, IssueId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO todos (id, Title, Notes, Status, Position, DueDate, CreatedAt, IssueId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(t.id)
         .bind(&t.title)
@@ -278,14 +227,14 @@ async fn insert_todos(
     Ok(())
 }
 
-/// Upserts trips by id. Travel has no foreign keys, so order does not matter.
+/// Inserts trips. Travel has no foreign keys, so order does not matter.
 async fn insert_travel(
     travel: &[BackupTravel],
     tx: &mut sqlx::Transaction<'_, Sqlite>,
 ) -> Result<(), AppError> {
     for t in travel {
         sqlx::query(
-            "INSERT OR REPLACE INTO travel (id, Date, FromPlace, ToPlace, Km, Amount) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO travel (id, Date, FromPlace, ToPlace, Km, Amount) VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(t.id)
         .bind(&t.date)
@@ -317,14 +266,10 @@ pub async fn read_backup_file(path: String) -> Result<String, AppError> {
     Ok(content)
 }
 
-/// Applies a JSON backup to the database in the given mode (`replace` or `merge`).
+/// Replaces all data with the contents of a JSON backup.
 #[tauri::command]
-pub async fn restore_data(
-    mode: String,
-    json: String,
-    pool: State<'_, Pool<Sqlite>>,
-) -> Result<(), AppError> {
-    inner_restore_data(&mode, &json, &pool).await
+pub async fn restore_data(json: String, pool: State<'_, Pool<Sqlite>>) -> Result<(), AppError> {
+    inner_restore_data(&json, &pool).await
 }
 
 /// Reads the startup backup retention setting from the database.
@@ -408,7 +353,7 @@ mod tests {
 
         let json = inner_backup_data(&pool).await.expect("backup failed");
 
-        inner_restore_data("replace", &json, &pool)
+        inner_restore_data(&json, &pool)
             .await
             .expect("restore failed");
 
@@ -436,31 +381,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_backup_restore_roundtrips_travel_in_both_modes() {
+    async fn test_backup_restore_roundtrips_travel() {
         let pool = crate::test_db().await;
         seed_test_data(&pool).await;
         let json = inner_backup_data(&pool).await.expect("backup failed");
 
-        for mode in ["replace", "merge"] {
-            sqlx::query("DELETE FROM travel")
-                .execute(&pool)
-                .await
-                .unwrap();
-            inner_restore_data(mode, &json, &pool)
-                .await
-                .expect("restore failed");
+        sqlx::query("DELETE FROM travel")
+            .execute(&pool)
+            .await
+            .unwrap();
+        inner_restore_data(&json, &pool)
+            .await
+            .expect("restore failed");
 
-            let result: BackupData =
-                serde_json::from_str(&inner_backup_data(&pool).await.unwrap()).unwrap();
-            assert_eq!(result.travel.len(), 2, "{mode}");
-            let t = &result.travel[0];
-            assert_eq!(
-                (t.date.as_str(), t.from_place.as_str(), t.to_place.as_str()),
-                ("2024-01-05", "Malmö", "Karlskrona")
-            );
-            assert_eq!((t.km, t.amount), (Some(500.0), Some(1300.0)));
-            assert_eq!((result.travel[1].km, result.travel[1].amount), (None, None));
-        }
+        let result: BackupData =
+            serde_json::from_str(&inner_backup_data(&pool).await.unwrap()).unwrap();
+        assert_eq!(result.travel.len(), 2);
+        let t = &result.travel[0];
+        assert_eq!(
+            (t.date.as_str(), t.from_place.as_str(), t.to_place.as_str()),
+            ("2024-01-05", "Malmö", "Karlskrona")
+        );
+        assert_eq!((t.km, t.amount), (Some(500.0), Some(1300.0)));
+        assert_eq!((result.travel[1].km, result.travel[1].amount), (None, None));
     }
 
     #[tokio::test]
@@ -470,7 +413,7 @@ mod tests {
             "todos":[{"id":1,"title":"Old","notes":null,"done":true,"due_date":null,"created_at":"x","issue_id":null},
                      {"id":2,"title":"Open","notes":null,"done":false,"due_date":null,"created_at":"x","issue_id":null}]}"#;
 
-        inner_restore_data("replace", legacy, &pool)
+        inner_restore_data(legacy, &pool)
             .await
             .expect("legacy todos must restore");
 
@@ -482,33 +425,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_restore_merge_roundtrips_todos() {
-        let pool = crate::test_db().await;
-        seed_test_data(&pool).await;
-        let json = inner_backup_data(&pool).await.expect("backup failed");
-
-        sqlx::query("DELETE FROM todos")
-            .execute(&pool)
-            .await
-            .unwrap();
-        inner_restore_data("merge", &json, &pool)
-            .await
-            .expect("merge restore failed");
-
-        let result: BackupData =
-            serde_json::from_str(&inner_backup_data(&pool).await.unwrap()).unwrap();
-        assert_eq!(result.todos.len(), 2);
-        assert_eq!(result.todos[0].title, "Linked");
-        assert_eq!(result.todos[0].issue_id, Some(1));
-    }
-
-    #[tokio::test]
     async fn test_restore_backup_without_todos_field() {
         let pool = crate::test_db().await;
         seed_test_data(&pool).await;
         let legacy = r#"{"customers":[{"id":1,"name":"C","use_as_default":false}],"projects":[],"issues":[],"time_entries":[]}"#;
 
-        inner_restore_data("replace", legacy, &pool)
+        inner_restore_data(legacy, &pool)
             .await
             .expect("legacy backup must restore");
 
@@ -525,27 +447,51 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_backup_restore_merge_keeps_existing() {
+    async fn test_restore_overwrites_existing_data() {
         let pool = crate::test_db().await;
         seed_test_data(&pool).await;
-
         let json = inner_backup_data(&pool).await.expect("backup failed");
 
-        // Add extra record not in the backup
-        sqlx::query("INSERT INTO customers (Name, UseAsDefault) VALUES ('Extra Co', 0)")
+        sqlx::query("INSERT INTO customers (id, Name, UseAsDefault) VALUES (2, 'Extra Co', 0)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE customers SET Name = 'Renamed' WHERE id = 1")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO time_entries (id, IssueId, Date, Hours, Notes) VALUES (2, 1, '2024-01-02', 1.0, NULL)")
             .execute(&pool)
             .await
             .unwrap();
 
-        inner_restore_data("merge", &json, &pool)
+        inner_restore_data(&json, &pool)
             .await
-            .expect("merge restore failed");
+            .expect("restore failed");
+
+        let result: BackupData =
+            serde_json::from_str(&inner_backup_data(&pool).await.unwrap()).unwrap();
+        let customers: Vec<_> = result.customers.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(customers, vec!["Test Co"]);
+        let entries: Vec<_> = result.time_entries.iter().map(|e| e.id).collect();
+        assert_eq!(entries, vec![1]);
+        assert_eq!(result.todos.len(), 2);
+        assert_eq!(result.todos[0].issue_id, Some(1));
+    }
+
+    #[tokio::test]
+    async fn test_restore_invalid_json_keeps_data() {
+        let pool = crate::test_db().await;
+        seed_test_data(&pool).await;
+
+        let err = inner_restore_data("not json", &pool).await.unwrap_err();
+        assert!(err.to_string().starts_with("Invalid backup JSON"));
 
         let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM customers")
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(count.0, 2, "merge should preserve existing records");
+        assert_eq!(count.0, 1);
     }
 
     #[tokio::test]

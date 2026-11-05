@@ -59,12 +59,10 @@
 
   // ── Restore state ─────────────────────────────────────────────────────────────
   type RestorePreview = { customers: number; projects: number; issues: number; time_entries: number };
-  type RestoreMode    = 'replace' | 'merge';
 
   let restoreFileName   = $state<string>('');
   let restoreJsonText   = $state<string>('');
   let restorePreview    = $state<RestorePreview | null>(null);
-  let restoreMode       = $state<RestoreMode>('merge');
   let restoreParseError = $state('');
   let restoreState      = $state<'idle' | 'preview' | 'restoring' | 'success' | 'error'>('idle');
   let restoreError      = $state('');
@@ -214,7 +212,6 @@
       restoreJsonText  = json;
       restorePreview   = preview;
       restoreState     = 'preview';
-      restoreMode      = 'merge';
     } catch (e) {
       restoreParseError = String(e);
     }
@@ -233,7 +230,7 @@
     restoreState = 'restoring';
     restoreError = '';
     try {
-      await invoke<void>('restore_data', { mode: restoreMode, json: restoreJsonText });
+      await invoke<void>('restore_data', { json: restoreJsonText });
       restoreState = 'success';
     } catch (e) {
       restoreError = String(e);
@@ -453,7 +450,7 @@
         <section class="panel-card space-y-4">
           <div>
             <h2 class="panel-title">Restore</h2>
-            <p class="panel-copy">Import a backup file to restore your data. Preview the contents before choosing how to apply it.</p>
+            <p class="panel-copy">Import a backup file to restore your data. Preview the contents before replacing your current data.</p>
           </div>
 
           {#if restoreState === 'success'}
@@ -510,34 +507,12 @@
                 </div>
               {/if}
 
-              <div>
-                <p class="form-label mb-2">Restore Mode</p>
-                <div class="flex gap-4">
-                  <label class="list-card {restoreMode === 'merge' ? 'list-card-selected' : ''} flex-1 cursor-pointer">
-                    <input type="radio" name="restoreMode" value="merge" class="sr-only"
-                      checked={restoreMode === 'merge'}
-                      onchange={() => restoreMode = 'merge'} />
-                    <p class="font-semibold text-sm text-slate-950 dark:text-neutral-100">Merge</p>
-                    <p class="text-xs text-slate-500 dark:text-neutral-400 mt-1">Adds missing records. Existing data is kept.</p>
-                  </label>
-                  <label class="list-card {restoreMode === 'replace' ? 'list-card-selected' : ''} flex-1 cursor-pointer">
-                    <input type="radio" name="restoreMode" value="replace" class="sr-only"
-                      checked={restoreMode === 'replace'}
-                      onchange={() => restoreMode = 'replace'} />
-                    <p class="font-semibold text-sm text-slate-950 dark:text-neutral-100">Replace</p>
-                    <p class="text-xs text-slate-500 dark:text-neutral-400 mt-1">Wipes all data and restores from backup.</p>
-                  </label>
-                </div>
+              <div class="alert-panel alert-warning">
+                <p class="alert-warning-copy">⚠ This will permanently delete all current data — customers, projects, issues, time entries, todos, and travel — and replace it with the backup.</p>
               </div>
 
-              {#if restoreMode === 'replace'}
-                <div class="alert-panel alert-warning">
-                  <p class="alert-warning-copy">⚠ This will permanently delete all customers, projects, issues, and time entries before restoring from the backup file.</p>
-                </div>
-              {/if}
-
               <button
-                class={restoreMode === 'replace' ? 'btn-danger' : 'btn-primary'}
+                class="btn-danger"
                 onclick={executeRestore}
                 disabled={restoreState === 'restoring'}
               >

@@ -14,6 +14,7 @@
     { href: '/todos', label: 'Todos' },
     { href: '/reports/weekly', label: 'Weekly' },
     { href: '/reports/monthly', label: 'Monthly' },
+    { href: '/travel', label: 'Travel' },
     { href: '/settings', label: 'Settings' },
   ] as const;
 

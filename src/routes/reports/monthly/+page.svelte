@@ -1,24 +1,19 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import type { MonthlyReportRow } from '$lib/types';
+  import { resolve } from '$app/paths';
+  import type { MonthlyReportRow, TravelRow } from '$lib/types';
+  import { MONTH_NAMES, formatNumber, monthReportText, tripTotals } from '$lib/travel';
+  import MonthNav from '$lib/components/MonthNav.svelte';
   import Copy from 'lucide-svelte/icons/copy';
-  import ChevronLeft  from 'lucide-svelte/icons/chevron-left';
+  import ClipboardList from 'lucide-svelte/icons/clipboard-list';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import ChevronDown  from 'lucide-svelte/icons/chevron-down';
   import Hash from 'lucide-svelte/icons/hash';
 
   // ── Utilities ──────────────────────────────────────────────────────────
 
-  function formatHours(h: number): string {
-    const r = Math.round(h * 10000) / 10000;
-    return Number.isInteger(r) ? String(Math.round(r)) : String(r);
-  }
-
-  const MONTH_NAMES = [
-    'January','February','March','April','May','June',
-    'July','August','September','October','November','December',
-  ];
+  const formatHours = formatNumber;
 
   function monthLabel(year: number, month: number): string {
     return `${MONTH_NAMES[month - 1]} ${year}`;
@@ -29,6 +24,7 @@
   let year       = $state(now.getFullYear());
   let month      = $state(now.getMonth() + 1); // 1-based
   let rows       = $state<MonthlyReportRow[]>([]);
+  let trips      = $state<TravelRow[]>([]);
   let loading    = $state(false);
   let copyMessage = $state('');
   let copyError = $state('');
@@ -41,23 +37,6 @@
 
   // ── Derived ────────────────────────────────────────────────────────────
   const label = $derived(monthLabel(year, month));
-
-  // Year/month selector options: currentYear ± 3 → flat array of {value:"YYYY-MM", label:"Month YYYY"}
-  const currentYear = now.getFullYear();
-  const selectorOptions = $derived((() => {
-    const opts: { value: string; label: string }[] = [];
-    for (let y = currentYear - 3; y <= currentYear + 3; y++) {
-      for (let m = 1; m <= 12; m++) {
-        opts.push({
-          value: `${y}-${String(m).padStart(2, '0')}`,
-          label: `${MONTH_NAMES[m - 1]} ${y}`,
-        });
-      }
-    }
-    return opts;
-  })());
-
-  const selectorValue = $derived(`${year}-${String(month).padStart(2, '0')}`);
 
   // Derive Customer→Project→Issue tree from flat rows
   type IssueNode   = { id: number; title: string; hours: number };
@@ -92,12 +71,16 @@
   })());
 
   const grandTotal = $derived(tree.reduce((a, c) => a + c.hours, 0));
+  const travelTotals = $derived(tripTotals(trips));
 
   // ── Data loading ───────────────────────────────────────────────────────
   async function loadMonth() {
     loading = true;
     try {
-      rows = await invoke<MonthlyReportRow[]>('monthly_report', { year, month });
+      [rows, trips] = await Promise.all([
+        invoke<MonthlyReportRow[]>('monthly_report', { year, month }),
+        invoke<TravelRow[]>('list_travel', { year, month }),
+      ]);
       copyMessage = '';
       copyError = '';
       // Expand all customers by default on each month load
@@ -112,26 +95,6 @@
   }
 
   onMount(() => loadMonth());
-
-  function prevMonth() {
-    if (month === 1) { year -= 1; month = 12; }
-    else              { month -= 1; }
-    loadMonth();
-  }
-
-  function nextMonth() {
-    if (month === 12) { year += 1; month = 1; }
-    else               { month += 1; }
-    loadMonth();
-  }
-
-  function onSelectorChange(e: Event) {
-    const val = (e.target as HTMLSelectElement).value; // "YYYY-MM"
-    const [y, m] = val.split('-').map(Number);
-    year  = y;
-    month = m;
-    loadMonth();
-  }
 
   // ── Expansion toggles ──────────────────────────────────────────────────
   function toggleCustomer(id: number) {
@@ -160,7 +123,7 @@
     copyMessage = '';
 
     if (lines.length === 0) {
-      copyError = 'Nothing to copy for this project.';
+      copyError = 'Nothing to copy.';
       return;
     }
 
@@ -179,6 +142,11 @@
   async function copyProjectHours(project: ProjectNode): Promise<void> {
     await writeProjectCopy(projectHourLines(project), 'Hours copied.');
   }
+
+  async function copyMonth(): Promise<void> {
+    const text = monthReportText(month, tree, trips);
+    await writeProjectCopy(text === null ? [] : [text], 'Month report copied.');
+  }
 </script>
 
 <div class="page-shell">
@@ -187,29 +155,17 @@
     <section class="page-hero">
       <p class="page-hero-kicker">TimeTracker</p>
       <h1 class="page-hero-title">Monthly Report</h1>
-      <p class="page-hero-copy">Hierarchical time totals by month.</p>
+      <p class="page-hero-copy">Time totals and travel by month.</p>
     </section>
 
     <div class="table-card">
       <!-- Month navigator toolbar -->
       <div class="table-toolbar flex items-center justify-between gap-3">
-        <div class="flex items-center gap-3">
-          <button class="btn-icon-secondary" onclick={prevMonth} disabled={loading} title="Previous month">
-            <ChevronLeft size={16} />
-          </button>
-          <span class="min-w-[8rem] text-center text-sm font-semibold text-slate-700 dark:text-neutral-300">
-            {label}
-          </span>
-          <button class="btn-icon-secondary" onclick={nextMonth} disabled={loading} title="Next month">
-            <ChevronRight size={16} />
-          </button>
-        </div>
-        <!-- Year/month jump selector -->
-        <select class="form-select w-auto" value={selectorValue} onchange={onSelectorChange}>
-          {#each selectorOptions as opt (opt.value)}
-            <option value={opt.value}>{opt.label}</option>
-          {/each}
-        </select>
+        <MonthNav bind:year bind:month disabled={loading} onchange={loadMonth} />
+        <button class="btn-secondary-sm ml-auto gap-1.5" onclick={() => void copyMonth()} title="Copy hours and travel as text">
+          <ClipboardList size={14} />
+          Copy month
+        </button>
       </div>
 
       {#if copyMessage}
@@ -333,6 +289,51 @@
         {/if}
       </div>
     </div>
+
+    <section class="table-card">
+      <div class="table-toolbar flex items-center justify-between gap-3">
+        <span class="table-title">Travel</span>
+        <a href={resolve('/travel')} class="text-sm font-medium text-sky-700 hover:text-sky-900 dark:text-sky-400 dark:hover:text-sky-300">Manage travel</a>
+      </div>
+      <div class="table-scroll-region">
+        {#if trips.length === 0}
+          {#if !loading}
+            <div class="px-4 py-6">
+              <div class="empty-state">
+                <p class="font-semibold text-slate-700 dark:text-neutral-300">No trips</p>
+                <p>No travel logged for {label}.</p>
+              </div>
+            </div>
+          {/if}
+        {:else}
+          <table class="table-base">
+            <thead class="table-head">
+              <tr>
+                <th class="table-heading w-36">Date</th>
+                <th class="table-heading">Route</th>
+                <th class="table-heading-right w-28">Km</th>
+                <th class="table-heading-right w-32 whitespace-nowrap">Amount (kr)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each trips as trip (trip.id)}
+                <tr class="table-row-history">
+                  <td class="table-cell-strong">{trip.date}</td>
+                  <td class="table-cell">{trip.from_place} – {trip.to_place}</td>
+                  <td class="table-cell text-right">{trip.km === null ? '—' : formatNumber(trip.km)}</td>
+                  <td class="table-cell text-right">{trip.amount === null ? '—' : formatNumber(trip.amount)}</td>
+                </tr>
+              {/each}
+              <tr class="border-t-2 border-slate-300 dark:border-neutral-700">
+                <td class="table-cell-strong" colspan="2">Total</td>
+                <td class="table-cell-strong text-right">{formatNumber(travelTotals.km)}</td>
+                <td class="table-cell-strong text-right">{formatNumber(travelTotals.amount)}</td>
+              </tr>
+            </tbody>
+          </table>
+        {/if}
+      </div>
+    </section>
 
   </div>
 </div>

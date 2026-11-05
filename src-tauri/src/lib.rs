@@ -154,6 +154,12 @@ pub fn run() {
                     commands::todos::move_todo,
                     commands::todos::delete_todo,
                     commands::todos::create_issue_for_todo,
+                    // Travel
+                    commands::travel::list_travel,
+                    commands::travel::create_travel,
+                    commands::travel::update_travel,
+                    commands::travel::delete_travel,
+                    commands::travel::list_travel_places,
                     // Backup (BE-07)
                     commands::backup::backup_data_to_file,
                     commands::backup::read_backup_file,
@@ -202,6 +208,12 @@ pub fn run() {
                     commands::todos::move_todo,
                     commands::todos::delete_todo,
                     commands::todos::create_issue_for_todo,
+                    // Travel
+                    commands::travel::list_travel,
+                    commands::travel::create_travel,
+                    commands::travel::update_travel,
+                    commands::travel::delete_travel,
+                    commands::travel::list_travel_places,
                     // Backup (BE-07)
                     commands::backup::backup_data_to_file,
                     commands::backup::read_backup_file,

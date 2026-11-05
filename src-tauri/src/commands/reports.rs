@@ -87,7 +87,7 @@ fn adjacent_days_for_week(monday: NaiveDate) -> Vec<String> {
 }
 
 /// Returns ("YYYY-MM-01", "YYYY-MM-01" of next month) for use in WHERE te.Date >= ? AND te.Date < ?
-fn month_bounds(year: i32, month: u32) -> (String, String) {
+pub(crate) fn month_bounds(year: i32, month: u32) -> (String, String) {
     let start = format!("{:04}-{:02}-01", year, month);
     let (ny, nm) = if month == 12 {
         (year + 1, 1)

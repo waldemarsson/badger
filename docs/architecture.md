@@ -17,10 +17,9 @@ The main user-facing areas are:
 
 - `/` — timesheet entry and editing
 - `/todos` — kanban board of standalone todos (drag cards between status columns), optionally linked to an issue
-- `/customers` — customer and project management
 - `/reports/weekly` — ISO-week report view
 - `/reports/monthly` — month report view with expandable grouping
-- `/settings` — settings, backup/restore, and dev-only seed tooling
+- `/settings` — customer and project management (cards with inline add, rename, default, and delete), backup/restore, and dev-only seed tooling
 
 There is also a `/backup` route in the tree, but it is currently still a placeholder while the real backup and restore workflow lives under Settings.
 
@@ -33,7 +32,7 @@ There is also a `/backup` route in the tree, but it is currently still a placeho
 
 The backend is organized around command modules:
 
-- `customers` and `projects` for reference data
+- `customers` and `projects` for reference data (names are trimmed and unique case-insensitively: customers globally, projects per customer)
 - `issues` and `time_entries` for core timesheet operations
 - `todos` for standalone todos and their optional issue link
 - `reports` for weekly and monthly rollups

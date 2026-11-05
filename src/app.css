@@ -369,6 +369,15 @@
     @apply bg-white text-slate-950 shadow-sm ring-1 ring-slate-200 dark:bg-neutral-700 dark:text-white dark:ring-neutral-600;
   }
 
+  /* Command palette */
+  .palette-chip {
+    @apply rounded-md bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600 ring-1 ring-slate-200 dark:bg-neutral-800 dark:text-neutral-300 dark:ring-neutral-700;
+  }
+
+  .palette-kbd {
+    @apply mx-0.5 inline-flex min-w-[1.25rem] items-center justify-center rounded border border-slate-200 bg-white px-1 font-sans text-[10px] font-medium text-slate-500 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-400;
+  }
+
   .badge {
     @apply rounded-full bg-slate-950 px-2.5 py-1 text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-white dark:bg-neutral-100 dark:text-neutral-950;
   }

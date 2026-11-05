@@ -1,10 +1,11 @@
 <script lang="ts">
 import { invoke } from '@tauri-apps/api/core';
-import { onMount } from 'svelte';
+import { onMount, untrack } from 'svelte';
 import { getMonthBounds, getWeekBounds, today } from '#lib/date-ranges.js';
 import { loadInitialTimesheetData } from '#lib/timesheet-startup.js';
 import type { Customer, Project, Issue, TimeEntryRow } from '#lib/types.js';
 import Combobox from '#lib/components/Combobox.svelte';
+import { changes } from '#lib/palette-state.svelte.js';
 import Pencil from 'lucide-svelte/icons/pencil';
 import Trash2 from 'lucide-svelte/icons/trash-2';
 import Check from 'lucide-svelte/icons/check';
@@ -256,11 +257,21 @@ $effect(() => {
 void dateFilter;
 void customStart;
 void customEnd;
+void changes.timeEntries;
 if (!canReloadEntries) return;
 entriesLoading = true;
 void loadEntries().finally(() => {
 entriesLoading = false;
 });
+});
+
+// The palette may have created an issue in the selected project; refresh the picker list.
+let seenEntryChanges = changes.timeEntries;
+$effect(() => {
+if (changes.timeEntries === seenEntryChanges) return;
+seenEntryChanges = changes.timeEntries;
+const projectId = parseInt(untrack(() => newProjectId));
+if (projectId) void loadIssues(projectId).then((list) => (issues = list));
 });
 
 let totalHours = $derived(entries.reduce((sum, e) => sum + e.hours, 0));

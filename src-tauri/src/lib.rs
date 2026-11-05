@@ -137,6 +137,7 @@ pub fn run() {
                     commands::projects::set_default_project,
                     // Issues (BE-04)
                     commands::issues::list_issues,
+                    commands::issues::list_issues_by_recent,
                     // Time Entries (BE-04)
                     commands::time_entries::list_time_entries,
                     commands::time_entries::create_time_entry,
@@ -170,6 +171,9 @@ pub fn run() {
                     // Settings
                     commands::settings::get_theme,
                     commands::settings::set_theme,
+                    commands::settings::get_palette_settings,
+                    commands::settings::set_palette_shortcut,
+                    commands::settings::set_palette_last_used,
                     // Dev-only
                     dev_seed::seed_database,
                 ]
@@ -191,6 +195,7 @@ pub fn run() {
                     commands::projects::set_default_project,
                     // Issues (BE-04)
                     commands::issues::list_issues,
+                    commands::issues::list_issues_by_recent,
                     // Time Entries (BE-04)
                     commands::time_entries::list_time_entries,
                     commands::time_entries::create_time_entry,
@@ -224,6 +229,9 @@ pub fn run() {
                     // Settings
                     commands::settings::get_theme,
                     commands::settings::set_theme,
+                    commands::settings::get_palette_settings,
+                    commands::settings::set_palette_shortcut,
+                    commands::settings::set_palette_last_used,
                 ]
             }
         })

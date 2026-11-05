@@ -39,7 +39,7 @@ The backend is organized around command modules:
 - `travel` for business trips, listed per month
 - `reports` for weekly and monthly rollups
 - `backup` for JSON export and import
-- `settings` for app preferences (theme) stored in `app_settings`
+- `settings` for app preferences (theme, command palette shortcut and last-used project/issue) stored in `app_settings`
 - `startup_backup` for automatic daily backups on application startup
 - `dev_seed` for debug-only sample data
 
@@ -58,6 +58,10 @@ Svelte component
 ### Theme
 
 Dark mode uses Tailwind's `darkMode: "class"`: a `dark` class on `<html>` activates the `dark:` variants in `app.css` and markup. Dark surfaces use Tailwind's `neutral` grays; light mode uses `slate`. The theme mode (`system`, `light`, `dark`) is stored in `app_settings` via `get_theme`/`set_theme`; `src/lib/theme-state.svelte.ts` applies it (class, CSS `color-scheme`, native window theme) and mirrors it to `localStorage` so the inline script in `src/app.html` paints the right theme before the app loads. The setting is not part of backups.
+
+### Command palette
+
+`src/lib/components/CommandPalette.svelte` is mounted in the root layout and listens for its shortcut on `window` in the capture phase, so it opens over text fields and modals and Esc closes only the palette. The shortcut (default `Meta+K`, configurable in Settings › Preferences) and the last project/issue used for Log time live in `app_settings` (`get_palette_settings`, `set_palette_shortcut`, `set_palette_last_used`) and are not part of backups. Shortcut rules (needs ⌘/⌃/⌥, macOS-reserved combos refused), filtering and hours/date parsing are pure helpers in `src/lib/palette.ts`. After creating data the palette bumps a counter in `src/lib/palette-state.svelte.ts` (`changes.todos` / `changes.timeEntries`); the Todos and Timesheet pages reload when it changes. The same module drives the layout's `Toast`.
 
 The frontend keeps TypeScript interfaces in `src/lib/types.ts` aligned with the Rust response shapes so route components can work with typed command results.
 

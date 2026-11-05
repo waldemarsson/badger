@@ -55,7 +55,7 @@ Svelte component
 
 ### Theme
 
-Dark mode uses Tailwind's `darkMode: "class"`: a `dark` class on `<html>` activates the `dark:` variants in `app.css` and markup. The theme mode (`system`, `light`, `dark`) is stored in `app_settings` via `get_theme`/`set_theme`; `src/lib/theme-state.svelte.ts` applies it (class, CSS `color-scheme`, native window theme) and mirrors it to `localStorage` so the inline script in `src/app.html` paints the right theme before the app loads. The setting is not part of backups.
+Dark mode uses Tailwind's `darkMode: "class"`: a `dark` class on `<html>` activates the `dark:` variants in `app.css` and markup. Dark surfaces use Tailwind's `neutral` grays; light mode uses `slate`. The theme mode (`system`, `light`, `dark`) is stored in `app_settings` via `get_theme`/`set_theme`; `src/lib/theme-state.svelte.ts` applies it (class, CSS `color-scheme`, native window theme) and mirrors it to `localStorage` so the inline script in `src/app.html` paints the right theme before the app loads. The setting is not part of backups.
 
 The frontend keeps TypeScript interfaces in `src/lib/types.ts` aligned with the Rust response shapes so route components can work with typed command results.
 

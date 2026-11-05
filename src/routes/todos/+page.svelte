@@ -51,7 +51,7 @@ return todos.filter((t) => t.status === status).length;
 const dueClasses: Record<string, string> = {
 overdue: 'bg-red-50 dark:bg-red-500/10 text-red-700 dark:text-red-300 ring-red-200 dark:ring-red-500/30',
 today: 'bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300 ring-amber-200 dark:ring-amber-500/30',
-upcoming: 'bg-slate-50 dark:bg-slate-800/40 text-slate-600 dark:text-slate-400 ring-slate-200 dark:ring-slate-800'
+upcoming: 'bg-slate-50 dark:bg-neutral-800/40 text-slate-600 dark:text-neutral-400 ring-slate-200 dark:ring-neutral-800'
 };
 
 // ── Drag and drop (pointer events: full control over the drag visuals and no
@@ -188,11 +188,11 @@ return cancelDrag;
 <svelte:window onkeydown={onWindowKeydown} />
 
 {#snippet cardFace(t: TodoRow)}
-<p class="text-sm font-medium leading-snug {t.status === 'done' ? 'text-slate-400 dark:text-slate-500 line-through decoration-slate-300 dark:decoration-slate-600' : 'text-slate-800 dark:text-slate-200'}">
+<p class="text-sm font-medium leading-snug {t.status === 'done' ? 'text-slate-400 dark:text-neutral-500 line-through decoration-slate-300 dark:decoration-neutral-600' : 'text-slate-800 dark:text-neutral-200'}">
 {t.title}
 </p>
 {#if t.notes}
-<p class="mt-1 line-clamp-2 text-xs leading-relaxed text-slate-500 dark:text-slate-400">{t.notes}</p>
+<p class="mt-1 line-clamp-2 text-xs leading-relaxed text-slate-500 dark:text-neutral-400">{t.notes}</p>
 {/if}
 {#if t.due_date || t.issue_title}
 <div class="mt-2.5 flex flex-wrap items-center gap-1.5">
@@ -237,8 +237,8 @@ class:kanban-lane-target={drag?.status === col.status}
 >
 <header class="flex items-center gap-2 px-1 pb-3">
 <span class="h-2.5 w-2.5 rounded-full {col.dot}"></span>
-<h2 class="text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-400">{col.label}</h2>
-<span class="ml-auto rounded-full bg-white dark:bg-slate-900 px-2 py-0.5 text-xs font-medium text-slate-500 dark:text-slate-400 ring-1 ring-slate-200 dark:ring-slate-800">
+<h2 class="text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-neutral-400">{col.label}</h2>
+<span class="ml-auto rounded-full bg-white dark:bg-neutral-900 px-2 py-0.5 text-xs font-medium text-slate-500 dark:text-neutral-400 ring-1 ring-slate-200 dark:ring-neutral-800">
 {count(col.status)}
 </span>
 </header>
@@ -267,16 +267,16 @@ onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (
 </div>
 {:else}
 {#if !drag}
-<p class="py-3 text-center text-xs text-slate-400 dark:text-slate-500">No cards</p>
+<p class="py-3 text-center text-xs text-slate-400 dark:text-neutral-500">No cards</p>
 {/if}
 {/each}
 </div>
 
 {#if addingTo === col.status}
-<div class="mt-2 rounded-xl bg-white dark:bg-slate-800 p-2 shadow-sm ring-1 ring-slate-200 dark:ring-slate-700" in:fade={{ duration: 120 }}>
+<div class="mt-2 rounded-xl bg-white dark:bg-neutral-800 p-2 shadow-sm ring-1 ring-slate-200 dark:ring-neutral-700" in:fade={{ duration: 120 }}>
 <textarea
 use:autofocus
-class="w-full resize-none rounded-lg border-0 p-1 text-sm text-slate-800 dark:text-slate-200 outline-none placeholder:text-slate-400 dark:placeholder:text-slate-500 dark:bg-transparent focus:ring-0"
+class="w-full resize-none rounded-lg border-0 p-1 text-sm text-slate-800 dark:text-neutral-200 outline-none placeholder:text-slate-400 dark:placeholder:text-neutral-500 dark:bg-transparent focus:ring-0"
 rows="2"
 placeholder="What needs doing?"
 bind:value={addTitle}
@@ -284,7 +284,7 @@ onkeydown={onAddKeydown}
 ></textarea>
 <div class="flex items-center gap-2 pt-1">
 <button class="btn-secondary-sm" onclick={addCard}>Add card</button>
-<button class="rounded-md p-1 text-slate-400 dark:text-slate-500 transition hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-700 dark:hover:text-slate-300" onclick={() => (addingTo = null)} title="Close (Esc)">
+<button class="rounded-md p-1 text-slate-400 dark:text-neutral-500 transition hover:bg-slate-100 dark:hover:bg-neutral-800 hover:text-slate-700 dark:hover:text-neutral-300" onclick={() => (addingTo = null)} title="Close (Esc)">
 <X size={16} />
 </button>
 </div>

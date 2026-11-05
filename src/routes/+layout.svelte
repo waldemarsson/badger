@@ -26,7 +26,7 @@
   });
 </script>
 
-<nav class="border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+<nav class="border-b border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900">
   <div class="nav-shell">
     <span class="nav-brand">TimeTracker</span>
     <div class="flex flex-wrap gap-1">

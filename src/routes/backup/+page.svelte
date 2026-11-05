@@ -11,7 +11,7 @@
     </section>
 
     <section class="panel-card">
-      <p class="text-slate-600 dark:text-slate-400">Backup and restore will be implemented in Phase 5.</p>
+      <p class="text-slate-600 dark:text-neutral-400">Backup and restore will be implemented in Phase 5.</p>
     </section>
   </div>
 </div>

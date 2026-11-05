@@ -212,7 +212,7 @@
 
 <div class="space-y-4">
 	<div class="flex items-center justify-between gap-3">
-		<p class="text-sm text-slate-500 dark:text-slate-400">
+		<p class="text-sm text-slate-500 dark:text-neutral-400">
 			{loadError ? '' : loaded ? plural(customers.length, 'customer') : 'Loading…'}
 		</p>
 		<button
@@ -236,7 +236,7 @@
 
 	{#if loaded && !loadError && customers.length === 0 && !addingCustomer}
 		<div class="empty-state" in:fade={{ duration: 150 }}>
-			<p class="font-semibold text-slate-700 dark:text-slate-300">No customers yet</p>
+			<p class="font-semibold text-slate-700 dark:text-neutral-300">No customers yet</p>
 			<p>Add your first customer to start tracking time.</p>
 		</div>
 	{/if}
@@ -264,7 +264,7 @@
 				out:fade={{ duration: 150 }}
 			>
 				<header
-					class="group flex items-center gap-2 rounded-t-2xl border-b border-slate-100 dark:border-slate-800 px-4 py-3 transition {confirming ===
+					class="group flex items-center gap-2 rounded-t-2xl border-b border-slate-100 dark:border-neutral-800 px-4 py-3 transition {confirming ===
 					key
 						? 'bg-red-50 dark:bg-red-500/10'
 						: ''}"
@@ -283,13 +283,13 @@
 					{:else}
 						<div class="min-w-0 flex-1">
 							<h3
-								class="truncate font-semibold text-slate-900 dark:text-slate-100"
+								class="truncate font-semibold text-slate-900 dark:text-neutral-100"
 								title="Double-click to rename"
 								ondblclick={() => startEdit(key)}
 							>
 								{c.name}
 							</h3>
-							<p class="text-xs text-slate-500 dark:text-slate-400">{plural(list.length, 'project')}</p>
+							<p class="text-xs text-slate-500 dark:text-neutral-400">{plural(list.length, 'project')}</p>
 						</div>
 						{#if confirming === key}
 							{@render confirmDelete(c.name, () => deleteCustomer(c))}
@@ -328,7 +328,7 @@
 								{:else}
 									<!-- svelte-ignore a11y_no_static_element_interactions -->
 									<span
-										class="min-w-0 flex-1 truncate text-sm text-slate-700 dark:text-slate-300"
+										class="min-w-0 flex-1 truncate text-sm text-slate-700 dark:text-neutral-300"
 										title="Double-click to rename"
 										ondblclick={() => startEdit(pkey)}>{p.name}</span
 									>
@@ -355,7 +355,7 @@
 					{/each}
 
 					{#if list.length === 0 && addingProjectFor !== c.id}
-						<li class="px-2 py-1.5 pl-8 text-sm text-slate-400 dark:text-slate-500">No projects yet</li>
+						<li class="px-2 py-1.5 pl-8 text-sm text-slate-400 dark:text-neutral-500">No projects yet</li>
 					{/if}
 
 					<li>
@@ -374,7 +374,7 @@
 							</div>
 						{:else}
 							<button
-								class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-slate-500 dark:text-slate-400 transition hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-300"
+								class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-slate-500 dark:text-neutral-400 transition hover:bg-slate-50 dark:hover:bg-neutral-800 hover:text-slate-900 dark:hover:text-neutral-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-300 dark:focus-visible:ring-neutral-600"
 								onclick={() => startAddProject(c.id)}
 							>
 								<span class="flex w-3.5 shrink-0 justify-center"><Plus size={14} /></span>

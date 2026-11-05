@@ -263,23 +263,23 @@
     </section>
 
     <!-- Tab bar -->
-    <div class="mb-4 flex gap-1 border-b border-slate-200 dark:border-slate-800">
+    <div class="mb-4 flex gap-1 border-b border-slate-200 dark:border-neutral-800">
       <button
         class="border-0 bg-transparent px-4 py-2 text-sm font-medium transition {activeTab === 'customers'
-          ? 'border-b-2 border-slate-900 text-slate-900 dark:border-slate-100 dark:text-slate-100'
-          : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}"
+          ? 'border-b-2 border-slate-900 text-slate-900 dark:border-neutral-100 dark:text-neutral-100'
+          : 'text-slate-500 dark:text-neutral-400 hover:text-slate-800 dark:hover:text-neutral-200'}"
         onclick={() => activeTab = 'customers'}
       >Customers &amp; Projects</button>
       <button
         class="border-0 bg-transparent px-4 py-2 text-sm font-medium transition {activeTab === 'preferences'
-          ? 'border-b-2 border-slate-900 text-slate-900 dark:border-slate-100 dark:text-slate-100'
-          : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}"
+          ? 'border-b-2 border-slate-900 text-slate-900 dark:border-neutral-100 dark:text-neutral-100'
+          : 'text-slate-500 dark:text-neutral-400 hover:text-slate-800 dark:hover:text-neutral-200'}"
         onclick={() => activeTab = 'preferences'}
       >Preferences</button>
       <button
         class="border-0 bg-transparent px-4 py-2 text-sm font-medium transition {activeTab === 'backup'
-          ? 'border-b-2 border-slate-900 text-slate-900 dark:border-slate-100 dark:text-slate-100'
-          : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}"
+          ? 'border-b-2 border-slate-900 text-slate-900 dark:border-neutral-100 dark:text-neutral-100'
+          : 'text-slate-500 dark:text-neutral-400 hover:text-slate-800 dark:hover:text-neutral-200'}"
         onclick={() => activeTab = 'backup'}
       >Backup &amp; Restore</button>
       {#if import.meta.env.DEV}
@@ -352,7 +352,7 @@
                   }}
                   disabled={startupBackupRetentionState === 'loading' || startupBackupRetentionState === 'saving'}
                 />
-                <p class="mt-2 text-xs text-slate-500 dark:text-slate-400">Enter a whole number greater than or equal to 0.</p>
+                <p class="mt-2 text-xs text-slate-500 dark:text-neutral-400">Enter a whole number greater than or equal to 0.</p>
               </div>
 
               <button
@@ -380,21 +380,21 @@
 
             <div class="panel-muted space-y-3">
               <div>
-                <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Stored Backups</p>
-                <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Read-only list of the startup backups stored beside your database.</p>
+                <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-neutral-400">Stored Backups</p>
+                <p class="mt-1 text-sm text-slate-500 dark:text-neutral-400">Read-only list of the startup backups stored beside your database.</p>
               </div>
 
               {#if storedStartupBackupsState === 'loading'}
-                <p class="text-sm text-slate-500 dark:text-slate-400">Loading startup backups…</p>
+                <p class="text-sm text-slate-500 dark:text-neutral-400">Loading startup backups…</p>
               {:else if storedStartupBackupsState === 'error'}
                 <div class="stack-error">{storedStartupBackupsError}</div>
               {:else if storedStartupBackups.length === 0}
                 <div class="empty-state">
-                  <p class="font-semibold text-slate-700 dark:text-slate-300">No startup backups yet</p>
+                  <p class="font-semibold text-slate-700 dark:text-neutral-300">No startup backups yet</p>
                   <p>Automatic startup backups will appear here after they are created.</p>
                 </div>
               {:else}
-                <div class="overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+                <div class="overflow-hidden rounded-2xl border border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900">
                   <table class="table-base">
                     <thead class="table-head">
                       <tr>
@@ -406,10 +406,10 @@
                       {#each storedStartupBackups as backup (backup.date)}
                         <tr class="table-row">
                           <td class="table-cell">
-                            <div class="font-semibold text-slate-900 dark:text-slate-100">{formatBackupDate(backup.date)}</div>
-                            <div class="text-xs text-slate-500 dark:text-slate-400">{backup.date}</div>
+                            <div class="font-semibold text-slate-900 dark:text-neutral-100">{formatBackupDate(backup.date)}</div>
+                            <div class="text-xs text-slate-500 dark:text-neutral-400">{backup.date}</div>
                           </td>
-                          <td class="table-cell text-right font-medium text-slate-700 dark:text-slate-300">
+                          <td class="table-cell text-right font-medium text-slate-700 dark:text-neutral-300">
                             {formatBackupSize(backup.size_bytes)}
                           </td>
                         </tr>
@@ -462,7 +462,7 @@
               <p class="alert-success-copy">Your backup has been applied. All data is now live.</p>
             </div>
             <button
-              class="text-sm text-slate-500 dark:text-slate-400 underline hover:text-slate-900 dark:hover:text-slate-100"
+              class="text-sm text-slate-500 dark:text-neutral-400 underline hover:text-slate-900 dark:hover:text-neutral-100"
               onclick={clearRestoreFile}
             >Restore another file</button>
 
@@ -479,8 +479,8 @@
             {:else}
               <!-- preview / restoring / error states -->
               <div class="flex items-center gap-2">
-                <span class="text-sm text-slate-600 dark:text-slate-400">File: </span>
-                <span class="text-sm font-semibold text-slate-950 dark:text-slate-100">{restoreFileName}</span>
+                <span class="text-sm text-slate-600 dark:text-neutral-400">File: </span>
+                <span class="text-sm font-semibold text-slate-950 dark:text-neutral-100">{restoreFileName}</span>
                 <button class="btn-icon-secondary" onclick={clearRestoreFile} title="Clear">
                   <X size={14} />
                 </button>
@@ -488,7 +488,7 @@
 
               {#if restorePreview}
                 <div class="panel-muted">
-                  <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400 mb-3">Backup Contents</p>
+                  <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-neutral-400 mb-3">Backup Contents</p>
                   <div class="grid grid-cols-4 gap-2 py-6 text-center">
                     <div class="restore-stat">
                       <span class="restore-stat-number">{restorePreview.customers}</span>
@@ -517,15 +517,15 @@
                     <input type="radio" name="restoreMode" value="merge" class="sr-only"
                       checked={restoreMode === 'merge'}
                       onchange={() => restoreMode = 'merge'} />
-                    <p class="font-semibold text-sm text-slate-950 dark:text-slate-100">Merge</p>
-                    <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Adds missing records. Existing data is kept.</p>
+                    <p class="font-semibold text-sm text-slate-950 dark:text-neutral-100">Merge</p>
+                    <p class="text-xs text-slate-500 dark:text-neutral-400 mt-1">Adds missing records. Existing data is kept.</p>
                   </label>
                   <label class="list-card {restoreMode === 'replace' ? 'list-card-selected' : ''} flex-1 cursor-pointer">
                     <input type="radio" name="restoreMode" value="replace" class="sr-only"
                       checked={restoreMode === 'replace'}
                       onchange={() => restoreMode = 'replace'} />
-                    <p class="font-semibold text-sm text-slate-950 dark:text-slate-100">Replace</p>
-                    <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Wipes all data and restores from backup.</p>
+                    <p class="font-semibold text-sm text-slate-950 dark:text-neutral-100">Replace</p>
+                    <p class="text-xs text-slate-500 dark:text-neutral-400 mt-1">Wipes all data and restores from backup.</p>
                   </label>
                 </div>
               </div>
@@ -563,8 +563,8 @@
         </div>
 
         <div>
-          <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1">Seed Demo Data</h3>
-          <p class="text-sm text-slate-500 dark:text-slate-400 mb-3">Inserts demo customers, projects, issues, and time entries if the database is empty.</p>
+          <h3 class="text-sm font-semibold text-slate-700 dark:text-neutral-300 mb-1">Seed Demo Data</h3>
+          <p class="text-sm text-slate-500 dark:text-neutral-400 mb-3">Inserts demo customers, projects, issues, and time entries if the database is empty.</p>
           <div class="flex items-center gap-3">
             <button
               class="btn-primary bg-amber-600 hover:bg-amber-500"

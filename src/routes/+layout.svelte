@@ -1,11 +1,11 @@
 <script lang="ts">
   import "../app.css";
   import { resolve } from '$app/paths';
-  import { page } from '$app/stores';
+  import { page } from '$app/state';
   import { invoke } from '@tauri-apps/api/core';
   import { onMount } from 'svelte';
-  import { toThemeMode } from '$lib/theme';
-  import { applyTheme, theme } from '$lib/theme-state.svelte';
+  import { toThemeMode } from '#lib/theme.js';
+  import { applyTheme, theme } from '#lib/theme-state.svelte.js';
 
   let { children } = $props();
 
@@ -35,7 +35,7 @@
         <a
           href={resolve(link.href)}
           class="nav-link"
-          class:nav-link-active={$page.url.pathname === link.href}
+          class:nav-link-active={page.url.pathname === link.href}
         >{link.label}</a>
       {/each}
     </div>

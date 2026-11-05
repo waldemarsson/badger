@@ -2,9 +2,9 @@
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { resolve } from '$app/paths';
-  import type { MonthlyReportRow, TravelRow } from '$lib/types';
-  import { MONTH_NAMES, formatNumber, monthReportText, tripTotals } from '$lib/travel';
-  import MonthNav from '$lib/components/MonthNav.svelte';
+  import type { MonthlyReportRow, TravelRow } from '#lib/types.js';
+  import { MONTH_NAMES, formatNumber, monthReportText, tripTotals } from '#lib/travel.js';
+  import MonthNav from '#lib/components/MonthNav.svelte';
   import Copy from 'lucide-svelte/icons/copy';
   import ClipboardList from 'lucide-svelte/icons/clipboard-list';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';

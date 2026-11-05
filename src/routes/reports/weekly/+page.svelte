@@ -1,14 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import type { WeeklyReportRow } from '$lib/types';
+  import type { WeeklyReportRow } from '#lib/types.js';
   import {
     dayLabelsForWeek,
     getCurrentIsoWeek,
     getMondayIsoWeek,
     isoWeekToMonday,
     weekLabel
-  } from '$lib/weekly-report';
+  } from '#lib/weekly-report.js';
   import ChevronLeft  from 'lucide-svelte/icons/chevron-left';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
 

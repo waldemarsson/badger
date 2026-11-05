@@ -51,8 +51,10 @@ Gotchas:
 
 ## Frontend (Svelte 5 / SvelteKit)
 
-- **Runes only:** `$state`, `$derived`, `$props`, `$effect`, `{#snippet}`/`{@render}`. No `export let`, no `$:`, and no stores except `$app/stores`.
+- **Runes only:** `$state`, `$derived`, `$props`, `$effect`, `{#snippet}`/`{@render}`. No `export let`, no `$:`, and no stores (use `$app/state`, not `$app/stores`).
 - **Types:** keep `src/lib/types.ts` in sync with the Rust structs (snake_case fields).
+- **Imports:** SvelteKit 3 removed `$lib`; use `#lib/...` (package.json `imports`) with an explicit extension (`#lib/types.js`, `#lib/x.svelte.js`, `#lib/components/X.svelte`). Extensionless `#lib` imports build but fail `npm run check`.
+- **Config:** SvelteKit config lives in the `sveltekit({...})` plugin in `vite.config.ts`; `svelte.config.js` is no longer supported.
 - **Pure helpers** go in `src/lib/*.ts`; test them with `node:test` under `tests/`.
 - **Styles:** use Tailwind utilities in markup. Shared or `@apply` classes go in `src/app.css` under `@layer components`, not in component `<style>` blocks, because svelte-check warns about `@apply` there.
 - **Icons:** `lucide-svelte`, imported per icon (`import X from 'lucide-svelte/icons/x'`).

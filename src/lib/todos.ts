@@ -1,5 +1,5 @@
-import { today } from '$lib/date-ranges';
-import type { TodoRow, TodoStatus } from '$lib/types';
+import { today } from '#lib/date-ranges.js';
+import type { TodoRow, TodoStatus } from '#lib/types.js';
 
 export const COLUMNS: { status: TodoStatus; label: string; dot: string }[] = [
 	{ status: 'not_started', label: 'Not started', dot: 'bg-slate-400' },

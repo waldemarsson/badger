@@ -1,4 +1,3 @@
-import svelteConfig from "./svelte.config.js";
 import { defineConfig } from "eslint/config";
 import globals from "globals";
 import js from "@eslint/js";
@@ -24,7 +23,6 @@ export default defineConfig(
         projectService: true,
         extraFileExtensions: [".svelte"],
         parser: ts.parser,
-        svelteConfig,
       },
     },
   },

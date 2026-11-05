@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import CustomerProjects from '$lib/components/CustomerProjects.svelte';
+  import CustomerProjects from '#lib/components/CustomerProjects.svelte';
   import X      from 'lucide-svelte/icons/x';
   import Download   from 'lucide-svelte/icons/download';
   import FolderOpen from 'lucide-svelte/icons/folder-open';
@@ -9,8 +9,8 @@
   import Sun     from 'lucide-svelte/icons/sun';
   import Moon    from 'lucide-svelte/icons/moon';
   import { save, open } from '@tauri-apps/plugin-dialog';
-  import type { ThemeMode } from '$lib/theme';
-  import { applyTheme, theme } from '$lib/theme-state.svelte';
+  import type { ThemeMode } from '#lib/theme.js';
+  import { applyTheme, theme } from '#lib/theme-state.svelte.js';
 
   type Tab = 'customers' | 'preferences' | 'backup' | 'dev';
   let activeTab = $state<Tab>('customers');

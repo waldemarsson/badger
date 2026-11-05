@@ -3,9 +3,9 @@
 	import { invoke } from '@tauri-apps/api/core';
 	import { fade, scale } from 'svelte/transition';
 	import { flip } from 'svelte/animate';
-	import type { Customer, Project } from '$lib/types';
-	import NameInput from '$lib/components/NameInput.svelte';
-	import { byName, plural } from '$lib/names';
+	import type { Customer, Project } from '#lib/types.js';
+	import NameInput from '#lib/components/NameInput.svelte';
+	import { byName, plural } from '#lib/names.js';
 	import Star from 'lucide-svelte/icons/star';
 	import Pencil from 'lucide-svelte/icons/pencil';
 	import Trash2 from 'lucide-svelte/icons/trash-2';

@@ -27,8 +27,7 @@ In development, `.timetracker-dev/` lives at the repo root. The database file is
 | File | Purpose |
 | --- | --- |
 | `src-tauri/tauri.conf.json` | Tauri app metadata, build hooks, bundle targets, window config, icon list |
-| `vite.config.ts` | Frontend dev server port, strict-port behavior, optional Tauri host/HMR wiring |
-| `svelte.config.js` | SvelteKit static adapter setup with `index.html` fallback |
+| `vite.config.ts` | Frontend dev server port, strict-port behavior, optional Tauri host/HMR wiring, and SvelteKit config (static adapter with `index.html` fallback) |
 | `.cargo/config.toml` | Forces SQLx offline mode |
 | `eslint.config.js` | Frontend linting rules and ignored generated/backend paths |
 
@@ -47,7 +46,7 @@ That means the Vite output directory and the Tauri config have to stay aligned.
 
 ### SvelteKit is configured for a desktop SPA
 
-`svelte.config.js` uses `@sveltejs/adapter-static` with an `index.html` fallback. Combined with `src/routes/+layout.ts` setting `ssr = false`, this keeps the frontend compatible with the Tauri WebView runtime.
+The `sveltekit()` plugin in `vite.config.ts` uses `@sveltejs/adapter-static` with an `index.html` fallback. Combined with `src/routes/+layout.ts` setting `ssr = false`, this keeps the frontend compatible with the Tauri WebView runtime.
 
 ### SQLx runs in offline mode
 

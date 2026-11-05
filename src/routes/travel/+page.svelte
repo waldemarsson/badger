@@ -2,9 +2,9 @@
 	import { onMount, tick } from 'svelte';
 	import { fade } from 'svelte/transition';
 	import { invoke } from '@tauri-apps/api/core';
-	import type { TravelRow } from '$lib/types';
-	import { MONTH_NAMES, formatNumber, tripTotals } from '$lib/travel';
-	import MonthNav from '$lib/components/MonthNav.svelte';
+	import type { TravelRow } from '#lib/types.js';
+	import { MONTH_NAMES, formatNumber, tripTotals } from '#lib/travel.js';
+	import MonthNav from '#lib/components/MonthNav.svelte';
 	import Check from 'lucide-svelte/icons/check';
 	import X from 'lucide-svelte/icons/x';
 	import Pencil from 'lucide-svelte/icons/pencil';

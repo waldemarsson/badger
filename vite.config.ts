@@ -1,3 +1,7 @@
+// Tauri uses SPA mode with adapter-static.
+// fallback: "index.html" is required for Tauri's WebView URL handling.
+import adapter from "@sveltejs/adapter-static";
+import { vitePreprocess } from "@sveltejs/vite-plugin-svelte";
 import { defineConfig } from "vite";
 import { sveltekit } from "@sveltejs/kit/vite";
 import process from "node:process";
@@ -5,7 +9,14 @@ import process from "node:process";
 const host = process.env.TAURI_DEV_HOST;
 
 export default defineConfig(() => ({
-  plugins: [sveltekit()],
+  plugins: [
+    sveltekit({
+      preprocess: vitePreprocess(),
+      adapter: adapter({
+        fallback: "index.html",
+      }),
+    }),
+  ],
   clearScreen: false,
   server: {
     port: 1420,

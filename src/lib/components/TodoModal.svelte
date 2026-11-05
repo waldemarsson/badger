@@ -2,9 +2,9 @@
 	import { invoke } from '@tauri-apps/api/core';
 	import { fade, scale } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
-	import type { Customer, Issue, Project, TodoRow, TodoStatus } from '$lib/types';
-	import { COLUMNS } from '$lib/todos';
-	import Combobox from '$lib/components/Combobox.svelte';
+	import type { Customer, Issue, Project, TodoRow, TodoStatus } from '#lib/types.js';
+	import { COLUMNS } from '#lib/todos.js';
+	import Combobox from '#lib/components/Combobox.svelte';
 	import X from 'lucide-svelte/icons/x';
 	import Link2 from 'lucide-svelte/icons/link-2';
 	import Unlink from 'lucide-svelte/icons/unlink';

@@ -44,7 +44,9 @@ CREATE TABLE IF NOT EXISTS todos (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
     Title     TEXT    NOT NULL,
     Notes     TEXT,
-    Done      INTEGER NOT NULL DEFAULT 0,
+    Status    TEXT    NOT NULL DEFAULT 'not_started'
+              CHECK (Status IN ('not_started', 'in_progress', 'done')),
+    Position  INTEGER NOT NULL DEFAULT 0,
     DueDate   TEXT,
     CreatedAt TEXT    NOT NULL,
     IssueId   INTEGER REFERENCES issues(id) ON DELETE SET NULL
@@ -77,8 +79,34 @@ pub async fn init_db(db_path: &Path) -> Result<Pool<Sqlite>, sqlx::Error> {
 
     // raw_sql handles multiple semicolon-separated statements (sqlx 0.8 feature)
     sqlx::raw_sql(SCHEMA_SQL).execute(&pool).await?;
+    migrate_todos_status(&pool).await?;
 
     Ok(pool)
+}
+
+/// Upgrades a `todos` table created with the early `Done` flag (no `Status`/`Position`).
+/// Idempotent: does nothing once `Status` exists.
+pub async fn migrate_todos_status(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
+    let columns: Vec<(String,)> = sqlx::query_as("SELECT name FROM pragma_table_info('todos')")
+        .fetch_all(pool)
+        .await?;
+    if columns.iter().any(|(name,)| name == "Status") {
+        return Ok(());
+    }
+
+    let mut tx = pool.begin().await?;
+    sqlx::raw_sql(
+        "ALTER TABLE todos ADD COLUMN Status TEXT NOT NULL DEFAULT 'not_started' \
+             CHECK (Status IN ('not_started', 'in_progress', 'done'));
+         ALTER TABLE todos ADD COLUMN Position INTEGER NOT NULL DEFAULT 0;
+         UPDATE todos SET Status = CASE WHEN Done = 1 THEN 'done' ELSE 'not_started' END,
+                          Position = id;
+         ALTER TABLE todos DROP COLUMN Done;",
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -107,6 +135,46 @@ mod tests {
             names.contains(&"app_settings"),
             "app_settings table missing"
         );
+    }
+
+    #[tokio::test]
+    async fn test_migrate_todos_from_done_flag() {
+        use sqlx::sqlite::SqlitePoolOptions;
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE todos (id INTEGER PRIMARY KEY AUTOINCREMENT, Title TEXT NOT NULL,
+                 Notes TEXT, Done INTEGER NOT NULL DEFAULT 0, DueDate TEXT,
+                 CreatedAt TEXT NOT NULL, IssueId INTEGER);
+             INSERT INTO todos (Title, Done, CreatedAt) VALUES ('open', 0, 'x'), ('closed', 1, 'x');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        super::migrate_todos_status(&pool).await.unwrap();
+        super::migrate_todos_status(&pool).await.unwrap(); // idempotent
+
+        let rows: Vec<(String, String, i64)> =
+            sqlx::query_as("SELECT Title, Status, Position FROM todos ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("open".into(), "not_started".into(), 1),
+                ("closed".into(), "done".into(), 2)
+            ]
+        );
+        let done_col: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM pragma_table_info('todos') WHERE name = 'Done'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(done_col.0, 0, "Done column must be dropped");
     }
 
     #[tokio::test]

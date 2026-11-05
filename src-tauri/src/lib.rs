@@ -149,7 +149,7 @@ pub fn run() {
                     commands::todos::list_todos,
                     commands::todos::create_todo,
                     commands::todos::update_todo,
-                    commands::todos::set_todo_done,
+                    commands::todos::move_todo,
                     commands::todos::delete_todo,
                     commands::todos::create_issue_for_todo,
                     // Backup (BE-07)
@@ -192,7 +192,7 @@ pub fn run() {
                     commands::todos::list_todos,
                     commands::todos::create_todo,
                     commands::todos::update_todo,
-                    commands::todos::set_todo_done,
+                    commands::todos::move_todo,
                     commands::todos::delete_todo,
                     commands::todos::create_issue_for_todo,
                     // Backup (BE-07)

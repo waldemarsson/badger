@@ -71,12 +71,15 @@ export interface MonthlyReportRow {
 	hours: number;
 }
 
-/** Standalone todo; link fields are null when the todo is not linked to an issue. */
+export type TodoStatus = 'not_started' | 'in_progress' | 'done';
+
+/** Kanban todo; link fields are null when the todo is not linked to an issue. */
 export interface TodoRow {
 	id: number;
 	title: string;
 	notes: string | null;
-	done: boolean;
+	status: TodoStatus;
+	position: number; // order within its status column
 	due_date: string | null; // YYYY-MM-DD
 	created_at: string;
 	issue_id: number | null;

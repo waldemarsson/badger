@@ -47,10 +47,21 @@ pub struct BackupTodo {
     pub id: i64,
     pub title: String,
     pub notes: Option<String>,
-    pub done: bool,
+    #[serde(default = "default_todo_status")]
+    pub status: String,
+    #[serde(default)]
+    pub position: i64,
     pub due_date: Option<String>,
     pub created_at: String,
     pub issue_id: Option<i64>,
+    /// Legacy flag from the first todos format (before `status`); read-only.
+    #[serde(default, skip_serializing)]
+    #[sqlx(default)]
+    pub done: bool,
+}
+
+fn default_todo_status() -> String {
+    "not_started".to_string()
 }
 
 /// Full database export structure serialised to JSON.
@@ -92,7 +103,7 @@ pub async fn inner_backup_data(pool: &Pool<Sqlite>) -> Result<String, AppError> 
     .await?;
 
     let todos = sqlx::query_as::<_, BackupTodo>(
-        "SELECT id, Title as title, Notes as notes, Done as done, DueDate as due_date, CreatedAt as created_at, IssueId as issue_id FROM todos ORDER BY id",
+        "SELECT id, Title as title, Notes as notes, Status as status, Position as position, DueDate as due_date, CreatedAt as created_at, IssueId as issue_id FROM todos ORDER BY id",
     )
     .fetch_all(pool)
     .await?;
@@ -227,12 +238,13 @@ async fn insert_todos(
 ) -> Result<(), AppError> {
     for t in todos {
         sqlx::query(
-            "INSERT OR REPLACE INTO todos (id, Title, Notes, Done, DueDate, CreatedAt, IssueId) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO todos (id, Title, Notes, Status, Position, DueDate, CreatedAt, IssueId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(t.id)
         .bind(&t.title)
         .bind(&t.notes)
-        .bind(t.done)
+        .bind(if t.done { "done" } else { t.status.as_str() })
+        .bind(t.position)
         .bind(&t.due_date)
         .bind(&t.created_at)
         .bind(t.issue_id)
@@ -336,7 +348,7 @@ mod tests {
             .execute(pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO todos (id, Title, Notes, Done, DueDate, CreatedAt, IssueId) VALUES (1, 'Linked', 'n', 0, '2024-02-01', '2024-01-01T00:00:00.000', 1), (2, 'Standalone', NULL, 1, NULL, '2024-01-02T00:00:00.000', NULL)")
+        sqlx::query("INSERT INTO todos (id, Title, Notes, Status, Position, DueDate, CreatedAt, IssueId) VALUES (1, 'Linked', 'n', 'in_progress', 3, '2024-02-01', '2024-01-01T00:00:00.000', 1), (2, 'Standalone', NULL, 'done', 0, NULL, '2024-01-02T00:00:00.000', NULL)")
             .execute(pool)
             .await
             .unwrap();
@@ -367,7 +379,31 @@ mod tests {
         assert_eq!(result.todos.len(), 2);
         assert_eq!(result.todos[0].issue_id, Some(1));
         assert_eq!(result.todos[1].issue_id, None);
-        assert!(result.todos[1].done);
+        assert_eq!(result.todos[0].status, "in_progress");
+        assert_eq!(result.todos[0].position, 3);
+        assert_eq!(result.todos[1].status, "done");
+        assert!(
+            !json.contains("\"done\":"),
+            "legacy flag must not be exported"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_restore_legacy_todo_done_flag() {
+        let pool = crate::test_db().await;
+        let legacy = r#"{"customers":[],"projects":[],"issues":[],"time_entries":[],
+            "todos":[{"id":1,"title":"Old","notes":null,"done":true,"due_date":null,"created_at":"x","issue_id":null},
+                     {"id":2,"title":"Open","notes":null,"done":false,"due_date":null,"created_at":"x","issue_id":null}]}"#;
+
+        inner_restore_data("replace", legacy, &pool)
+            .await
+            .expect("legacy todos must restore");
+
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT Status FROM todos ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(rows, vec![("done".into(),), ("not_started".into(),)]);
     }
 
     #[tokio::test]

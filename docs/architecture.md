@@ -16,7 +16,7 @@ TimeTracker is a local-first desktop application built as a Tauri shell around a
 The main user-facing areas are:
 
 - `/` — timesheet entry and editing
-- `/todos` — standalone todos, optionally linked to an issue
+- `/todos` — kanban board of standalone todos (drag cards between status columns), optionally linked to an issue
 - `/customers` — customer and project management
 - `/reports/weekly` — ISO-week report view
 - `/reports/monthly` — month report view with expandable grouping

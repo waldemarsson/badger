@@ -2,6 +2,10 @@
   import "../app.css";
   import { resolve } from '$app/paths';
   import { page } from '$app/stores';
+  import { invoke } from '@tauri-apps/api/core';
+  import { onMount } from 'svelte';
+  import { toThemeMode } from '$lib/theme';
+  import { applyTheme, theme } from '$lib/theme-state.svelte';
 
   let { children } = $props();
 
@@ -12,9 +16,17 @@
     { href: '/reports/monthly', label: 'Monthly' },
     { href: '/settings', label: 'Settings' },
   ] as const;
+
+  onMount(() => {
+    // Start from the mirrored mode (already painted by app.html), then defer to the DB.
+    applyTheme(theme.mode);
+    invoke<string>('get_theme')
+      .then((mode) => applyTheme(toThemeMode(mode)))
+      .catch(() => {});
+  });
 </script>
 
-<nav class="border-b border-slate-200 bg-white">
+<nav class="border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
   <div class="nav-shell">
     <span class="nav-brand">TimeTracker</span>
     <div class="flex flex-wrap gap-1">

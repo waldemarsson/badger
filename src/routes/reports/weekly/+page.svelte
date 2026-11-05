@@ -112,7 +112,7 @@
     const dayName = (field as string);
     const h = row[field] as number;
     if (h === 0 && row.adjacent_days.includes(dayName)) return 'table-cell-muted text-right';
-    return 'table-cell text-right text-slate-950';
+    return 'table-cell text-right text-slate-950 dark:text-slate-100';
   }
 </script>
 
@@ -131,7 +131,7 @@
         <button class="btn-icon-secondary" onclick={prevWeek} disabled={loading} title="Previous week">
           <ChevronLeft size={16} />
         </button>
-        <span class="min-w-[16rem] text-center text-sm font-semibold text-slate-700">
+        <span class="min-w-[16rem] text-center text-sm font-semibold text-slate-700 dark:text-slate-300">
           {label}
         </span>
         <button class="btn-icon-secondary" onclick={nextWeek} disabled={loading} title="Next week">
@@ -143,7 +143,7 @@
         {#if rows.length === 0 && !loading}
           <div class="px-4 py-6">
             <div class="empty-state">
-              <p class="font-semibold text-slate-700">No entries this week</p>
+              <p class="font-semibold text-slate-700 dark:text-slate-300">No entries this week</p>
               <p>No time was logged for {label}.</p>
             </div>
           </div>
@@ -155,7 +155,7 @@
                 {#each dayLabels as col (col.name)}
                   <th class="table-heading-right w-20 leading-tight">
                     <span class="block">{col.name}</span>
-                    <span class="block text-[0.65rem] font-normal text-slate-400">{col.month} {col.date}</span>
+                    <span class="block text-[0.65rem] font-normal text-slate-400 dark:text-slate-500">{col.month} {col.date}</span>
                   </th>
                 {/each}
                 <th class="table-heading-right w-20">Total</th>
@@ -164,15 +164,15 @@
             <tbody>
               {#each grouped as custGroup (custGroup.customerId)}
                 <!-- Customer header row -->
-                <tr class="border-t border-slate-300 bg-slate-200/60">
-                  <td colspan="9" class="px-3 py-1 text-[0.72rem] font-semibold uppercase tracking-[0.22em] text-slate-600">
+                <tr class="border-t border-slate-300 dark:border-slate-700 bg-slate-200/60 dark:bg-slate-800/60">
+                  <td colspan="9" class="px-3 py-1 text-[0.72rem] font-semibold uppercase tracking-[0.22em] text-slate-600 dark:text-slate-400">
                     {custGroup.customerName}
                   </td>
                 </tr>
                 {#each custGroup.projects as group (group.projectId)}
                   <!-- Project sub-header row -->
-                  <tr class="bg-slate-100/60">
-                    <td colspan="9" class="pl-6 pr-3 py-1 text-[0.72rem] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                  <tr class="bg-slate-100/60 dark:bg-slate-800/60">
+                    <td colspan="9" class="pl-6 pr-3 py-1 text-[0.72rem] font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
                       {group.projectName}
                     </td>
                   </tr>
@@ -183,7 +183,7 @@
                       {#each DAYS as [, field] (field)}
                         <td class={cellClass(row, field)}>{cellValue(row, field)}</td>
                       {/each}
-                      <td class="table-cell text-right font-medium text-slate-950">
+                      <td class="table-cell text-right font-medium text-slate-950 dark:text-slate-100">
                         {row.total > 0 ? formatHours(row.total) : ''}
                       </td>
                     </tr>
@@ -193,14 +193,14 @@
 
               <!-- Totals row -->
               {#if rows.length > 0}
-                <tr class="border-t-2 border-slate-300">
+                <tr class="border-t-2 border-slate-300 dark:border-slate-700">
                   <td class="table-cell-strong">Total</td>
                   {#each dayTotals as total, index (DAYS[index][1])}
-                    <td class="table-cell text-right font-semibold text-slate-950">
+                    <td class="table-cell text-right font-semibold text-slate-950 dark:text-slate-100">
                       {total > 0 ? formatHours(total) : ''}
                     </td>
                   {/each}
-                  <td class="table-cell text-right font-semibold text-slate-950">
+                  <td class="table-cell text-right font-semibold text-slate-950 dark:text-slate-100">
                     {formatHours(grandTotal)}
                   </td>
                 </tr>

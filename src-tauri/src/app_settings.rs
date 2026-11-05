@@ -4,6 +4,9 @@ use crate::AppError;
 
 pub const STARTUP_BACKUP_RETENTION_KEY: &str = "startup_backup_retention";
 pub const DEFAULT_STARTUP_BACKUP_RETENTION: i64 = 3;
+pub const THEME_KEY: &str = "theme";
+pub const DEFAULT_THEME: &str = "system";
+const THEMES: [&str; 3] = ["system", "light", "dark"];
 
 fn validate_startup_backup_retention(retention: i64) -> Result<i64, AppError> {
     if retention < 0 {
@@ -53,10 +56,41 @@ pub async fn set_startup_backup_retention(
     Ok(retention)
 }
 
+/// Returns the stored theme mode, falling back to "system" when unset or unrecognised.
+pub async fn get_theme(pool: &Pool<Sqlite>) -> Result<String, AppError> {
+    let theme = sqlx::query_scalar::<_, String>("SELECT Value FROM app_settings WHERE Key = ?")
+        .bind(THEME_KEY)
+        .fetch_optional(pool)
+        .await?
+        .filter(|value| THEMES.contains(&value.as_str()))
+        .unwrap_or_else(|| DEFAULT_THEME.to_string());
+
+    Ok(theme)
+}
+
+pub async fn set_theme(pool: &Pool<Sqlite>, theme: &str) -> Result<String, AppError> {
+    if !THEMES.contains(&theme) {
+        return Err(AppError::Custom(
+            "Theme must be system, light, or dark.".to_string(),
+        ));
+    }
+
+    sqlx::query(
+        "INSERT INTO app_settings (Key, Value) VALUES (?, ?)
+         ON CONFLICT(Key) DO UPDATE SET Value = excluded.Value",
+    )
+    .bind(THEME_KEY)
+    .bind(theme)
+    .execute(pool)
+    .await?;
+
+    Ok(theme.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        get_startup_backup_retention, set_startup_backup_retention,
+        get_startup_backup_retention, get_theme, set_startup_backup_retention, set_theme,
         DEFAULT_STARTUP_BACKUP_RETENTION,
     };
 
@@ -135,5 +169,52 @@ mod tests {
                 .contains("Invalid startup backup retention value stored in app_settings"),
             "unexpected error: {error}"
         );
+    }
+
+    #[tokio::test]
+    async fn theme_defaults_to_system() {
+        let pool = crate::test_db().await;
+
+        assert_eq!(get_theme(&pool).await.expect("theme should load"), "system");
+    }
+
+    #[tokio::test]
+    async fn theme_round_trips_every_mode() {
+        let pool = crate::test_db().await;
+
+        for mode in ["dark", "light", "system"] {
+            assert_eq!(
+                set_theme(&pool, mode).await.expect("theme should save"),
+                mode
+            );
+            assert_eq!(get_theme(&pool).await.expect("theme should load"), mode);
+        }
+    }
+
+    #[tokio::test]
+    async fn theme_rejects_unknown_mode() {
+        let pool = crate::test_db().await;
+        set_theme(&pool, "dark").await.expect("theme should save");
+
+        let error = set_theme(&pool, "sepia")
+            .await
+            .expect_err("unknown theme should be rejected");
+
+        assert_eq!(error.to_string(), "Theme must be system, light, or dark.");
+        assert_eq!(get_theme(&pool).await.expect("theme should load"), "dark");
+    }
+
+    #[tokio::test]
+    async fn theme_falls_back_to_system_for_invalid_stored_value() {
+        let pool = crate::test_db().await;
+
+        sqlx::query("INSERT INTO app_settings (Key, Value) VALUES (?, ?)")
+            .bind(super::THEME_KEY)
+            .bind("sepia")
+            .execute(&pool)
+            .await
+            .expect("invalid theme row should insert");
+
+        assert_eq!(get_theme(&pool).await.expect("theme should load"), "system");
     }
 }

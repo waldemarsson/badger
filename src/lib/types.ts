@@ -70,3 +70,19 @@ export interface MonthlyReportRow {
 	issue_title: string;
 	hours: number;
 }
+
+/** Standalone todo; link fields are null when the todo is not linked to an issue. */
+export interface TodoRow {
+	id: number;
+	title: string;
+	notes: string | null;
+	done: boolean;
+	due_date: string | null; // YYYY-MM-DD
+	created_at: string;
+	issue_id: number | null;
+	issue_title: string | null;
+	project_id: number | null;
+	project_name: string | null;
+	customer_id: number | null;
+	customer_name: string | null;
+}

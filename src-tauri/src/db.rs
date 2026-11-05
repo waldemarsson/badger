@@ -40,6 +40,16 @@ CREATE TABLE IF NOT EXISTS time_entries (
     Notes     TEXT
 );
 
+CREATE TABLE IF NOT EXISTS todos (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    Title     TEXT    NOT NULL,
+    Notes     TEXT,
+    Done      INTEGER NOT NULL DEFAULT 0,
+    DueDate   TEXT,
+    CreatedAt TEXT    NOT NULL,
+    IssueId   INTEGER REFERENCES issues(id) ON DELETE SET NULL
+);
+
 CREATE TABLE IF NOT EXISTS app_settings (
     Key       TEXT    PRIMARY KEY,
     Value     TEXT    NOT NULL
@@ -92,6 +102,7 @@ mod tests {
             names.contains(&"time_entries"),
             "time_entries table missing"
         );
+        assert!(names.contains(&"todos"), "todos table missing");
         assert!(
             names.contains(&"app_settings"),
             "app_settings table missing"

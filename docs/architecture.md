@@ -16,6 +16,7 @@ TimeTracker is a local-first desktop application built as a Tauri shell around a
 The main user-facing areas are:
 
 - `/` — timesheet entry and editing
+- `/todos` — standalone todos, optionally linked to an issue
 - `/customers` — customer and project management
 - `/reports/weekly` — ISO-week report view
 - `/reports/monthly` — month report view with expandable grouping
@@ -34,6 +35,7 @@ The backend is organized around command modules:
 
 - `customers` and `projects` for reference data
 - `issues` and `time_entries` for core timesheet operations
+- `todos` for standalone todos and their optional issue link
 - `reports` for weekly and monthly rollups
 - `backup` for JSON export and import
 - `startup_backup` for automatic daily backups on application startup
@@ -79,6 +81,7 @@ The schema is created on startup if it does not exist. The main tables are:
 - `projects`
 - `issues`
 - `time_entries`
+- `todos`
 
 Foreign keys are enabled, and cascading deletes are used to keep related records consistent.
 

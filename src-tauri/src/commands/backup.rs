@@ -41,6 +41,18 @@ pub struct BackupTimeEntry {
     pub notes: Option<String>,
 }
 
+/// A todo record as stored in a backup file.
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+pub struct BackupTodo {
+    pub id: i64,
+    pub title: String,
+    pub notes: Option<String>,
+    pub done: bool,
+    pub due_date: Option<String>,
+    pub created_at: String,
+    pub issue_id: Option<i64>,
+}
+
 /// Full database export structure serialised to JSON.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BackupData {
@@ -48,6 +60,9 @@ pub struct BackupData {
     pub projects: Vec<BackupProject>,
     pub issues: Vec<BackupIssue>,
     pub time_entries: Vec<BackupTimeEntry>,
+    /// Absent in backups made before todos existed.
+    #[serde(default)]
+    pub todos: Vec<BackupTodo>,
 }
 
 /// Reads all data from the database and serialises it to a JSON string.
@@ -76,11 +91,18 @@ pub async fn inner_backup_data(pool: &Pool<Sqlite>) -> Result<String, AppError> 
     .fetch_all(pool)
     .await?;
 
+    let todos = sqlx::query_as::<_, BackupTodo>(
+        "SELECT id, Title as title, Notes as notes, Done as done, DueDate as due_date, CreatedAt as created_at, IssueId as issue_id FROM todos ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await?;
+
     let backup = BackupData {
         customers,
         projects,
         issues,
         time_entries,
+        todos,
     };
     serde_json::to_string(&backup).map_err(|e| AppError::Custom(e.to_string()))
 }
@@ -104,6 +126,8 @@ pub async fn inner_restore_data(
         sqlx::query("DELETE FROM customers")
             .execute(&mut *tx)
             .await?;
+        // Todos are not reached by the cascade (their issue link is SET NULL).
+        sqlx::query("DELETE FROM todos").execute(&mut *tx).await?;
 
         for c in &data.customers {
             sqlx::query("INSERT INTO customers (id, Name, UseAsDefault) VALUES (?, ?, ?)")
@@ -147,6 +171,7 @@ pub async fn inner_restore_data(
             .execute(&mut *tx)
             .await?;
         }
+        insert_todos(&data.todos, &mut tx).await?;
     } else if mode == "merge" {
         for c in &data.customers {
             sqlx::query(
@@ -186,11 +211,34 @@ pub async fn inner_restore_data(
                 .execute(&mut *tx)
                 .await?;
         }
+        insert_todos(&data.todos, &mut tx).await?;
     } else {
         return Err(AppError::Custom(format!("Unknown restore mode: {}", mode)));
     }
 
     tx.commit().await?;
+    Ok(())
+}
+
+/// Upserts todos by id. Runs after issues so `IssueId` references resolve.
+async fn insert_todos(
+    todos: &[BackupTodo],
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+) -> Result<(), AppError> {
+    for t in todos {
+        sqlx::query(
+            "INSERT OR REPLACE INTO todos (id, Title, Notes, Done, DueDate, CreatedAt, IssueId) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(t.id)
+        .bind(&t.title)
+        .bind(&t.notes)
+        .bind(t.done)
+        .bind(&t.due_date)
+        .bind(&t.created_at)
+        .bind(t.issue_id)
+        .execute(&mut **tx)
+        .await?;
+    }
     Ok(())
 }
 
@@ -288,6 +336,10 @@ mod tests {
             .execute(pool)
             .await
             .unwrap();
+        sqlx::query("INSERT INTO todos (id, Title, Notes, Done, DueDate, CreatedAt, IssueId) VALUES (1, 'Linked', 'n', 0, '2024-02-01', '2024-01-01T00:00:00.000', 1), (2, 'Standalone', NULL, 1, NULL, '2024-01-02T00:00:00.000', NULL)")
+            .execute(pool)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -312,6 +364,48 @@ mod tests {
         assert_eq!(result.issues.len(), original.issues.len());
         assert_eq!(result.time_entries.len(), original.time_entries.len());
         assert_eq!(result.customers[0].name, original.customers[0].name);
+        assert_eq!(result.todos.len(), 2);
+        assert_eq!(result.todos[0].issue_id, Some(1));
+        assert_eq!(result.todos[1].issue_id, None);
+        assert!(result.todos[1].done);
+    }
+
+    #[tokio::test]
+    async fn test_restore_merge_roundtrips_todos() {
+        let pool = crate::test_db().await;
+        seed_test_data(&pool).await;
+        let json = inner_backup_data(&pool).await.expect("backup failed");
+
+        sqlx::query("DELETE FROM todos")
+            .execute(&pool)
+            .await
+            .unwrap();
+        inner_restore_data("merge", &json, &pool)
+            .await
+            .expect("merge restore failed");
+
+        let result: BackupData =
+            serde_json::from_str(&inner_backup_data(&pool).await.unwrap()).unwrap();
+        assert_eq!(result.todos.len(), 2);
+        assert_eq!(result.todos[0].title, "Linked");
+        assert_eq!(result.todos[0].issue_id, Some(1));
+    }
+
+    #[tokio::test]
+    async fn test_restore_backup_without_todos_field() {
+        let pool = crate::test_db().await;
+        seed_test_data(&pool).await;
+        let legacy = r#"{"customers":[{"id":1,"name":"C","use_as_default":false}],"projects":[],"issues":[],"time_entries":[]}"#;
+
+        inner_restore_data("replace", legacy, &pool)
+            .await
+            .expect("legacy backup must restore");
+
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM todos")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count.0, 0, "replace clears todos not in the backup");
     }
 
     #[tokio::test]

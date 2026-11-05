@@ -5,3 +5,4 @@ pub mod issues;
 pub mod projects;
 pub mod reports;
 pub mod time_entries;
+pub mod todos;

@@ -30,3 +30,6 @@ WixTools*/
 .vscode/settings.json
 *.swp
 .nuget/
+
+# trailmix
+.trailmix/

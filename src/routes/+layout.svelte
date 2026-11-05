@@ -7,6 +7,7 @@
 
   const navLinks = [
     { href: '/', label: 'Timesheet' },
+    { href: '/todos', label: 'Todos' },
     { href: '/reports/weekly', label: 'Weekly' },
     { href: '/reports/monthly', label: 'Monthly' },
     { href: '/settings', label: 'Settings' },

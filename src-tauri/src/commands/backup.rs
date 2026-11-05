@@ -304,9 +304,7 @@ pub async fn inner_list_startup_backups(
 
 /// Reads the startup backup retention setting from the database.
 #[tauri::command]
-pub async fn get_startup_backup_retention(
-    pool: State<'_, Pool<Sqlite>>,
-) -> Result<i64, AppError> {
+pub async fn get_startup_backup_retention(pool: State<'_, Pool<Sqlite>>) -> Result<i64, AppError> {
     inner_get_startup_backup_retention(&pool).await
 }
 

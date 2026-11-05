@@ -11,7 +11,7 @@
     { href: '/reports/weekly', label: 'Weekly' },
     { href: '/reports/monthly', label: 'Monthly' },
     { href: '/settings', label: 'Settings' },
-  ];
+  ] as const;
 </script>
 
 <nav class="border-b border-slate-200 bg-white">

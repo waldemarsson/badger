@@ -268,8 +268,14 @@ mod tests {
         let backup_dir = backup_root_dir(&db_path).join("2026-05-09");
         let temp_file = backup_dir.join(".backup.json.tmp");
 
-        assert!(!temp_file.exists(), "temp file should not exist after write");
-        assert!(backup_dir.join("backup.json").exists(), "backup.json should exist");
+        assert!(
+            !temp_file.exists(),
+            "temp file should not exist after write"
+        );
+        assert!(
+            backup_dir.join("backup.json").exists(),
+            "backup.json should exist"
+        );
 
         fs::remove_dir_all(&test_dir).expect("test directory cleanup should succeed");
     }
@@ -286,8 +292,8 @@ mod tests {
         let backup_path = backup_root_dir(&db_path)
             .join("2026-05-09")
             .join("backup.json");
-        let first_content = fs::read_to_string(&backup_path)
-            .expect("first backup should be readable");
+        let first_content =
+            fs::read_to_string(&backup_path).expect("first backup should be readable");
 
         assert_eq!(first_content, r#"{"version":1}"#);
 
@@ -295,8 +301,8 @@ mod tests {
         write_daily_backup(&db_path, "2026-05-09", r#"{"version":2}"#)
             .expect("second backup write should succeed");
 
-        let second_content = fs::read_to_string(&backup_path)
-            .expect("second backup should be readable");
+        let second_content =
+            fs::read_to_string(&backup_path).expect("second backup should be readable");
 
         assert_eq!(second_content, r#"{"version":2}"#);
 

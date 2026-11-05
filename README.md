@@ -59,6 +59,7 @@ Development runs started with `npm run dev` store their SQLite database and logs
 - [Configuration](docs/configuration.md)
 - [Data and backup](docs/data-and-backup.md)
 - [Development notes](docs/development-notes.md)
+- [Roadmap](docs/roadmap.md)
 
 ## Project structure
 

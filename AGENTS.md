@@ -67,6 +67,7 @@ The user cares about polish. A plain CRUD table was rejected for todos and repla
 Design language (follow existing pages before inventing):
 
 - Palette: slate neutrals, with sky for active/drag, emerald for done, red for overdue/errors, amber for due today, and violet for issue links.
+- Dark mode: every color utility needs a `dark:` counterpart (class strategy). Dark uses the `neutral` grays (not slate, which reads blue): `neutral-950` page / `neutral-900` card / `neutral-800` ring, text `neutral-100`/`neutral-400`, accents `-400` text on `-500/10` tints. Prefer `app.css` primitives, which already handle it. Screenshot both themes.
 - Surfaces: `rounded-xl`/`rounded-2xl`, `ring-1 ring-slate-200`, `shadow-sm`, lifting on hover (`hover:-translate-y-0.5 hover:shadow-md`).
 - Every page starts with the `page-hero` block, followed by content in `table-card` / `panel-card` or purpose-built layouts.
 - Reuse the `app.css` primitives: `btn-primary`, `btn-secondary(-sm)`, `btn-danger(-sm)`, `btn-icon-*`, `form-input`, `form-select`, `form-textarea`, `form-label`, `form-error`, `alert-*`.

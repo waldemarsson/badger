@@ -161,6 +161,9 @@ pub fn run() {
                     commands::backup::get_startup_backup_retention,
                     commands::backup::set_startup_backup_retention,
                     commands::backup::list_startup_backups,
+                    // Settings
+                    commands::settings::get_theme,
+                    commands::settings::set_theme,
                     // Dev-only
                     dev_seed::seed_database,
                 ]
@@ -206,6 +209,9 @@ pub fn run() {
                     commands::backup::get_startup_backup_retention,
                     commands::backup::set_startup_backup_retention,
                     commands::backup::list_startup_backups,
+                    // Settings
+                    commands::settings::get_theme,
+                    commands::settings::set_theme,
                 ]
             }
         })

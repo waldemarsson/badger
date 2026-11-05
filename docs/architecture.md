@@ -19,7 +19,7 @@ The main user-facing areas are:
 - `/todos` — kanban board of standalone todos (drag cards between status columns), optionally linked to an issue
 - `/reports/weekly` — ISO-week report view
 - `/reports/monthly` — month report view with expandable grouping
-- `/settings` — customer and project management (cards with inline add, rename, default, and delete), backup/restore, and dev-only seed tooling
+- `/settings` — customer and project management (cards with inline add, rename, default, and delete), preferences (System/Light/Dark appearance), backup/restore, and dev-only seed tooling
 
 There is also a `/backup` route in the tree, but it is currently still a placeholder while the real backup and restore workflow lives under Settings.
 
@@ -37,6 +37,7 @@ The backend is organized around command modules:
 - `todos` for standalone todos and their optional issue link
 - `reports` for weekly and monthly rollups
 - `backup` for JSON export and import
+- `settings` for app preferences (theme) stored in `app_settings`
 - `startup_backup` for automatic daily backups on application startup
 - `dev_seed` for debug-only sample data
 
@@ -51,6 +52,10 @@ Svelte component
   -> sqlx query against SQLite
   -> serialized result back to the frontend
 ```
+
+### Theme
+
+Dark mode uses Tailwind's `darkMode: "class"`: a `dark` class on `<html>` activates the `dark:` variants in `app.css` and markup. Dark surfaces use Tailwind's `neutral` grays; light mode uses `slate`. The theme mode (`system`, `light`, `dark`) is stored in `app_settings` via `get_theme`/`set_theme`; `src/lib/theme-state.svelte.ts` applies it (class, CSS `color-scheme`, native window theme) and mirrors it to `localStorage` so the inline script in `src/app.html` paints the right theme before the app loads. The setting is not part of backups.
 
 The frontend keeps TypeScript interfaces in `src/lib/types.ts` aligned with the Rust response shapes so route components can work with typed command results.
 

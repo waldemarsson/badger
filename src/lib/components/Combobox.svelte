@@ -94,7 +94,7 @@
 			autocomplete="off"
 		/>
 		<svg
-			class="pointer-events-none absolute right-2 h-4 w-4 text-slate-400"
+			class="pointer-events-none absolute right-2 h-4 w-4 text-slate-400 dark:text-neutral-500"
 			viewBox="0 0 24 24"
 			fill="none"
 			stroke="currentColor"
@@ -106,13 +106,13 @@
 
 	{#if open && (filtered.length > 0 || isNew)}
 		<ul
-			class="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-xl border border-slate-200 bg-white shadow-lg"
+			class="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-xl border border-slate-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 shadow-lg dark:shadow-black/40"
 		>
 			{#each filtered.slice(0, 10) as item (item.value)}
 				<li>
 					<button
 						type="button"
-						class="w-full px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 focus:bg-slate-50 focus:outline-none"
+						class="w-full px-3 py-2 text-left text-sm text-slate-700 dark:text-neutral-300 hover:bg-slate-50 dark:hover:bg-neutral-700 focus:bg-slate-50 dark:focus:bg-neutral-700 focus:outline-none"
 						onmousedown={() => select(item)}
 					>
 						{item.label}
@@ -123,15 +123,15 @@
 				<li>
 					<button
 						type="button"
-						class="w-full px-3 py-2 text-left text-sm hover:bg-slate-50 focus:outline-none"
+						class="w-full px-3 py-2 text-left text-sm hover:bg-slate-50 dark:hover:bg-neutral-700 focus:outline-none"
 						onmousedown={() => {
 							value = inputText;
 							onchange?.(inputText);
 							open = false;
 						}}
 					>
-						<span class="font-medium text-slate-950">{inputText.trim()}</span>
-						<span class="ml-1 text-xs font-normal text-slate-400">(new)</span>
+						<span class="font-medium text-slate-950 dark:text-neutral-100">{inputText.trim()}</span>
+						<span class="ml-1 text-xs font-normal text-slate-400 dark:text-neutral-500">(new)</span>
 					</button>
 				</li>
 			{/if}

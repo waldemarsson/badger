@@ -197,7 +197,7 @@
           <button class="btn-icon-secondary" onclick={prevMonth} disabled={loading} title="Previous month">
             <ChevronLeft size={16} />
           </button>
-          <span class="min-w-[8rem] text-center text-sm font-semibold text-slate-700">
+          <span class="min-w-[8rem] text-center text-sm font-semibold text-slate-700 dark:text-neutral-300">
             {label}
           </span>
           <button class="btn-icon-secondary" onclick={nextMonth} disabled={loading} title="Next month">
@@ -213,7 +213,7 @@
       </div>
 
       {#if copyMessage}
-        <div class="mx-4 mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+        <div class="mx-4 mt-3 rounded-lg border border-emerald-200 dark:border-emerald-500/30 bg-emerald-50 dark:bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300">
           {copyMessage}
         </div>
       {/if}
@@ -226,7 +226,7 @@
         {#if rows.length === 0 && !loading}
           <div class="px-4 py-6">
             <div class="empty-state">
-              <p class="font-semibold text-slate-700">No entries this month</p>
+              <p class="font-semibold text-slate-700 dark:text-neutral-300">No entries this month</p>
               <p>No time was logged for {label}.</p>
             </div>
           </div>
@@ -241,10 +241,10 @@
             <tbody>
               {#each tree as customer (customer.id)}
                 <!-- Customer row (Level 0) — collapsed by default -->
-                <tr class="table-row bg-slate-50">
+                <tr class="table-row bg-slate-50 dark:bg-neutral-800/40">
                   <td class="table-cell">
                     <button
-                      class="p-1 rounded text-slate-400 hover:text-slate-700 transition mr-1"
+                      class="p-1 rounded text-slate-400 dark:text-neutral-500 hover:text-slate-700 dark:hover:text-neutral-300 transition mr-1"
                       onclick={() => toggleCustomer(customer.id)}
                     >
                       {#if expandedCustomers.includes(customer.id)}
@@ -253,9 +253,9 @@
                         <ChevronRight size={14} />
                       {/if}
                     </button>
-                    <span class="font-semibold text-slate-950">{customer.name}</span>
+                    <span class="font-semibold text-slate-950 dark:text-neutral-100">{customer.name}</span>
                   </td>
-                  <td class="table-cell text-right font-semibold text-slate-950">
+                  <td class="table-cell text-right font-semibold text-slate-950 dark:text-neutral-100">
                     {formatHours(customer.hours)}
                   </td>
                 </tr>
@@ -263,11 +263,11 @@
                 {#if expandedCustomers.includes(customer.id)}
                   {#each customer.projects as project (project.id)}
                     <!-- Project row (Level 1) — pl-6 indent -->
-                    <tr class="table-row bg-white">
+                    <tr class="table-row bg-white dark:bg-neutral-900">
                       <td class="table-cell pl-6">
                         <div class="flex items-center gap-2">
                           <button
-                            class="p-1 rounded text-slate-400 hover:text-slate-700 transition"
+                            class="p-1 rounded text-slate-400 dark:text-neutral-500 hover:text-slate-700 dark:hover:text-neutral-300 transition"
                             onclick={() => toggleProject(customer.id, project.id)}
                             title={expandedProjects.includes(`${customer.id}-${project.id}`) ? 'Collapse project' : 'Expand project'}
                             aria-label={expandedProjects.includes(`${customer.id}-${project.id}`) ? 'Collapse project' : 'Expand project'}
@@ -279,7 +279,7 @@
                             {/if}
                           </button>
 
-                          <span class="text-slate-800">{project.name}</span>
+                          <span class="text-slate-800 dark:text-neutral-200">{project.name}</span>
 
                           <div class="ml-auto flex items-center gap-1">
                             <button
@@ -301,7 +301,7 @@
                           </div>
                         </div>
                       </td>
-                      <td class="table-cell text-right text-slate-800">
+                      <td class="table-cell text-right text-slate-800 dark:text-neutral-200">
                         {formatHours(project.hours)}
                       </td>
                     </tr>
@@ -310,8 +310,8 @@
                       {#each project.issues as issue (issue.id)}
                         <!-- Issue row (Level 2) — pl-12 indent, no toggle -->
                         <tr class="table-row-history">
-                          <td class="table-cell pl-12 text-slate-600">{issue.title}</td>
-                          <td class="table-cell text-right text-slate-600">
+                          <td class="table-cell pl-12 text-slate-600 dark:text-neutral-400">{issue.title}</td>
+                          <td class="table-cell text-right text-slate-600 dark:text-neutral-400">
                             {formatHours(issue.hours)}
                           </td>
                         </tr>
@@ -323,7 +323,7 @@
 
               <!-- Grand total row -->
               {#if tree.length > 0}
-                <tr class="border-t-2 border-slate-300">
+                <tr class="border-t-2 border-slate-300 dark:border-neutral-700">
                   <td class="table-cell-strong px-3 py-2">Total</td>
                   <td class="table-cell-strong px-3 py-2 text-right">{formatHours(grandTotal)}</td>
                 </tr>

@@ -338,4 +338,50 @@
   .nav-link-active {
     @apply bg-slate-950 text-white shadow-sm hover:bg-slate-900 hover:text-white;
   }
+
+  /* Todos kanban board */
+  .kanban-lane {
+    @apply flex min-h-[24rem] flex-col rounded-2xl bg-slate-100/80 p-3 ring-1 ring-slate-200/70 transition-colors duration-200;
+  }
+
+  .kanban-lane-target {
+    @apply bg-sky-50 ring-2 ring-sky-300/70;
+  }
+
+  .kanban-card {
+    @apply cursor-grab select-none rounded-xl bg-white p-3 shadow-sm ring-1 ring-slate-200/80 transition duration-150 hover:-translate-y-0.5 hover:shadow-md hover:ring-slate-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400;
+    touch-action: none;
+  }
+
+  .kanban-placeholder {
+    @apply rounded-xl border-2 border-dashed border-sky-300 bg-sky-100/40 p-3;
+  }
+
+  .kanban-add-card {
+    @apply mt-2 flex w-full items-center gap-1.5 rounded-xl px-2 py-1.5 text-sm text-slate-500 transition hover:bg-slate-200/70 hover:text-slate-800;
+  }
+
+  .kanban-badge {
+    @apply inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium ring-1 ring-inset;
+  }
+
+  .kanban-drag-lift {
+    @apply cursor-grabbing shadow-2xl ring-2 ring-sky-400/50;
+    animation: kanban-lift 160ms ease-out forwards;
+  }
+
+  body.is-dragging,
+  body.is-dragging * {
+    @apply select-none;
+    cursor: grabbing !important;
+  }
+}
+
+@keyframes kanban-lift {
+  from {
+    transform: rotate(0deg) scale(1);
+  }
+  to {
+    transform: rotate(2.5deg) scale(1.04);
+  }
 }

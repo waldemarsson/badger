@@ -8,8 +8,9 @@ TimeTracker stores its working data in a local SQLite database. The schema is in
 - `projects` — customer-owned projects, also with a default marker
 - `issues` — project-owned work items with an optional external identifier
 - `time_entries` — dated hour records linked to issues
+- `todos` — standalone kanban todos (`Status`: not started / in progress / done, ordered by `Position`) with an optional link to an issue
 
-Deletes cascade downward from customers to projects, issues, and time entries, so the hierarchy stays consistent without manual cleanup across tables.
+Deletes cascade downward from customers to projects, issues, and time entries, so the hierarchy stays consistent without manual cleanup across tables. Todos are never deleted by a cascade: deleting a linked issue only clears the todo's link.
 
 ## Database behavior
 
@@ -62,12 +63,13 @@ Startup backup creation, trimming, and listing are handled entirely in Rust and 
 
 ## Backup format
 
-Backup export writes a JSON document containing four arrays:
+Backup export writes a JSON document containing five arrays:
 
 - `customers`
 - `projects`
 - `issues`
 - `time_entries`
+- `todos` (optional on import, so backups made before todos existed still restore)
 
 The backup commands preserve record identifiers so a restore can rebuild the same relationships between records.
 
@@ -84,7 +86,7 @@ The restore workflow supports two modes:
 ### Replace
 
 - Deletes all current customer data first
-- Relies on cascading foreign keys to clear projects, issues, and time entries
+- Relies on cascading foreign keys to clear projects, issues, and time entries, and clears todos explicitly
 - Re-inserts the full backup afterward
 
 Use replace carefully: it wipes the current dataset before restoring.

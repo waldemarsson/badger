@@ -145,6 +145,13 @@ pub fn run() {
                     commands::reports::monthly_report,
                     // Time Entries helper (Phase 4 delete guard)
                     commands::time_entries::count_project_time_entries,
+                    // Todos
+                    commands::todos::list_todos,
+                    commands::todos::create_todo,
+                    commands::todos::update_todo,
+                    commands::todos::move_todo,
+                    commands::todos::delete_todo,
+                    commands::todos::create_issue_for_todo,
                     // Backup (BE-07)
                     commands::backup::backup_data_to_file,
                     commands::backup::read_backup_file,
@@ -181,6 +188,13 @@ pub fn run() {
                     commands::reports::monthly_report,
                     // Time Entries helper (Phase 4 delete guard)
                     commands::time_entries::count_project_time_entries,
+                    // Todos
+                    commands::todos::list_todos,
+                    commands::todos::create_todo,
+                    commands::todos::update_todo,
+                    commands::todos::move_todo,
+                    commands::todos::delete_todo,
+                    commands::todos::create_issue_for_todo,
                     // Backup (BE-07)
                     commands::backup::backup_data_to_file,
                     commands::backup::read_backup_file,

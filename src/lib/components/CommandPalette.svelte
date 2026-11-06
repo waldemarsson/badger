@@ -23,7 +23,7 @@
 		shiftDate
 	} from '#lib/palette.js';
 	import { changes, logTimeRequest, palette, showToast, type LogTimePrefill } from '#lib/palette-state.svelte.js';
-	import type { Customer, Issue, Note, PaletteSettings, Project, TimeEntryRow } from '#lib/types.js';
+	import type { Customer, Issue, PaletteSettings, Project, TimeEntryRow } from '#lib/types.js';
 
 	let {
 		pages,
@@ -69,7 +69,7 @@
 	const commands: Command[] = $derived([
 		{ id: 'new-todo', label: 'New todo', group: 'Actions', run: () => goTo('todo') },
 		{ id: 'log-time', label: 'Log time', group: 'Actions', run: () => void startLogTime() },
-		{ id: 'new-note', label: 'New note', group: 'Actions', run: () => void createNote() },
+		{ id: 'new-note', label: 'New note', group: 'Actions', run: createNote },
 		...pages.map((p): Command => ({
 			id: `page:${p.href}`,
 			label: p.label,
@@ -297,21 +297,11 @@
 
 	// ── New note ───────────────────────────────────────────────────────────────────
 
-	async function createNote(): Promise<void> {
-		if (busy) return;
-		busy = true;
-		error = '';
-		try {
-			const note = await invoke<Note>('create_note');
-			changes.notes += 1;
-			close();
-			// eslint-disable-next-line svelte/no-navigation-without-resolve -- resolved path plus a query string
-			await goto(`${resolve('/notes')}?id=${note.id}`);
-		} catch (e) {
-			error = String(e);
-		} finally {
-			busy = false;
-		}
+	/** The notes page creates the note on `?new=1`, so ⌘N and the palette share one path. */
+	function createNote(): void {
+		close();
+		// eslint-disable-next-line svelte/no-navigation-without-resolve -- resolved path plus a query string
+		void goto(`${resolve('/notes')}?new=1`);
 	}
 
 	// ── Keyboard ───────────────────────────────────────────────────────────────────

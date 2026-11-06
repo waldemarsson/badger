@@ -561,10 +561,6 @@
     @apply flex flex-col items-center gap-1.5 rounded-xl border border-dashed border-slate-200 px-4 py-8 text-center text-sm text-slate-500 dark:border-neutral-800 dark:text-neutral-400;
   }
 
-  .notes-hero-kbd {
-    @apply rounded-md border border-white/15 bg-white/10 px-1.5 py-0.5 font-sans text-xs text-white;
-  }
-
   .notes-btn-kbd {
     @apply ml-1 rounded border border-white/25 px-1 font-sans text-[10px] font-medium text-white/70 dark:border-neutral-950/20 dark:text-neutral-950/60;
   }

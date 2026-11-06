@@ -7,7 +7,6 @@
 	import { fade } from 'svelte/transition';
 	import { filterNotes, neighborAfterRemoval, relativeDate, sortNotes, upsertNote } from '#lib/notes.js';
 	import { NoteSaveQueue } from '#lib/note-save-queue.js';
-	import { changes } from '#lib/palette-state.svelte.js';
 	import { registerFlushHandler } from '#lib/flush-guard.js';
 	import type { Note, NoteSummary } from '#lib/types.js';
 	import NoteEditor from '#lib/components/NoteEditor.svelte';
@@ -45,6 +44,7 @@
 
 	let editor = $state<ReturnType<typeof NoteEditor>>();
 	let titleInput = $state<HTMLInputElement>();
+	let searchInput = $state<HTMLInputElement>();
 	let layout = $state<HTMLElement>();
 	let paneHeight = $state(560);
 
@@ -116,6 +116,7 @@
 
 	function setUrl(id: number | null): void {
 		const url = new URL(window.location.href);
+		url.searchParams.delete('new');
 		if (id === null) url.searchParams.delete('id');
 		else url.searchParams.set('id', String(id));
 		if (url.href === window.location.href) return;
@@ -189,6 +190,11 @@
 	});
 
 	// ── Create ────────────────────────────────────────────────────────────────────
+
+	// The palette's "New note" navigates to ?new=1; create here so the title gets focus.
+	$effect(() => {
+		if (page.url.searchParams.get('new') !== null) untrack(requestCreate);
+	});
 
 	let createChain: Promise<void> = Promise.resolve();
 
@@ -382,14 +388,6 @@
 			void queue.flush();
 		};
 	});
-
-	// Reload when the command palette creates a note.
-	let seenNoteChanges = changes.notes;
-	$effect(() => {
-		if (changes.notes === seenNoteChanges) return;
-		seenNoteChanges = changes.notes;
-		void load();
-	});
 </script>
 
 <svelte:window onkeydown={onWindowKeydown} onblur={() => void queue.flush()} onresize={measure} />
@@ -418,17 +416,8 @@
 	{/each}
 {/snippet}
 
-<div class="page-shell">
+<div class="page-shell max-w-none">
 	<div class="page-view">
-		<section class="page-hero">
-			<p class="page-hero-kicker">TimeTracker</p>
-			<h1 class="page-hero-title">Notes</h1>
-			<p class="page-hero-copy">
-				Markdown notes that save as you type.
-				<span class="text-slate-400 dark:text-neutral-400">Press <kbd class="notes-hero-kbd">⌘N</kbd> for a new note.</span>
-			</p>
-		</section>
-
 		{#if loadError}
 			<div class="alert-panel alert-error">
 				<p class="alert-error-title">Could not load notes</p>
@@ -443,14 +432,30 @@
 					<label class="relative min-w-0 flex-1">
 						<Search size={15} class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 dark:text-neutral-500" />
 						<input
+							bind:this={searchInput}
 							bind:value={query}
-							class="form-input py-1.5 pl-8"
+							class="form-input py-1.5 pl-8 pr-8"
 							placeholder="Search notes"
 							aria-label="Search notes"
 							autocomplete="off"
 							spellcheck="false"
 							onkeydown={(e) => e.key === 'Escape' && (query = '')}
 						/>
+						{#if query}
+							<button
+								type="button"
+								class="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-md p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+								title="Clear search"
+								aria-label="Clear search"
+								onclick={() => {
+									query = '';
+									searchInput?.focus();
+								}}
+								transition:fade={{ duration: 150 }}
+							>
+								<X size={14} />
+							</button>
+						{/if}
 					</label>
 					<button type="button" class="btn-icon-secondary" title="New note (⌘N)" aria-label="New note" onclick={requestCreate}>
 						<Plus size={16} />

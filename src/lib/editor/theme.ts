@@ -20,7 +20,6 @@ const editorTheme = EditorView.theme({
 		overflow: 'auto'
 	},
 	'.cm-content': {
-		maxWidth: '52rem',
 		width: '100%',
 		margin: '0 auto',
 		padding: '1rem 0 40vh',

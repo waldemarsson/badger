@@ -9,7 +9,7 @@ export const palette = $state({
 });
 
 /** Bumped after the palette creates data; pages showing it reload. */
-export const changes = $state({ timeEntries: 0, todos: 0, notes: 0 });
+export const changes = $state({ timeEntries: 0, todos: 0 });
 
 export const toast = $state({ message: '', id: 0 });
 

@@ -77,7 +77,7 @@ The editor is CodeMirror 6 (`@codemirror/*` packages only: no `codemirror` meta-
 
 The title is a separate field above the editor, not derived from a heading, because wikilinks need a stable, unique, user-controlled name. Rename commits on Enter or blur; Esc reverts.
 
-Autosave is a pure queue in `src/lib/note-save-queue.ts` (tested in `tests/note-save-queue.test.mjs`): 800 ms after the last edit, plus a flush on note switch, window blur, the tab becoming hidden and leaving `/notes`. One save per note is in flight at a time and the latest text wins. Unchanged text is never sent. A failed save keeps the note in a page-level dirty set and is retried on every edit and flush; navigating away from `/notes` is blocked until it succeeds. The palette's "New note" and ⌘N on the page create a note (`changes.notes` makes an open `/notes` reload).
+Autosave is a pure queue in `src/lib/note-save-queue.ts` (tested in `tests/note-save-queue.test.mjs`): 800 ms after the last edit, plus a flush on note switch, window blur, the tab becoming hidden and leaving `/notes`. One save per note is in flight at a time and the latest text wins. Unchanged text is never sent. A failed save keeps the note in a page-level dirty set and is retried on every edit and flush; navigating away from `/notes` is blocked until it succeeds. ⌘N on the page creates a note; the palette's "New note" navigates to `/notes?new=1`, which runs the same create path (title focused).
 
 #### Quit/close flush guard
 

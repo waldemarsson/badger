@@ -12,6 +12,9 @@ pub const DEFAULT_PALETTE_SHORTCUT: &str = "Meta+K";
 pub const PALETTE_LAST_PROJECT_KEY: &str = "palette_last_project_id";
 pub const PALETTE_LAST_ISSUE_KEY: &str = "palette_last_issue_id";
 const MAX_SHORTCUT_LEN: usize = 64;
+pub const DAILY_TARGET_KEY: &str = "daily_target";
+pub const DEFAULT_DAILY_TARGET: f64 = 8.0;
+const MAX_DAILY_TARGET: f64 = 24.0;
 
 /// Command palette preferences. Last-used ids may point at deleted rows;
 /// the frontend falls back when they do.
@@ -173,13 +176,112 @@ pub async fn set_palette_last_used(
     Ok(())
 }
 
+fn is_valid_daily_target(target: f64) -> bool {
+    target.is_finite() && (0.0..=MAX_DAILY_TARGET).contains(&target)
+}
+
+/// Returns the daily hours target, falling back to 8 when unset or invalid.
+pub async fn get_daily_target(pool: &Pool<Sqlite>) -> Result<f64, AppError> {
+    let target = get_value(pool, DAILY_TARGET_KEY)
+        .await?
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|target| is_valid_daily_target(*target))
+        .unwrap_or(DEFAULT_DAILY_TARGET);
+
+    Ok(target)
+}
+
+/// Stores the daily hours target (0 = off). Allowed range is 0–24.
+pub async fn set_daily_target(pool: &Pool<Sqlite>, target: f64) -> Result<f64, AppError> {
+    if !is_valid_daily_target(target) {
+        return Err(AppError::Custom(
+            "Daily target must be between 0 and 24 hours".to_string(),
+        ));
+    }
+
+    set_value(pool, DAILY_TARGET_KEY, &target.to_string()).await?;
+    Ok(target)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        get_palette_settings, get_startup_backup_retention, get_theme, set_palette_last_used,
-        set_palette_shortcut, set_startup_backup_retention, set_theme, DEFAULT_PALETTE_SHORTCUT,
+        get_daily_target, get_palette_settings, get_startup_backup_retention, get_theme,
+        set_daily_target, set_palette_last_used, set_palette_shortcut,
+        set_startup_backup_retention, set_theme, DEFAULT_DAILY_TARGET, DEFAULT_PALETTE_SHORTCUT,
         DEFAULT_STARTUP_BACKUP_RETENTION,
     };
+
+    #[tokio::test]
+    async fn daily_target_defaults_to_8() {
+        let pool = crate::test_db().await;
+
+        let target = get_daily_target(&pool).await.expect("target should load");
+
+        assert_eq!(target, DEFAULT_DAILY_TARGET);
+        assert_eq!(target, 8.0);
+    }
+
+    #[tokio::test]
+    async fn daily_target_round_trips_including_zero_and_fractions() {
+        let pool = crate::test_db().await;
+
+        for value in [7.5, 0.0, 24.0, 6.25] {
+            assert_eq!(
+                set_daily_target(&pool, value)
+                    .await
+                    .expect("target should save"),
+                value
+            );
+            assert_eq!(
+                get_daily_target(&pool).await.expect("target should load"),
+                value
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn daily_target_rejects_out_of_range_and_non_finite() {
+        let pool = crate::test_db().await;
+        set_daily_target(&pool, 6.0)
+            .await
+            .expect("target should save");
+
+        for value in [-1.0, 24.5, f64::NAN, f64::INFINITY] {
+            let error = set_daily_target(&pool, value)
+                .await
+                .expect_err("invalid target should be rejected");
+            assert_eq!(
+                error.to_string(),
+                "Daily target must be between 0 and 24 hours"
+            );
+        }
+
+        assert_eq!(get_daily_target(&pool).await.unwrap(), 6.0);
+    }
+
+    #[tokio::test]
+    async fn daily_target_falls_back_to_default_for_invalid_stored_value() {
+        let pool = crate::test_db().await;
+
+        for stored in ["abc", "", "-3", "30", "NaN", "inf"] {
+            sqlx::query(
+                "INSERT INTO app_settings (Key, Value) VALUES (?, ?)
+                 ON CONFLICT(Key) DO UPDATE SET Value = excluded.Value",
+            )
+            .bind(super::DAILY_TARGET_KEY)
+            .bind(stored)
+            .execute(&pool)
+            .await
+            .expect("invalid target row should insert");
+
+            assert_eq!(
+                get_daily_target(&pool).await.expect("target should load"),
+                DEFAULT_DAILY_TARGET,
+                "stored value {stored:?} should fall back"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn palette_settings_default_to_meta_k_and_no_last_used() {

@@ -69,12 +69,49 @@ pub async fn set_palette_last_used(
     inner_set_palette_last_used(project_id, issue_id, &pool).await
 }
 
+/// Reads the daily hours target (default 8, 0 = off).
+pub async fn inner_get_daily_target(pool: &Pool<Sqlite>) -> Result<f64, AppError> {
+    crate::app_settings::get_daily_target(pool).await
+}
+
+/// Validates (0–24) and stores the daily hours target.
+pub async fn inner_set_daily_target(target: f64, pool: &Pool<Sqlite>) -> Result<f64, AppError> {
+    crate::app_settings::set_daily_target(pool, target).await
+}
+
+#[tauri::command]
+pub async fn get_daily_target(pool: State<'_, Pool<Sqlite>>) -> Result<f64, AppError> {
+    inner_get_daily_target(&pool).await
+}
+
+#[tauri::command]
+pub async fn set_daily_target(target: f64, pool: State<'_, Pool<Sqlite>>) -> Result<f64, AppError> {
+    inner_set_daily_target(target, &pool).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        inner_get_palette_settings, inner_get_theme, inner_set_palette_last_used,
-        inner_set_palette_shortcut, inner_set_theme,
+        inner_get_daily_target, inner_get_palette_settings, inner_get_theme,
+        inner_set_daily_target, inner_set_palette_last_used, inner_set_palette_shortcut,
+        inner_set_theme,
     };
+
+    #[tokio::test]
+    async fn daily_target_commands_round_trip_and_validate() {
+        let pool = crate::test_db().await;
+
+        assert_eq!(inner_get_daily_target(&pool).await.unwrap(), 8.0);
+        assert_eq!(inner_set_daily_target(7.5, &pool).await.unwrap(), 7.5);
+        assert_eq!(inner_get_daily_target(&pool).await.unwrap(), 7.5);
+
+        let error = inner_set_daily_target(25.0, &pool).await.unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Daily target must be between 0 and 24 hours"
+        );
+        assert_eq!(inner_get_daily_target(&pool).await.unwrap(), 7.5);
+    }
 
     #[tokio::test]
     async fn palette_settings_commands_round_trip() {

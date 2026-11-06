@@ -1,495 +1,406 @@
 <script lang="ts">
-import { invoke } from '@tauri-apps/api/core';
-import { onMount, untrack } from 'svelte';
-import { getMonthBounds, getWeekBounds, today } from '#lib/date-ranges.js';
-import { loadInitialTimesheetData } from '#lib/timesheet-startup.js';
-import type { Customer, Project, Issue, TimeEntryRow } from '#lib/types.js';
-import Combobox from '#lib/components/Combobox.svelte';
-import { changes } from '#lib/palette-state.svelte.js';
-import Pencil from 'lucide-svelte/icons/pencil';
-import Trash2 from 'lucide-svelte/icons/trash-2';
-import Check from 'lucide-svelte/icons/check';
-import X from 'lucide-svelte/icons/x';
+	import { invoke } from '@tauri-apps/api/core';
+	import { resolve } from '$app/paths';
+	import { onMount } from 'svelte';
+	import { flip } from 'svelte/animate';
+	import { fade } from 'svelte/transition';
+	import { today } from '#lib/date-ranges.js';
+	import { formatShortcut } from '#lib/palette.js';
+	import { changes, palette, requestLogTime } from '#lib/palette-state.svelte.js';
+	import {
+		dailyTotals,
+		formatHours,
+		inProgress,
+		isWeekend,
+		needsAttention,
+		progress,
+		sumHours,
+		todayEntries,
+		weekDays
+	} from '#lib/today.js';
+	import { formatDue } from '#lib/todos.js';
+	import type { TimeEntryRow, TodoRow } from '#lib/types.js';
+	import TodoModal from '#lib/components/TodoModal.svelte';
+	import Check from 'lucide-svelte/icons/check';
+	import Clock from 'lucide-svelte/icons/clock';
+	import Link2 from 'lucide-svelte/icons/link-2';
+	import Plus from 'lucide-svelte/icons/plus';
+	import CalendarDays from 'lucide-svelte/icons/calendar-days';
+	import X from 'lucide-svelte/icons/x';
 
-// DATA
-let customers = $state<Customer[]>([]);
-let projects = $state<Project[]>([]);
-let issues = $state<Issue[]>([]);
-let entries = $state<TimeEntryRow[]>([]);
-let entriesLoading = $state(true);
-let canReloadEntries = false;
+	const WORKDAYS = 5;
 
-// DATE FILTER
-let dateFilter = $state('this_month');
-let customStart = $state('');
-let customEnd = $state('');
+	let todayIso = $state(today());
+	let entries = $state<TimeEntryRow[]>([]);
+	let todos = $state<TodoRow[]>([]);
+	let target = $state(8);
+	let loaded = $state(false); // true once a load has succeeded; hero stats and sections wait for it
+	let loadError = $state('');
+	let loadSeq = 0;
+	let actionError = $state('');
+	let completing = $state<number[]>([]);
+	let selected = $state<TodoRow | null>(null);
 
-// NEW ENTRY ROW (always visible)
-let newDate = $state('');
-let newCustomerId = $state('');
-let newProjectId = $state('');
-let newIssueIdentifier = $state('');
-let newHours = $state('');
-let newNotes = $state('');
-let newErrors = $state<Record<string, string>>({});
-let newSaving = $state(false);
-let newSaveError = $state('');
+	/** Loads the week, todos and target. Overlapping calls are fine: only the latest applies. */
+	async function load(): Promise<void> {
+		const seq = ++loadSeq;
+		const now = today();
+		const days = weekDays(now);
+		try {
+			const [weekEntries, allTodos, dailyTarget] = await Promise.all([
+				invoke<TimeEntryRow[]>('list_time_entries', { startDate: days[0], endDate: days[6] }),
+				invoke<TodoRow[]>('list_todos'),
+				invoke<number>('get_daily_target')
+			]);
+			if (seq !== loadSeq) return;
+			todayIso = now;
+			entries = weekEntries;
+			todos = allTodos;
+			target = dailyTarget;
+			loadError = '';
+			loaded = true;
+		} catch (e) {
+			if (seq !== loadSeq) return;
+			loadError = String(e);
+		}
+	}
 
-// EDIT ROW
-let editId = $state<number | null>(null);
-let editDate = $state('');
-let editCustomerId = $state('');
-let editProjectId = $state('');
-let editIssueIdentifier = $state('');
-let editHours = $state('');
-let editNotes = $state('');
-let editErrors = $state<Record<string, string>>({});
-let editSaving = $state(false);
-let editSaveError = $state('');
-let editProjects = $state<Project[]>([]);
-let editIssues = $state<Issue[]>([]);
+	/** The page may stay open past midnight: reload when it comes back on a new day. */
+	function reloadIfNewDay(): void {
+		if (document.visibilityState === 'visible' && today() !== todayIso) void load();
+	}
 
-// DELETE ERROR
-let deleteError = $state('');
+	// ── Derived view ──────────────────────────────────────────────────────────────
 
-function formatHours(h: number): string {
-const r = Math.round(h * 10000) / 10000;
-return Number.isInteger(r) ? String(Math.round(r)) : String(r);
-}
+	const days = $derived(dailyTotals(entries, weekDays(todayIso)));
+	const todayHours = $derived(days.find((d) => d.date === todayIso)?.hours ?? 0);
+	const weekHours = $derived(sumHours(entries));
+	const weekTarget = $derived(target * WORKDAYS);
+	const maxDayHours = $derived(Math.max(0, ...days.map((d) => d.hours)));
 
-function getDateRange(): { start: string; end: string } {
-if (dateFilter === 'this_week') return getWeekBounds(0);
-if (dateFilter === 'last_week') return getWeekBounds(-1);
-if (dateFilter === 'this_month') return getMonthBounds(0);
-if (dateFilter === 'last_month') return getMonthBounds(-1);
-return { start: customStart, end: customEnd };
-}
+	const attention = $derived(needsAttention(todos, todayIso));
+	const active = $derived(inProgress(todos, todayIso));
+	const logged = $derived(todayEntries(entries, todayIso));
+	const loggedHours = $derived(sumHours(logged));
+	const overdueCount = $derived(attention.filter((t) => (t.due_date ?? '') < todayIso).length);
+	const dueTodayCount = $derived(attention.length - overdueCount);
 
-async function loadEntries(): Promise<void> {
-const { start, end } = getDateRange();
-if (!start || !end) return;
-entries = await invoke<TimeEntryRow[]>('list_time_entries', { startDate: start, endDate: end });
-}
+	const dateHeading = $derived.by(() => {
+		const [y, m, d] = todayIso.split('-').map(Number);
+		return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+	});
 
-async function loadProjects(customerId: number): Promise<Project[]> {
-return invoke<Project[]>('list_projects', { customerId });
-}
+	function weekdayShort(ymd: string): string {
+		const [y, m, d] = ymd.split('-').map(Number);
+		return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: 'short' });
+	}
 
-async function loadIssues(projectId: number): Promise<Issue[]> {
-return invoke<Issue[]>('list_issues', { projectId });
-}
+	/** Bar height in % — against the daily target, or the busiest day when the target is off. */
+	function barHeight(hours: number): number {
+		const fraction = target > 0 ? progress(hours, target) : maxDayHours > 0 ? hours / maxDayHours : 0;
+		return hours > 0 ? Math.max(6, fraction * 100) : 0;
+	}
 
-async function onNewCustomerChange(v: string): Promise<void> {
-newProjectId = '';
-newIssueIdentifier = '';
-projects = [];
-issues = [];
-if (v) projects = await loadProjects(parseInt(v));
-}
+	function metTarget(date: string, hours: number): boolean {
+		return target > 0 && !isWeekend(date) && hours >= target;
+	}
 
-async function onNewProjectChange(v: string): Promise<void> {
-newIssueIdentifier = '';
-issues = [];
-if (v) issues = await loadIssues(parseInt(v));
-}
+	// ── Todo actions ──────────────────────────────────────────────────────────────
 
-async function resetNewRow(): Promise<void> {
-newDate = today();
-newErrors = {};
-newSaveError = '';
-newHours = '';
-newNotes = '';
-newCustomerId = '';
-newProjectId = '';
-newIssueIdentifier = '';
-projects = [];
-issues = [];
-const defaultCustomer = customers.find((c) => c.use_as_default) ?? null;
-if (defaultCustomer) {
-newCustomerId = String(defaultCustomer.id);
-projects = await loadProjects(defaultCustomer.id);
-const defaultProject = projects.find((p) => p.use_as_default) ?? null;
-if (defaultProject) {
-newProjectId = String(defaultProject.id);
-issues = await loadIssues(defaultProject.id);
-}
-}
-}
+	async function complete(todo: TodoRow): Promise<void> {
+		if (completing.includes(todo.id)) return;
+		completing = [...completing, todo.id];
+		actionError = '';
+		try {
+			await invoke('move_todo', { id: todo.id, status: 'done', index: 0 });
+			todos = todos.filter((t) => t.id !== todo.id);
+			void load();
+		} catch (e) {
+			actionError = String(e);
+		} finally {
+			completing = completing.filter((id) => id !== todo.id);
+		}
+	}
 
-function validateEntry(
-date: string,
-customerId: string,
-projectId: string,
-issueIdentifier: string,
-hours: string
-): Record<string, string> {
-const errs: Record<string, string> = {};
-if (!date) errs.date = 'Required';
-if (!customerId) errs.customer = 'Required';
-if (!projectId) errs.project = 'Required';
-if (!issueIdentifier.trim()) errs.issue = 'Required';
-const h = parseFloat(hours);
-if (!hours) errs.hours = 'Required';
-else if (isNaN(h) || h <= 0) errs.hours = 'Must be > 0';
-else if (!Number.isInteger(h)) errs.hours = 'Must be a whole hour';
-return errs;
-}
+	function logTime(todo: TodoRow): void {
+		if (todo.project_id !== null && todo.issue_title) {
+			requestLogTime({ projectId: todo.project_id, issueId: todo.issue_id, issueTitle: todo.issue_title });
+		} else {
+			requestLogTime();
+		}
+	}
 
-async function saveEntry(): Promise<void> {
-newErrors = validateEntry(newDate, newCustomerId, newProjectId, newIssueIdentifier, newHours);
-if (Object.keys(newErrors).length > 0) return;
-newSaving = true;
-newSaveError = '';
-try {
-await invoke<TimeEntryRow>('create_time_entry', {
-projectId: parseInt(newProjectId),
-issueIdentifier: newIssueIdentifier.trim(),
-date: newDate,
-hours: parseFloat(newHours),
-notes: newNotes.trim() || null
-});
-await loadEntries();
-await resetNewRow();
-} catch {
-newSaveError = 'Failed to save.';
-} finally {
-newSaving = false;
-}
-}
+	function onRowKeydown(e: KeyboardEvent, todo: TodoRow): void {
+		if (e.target !== e.currentTarget) return; // keys on the row's own buttons
+		if (e.key === 'Enter' || e.key === ' ') {
+			e.preventDefault();
+			selected = todo;
+		}
+	}
 
-async function startEdit(entry: TimeEntryRow): Promise<void> {
-if (editId !== null) discardEdit();
-editId = entry.id;
-editDate = entry.date;
-editCustomerId = String(entry.customer_id);
-editProjectId = String(entry.project_id);
-editIssueIdentifier = entry.issue_title;
-editHours = String(entry.hours);
-editNotes = entry.notes ?? '';
-editErrors = {};
-editSaveError = '';
-editProjects = await loadProjects(entry.customer_id);
-editIssues = await loadIssues(entry.project_id);
-}
+	const dueClasses = {
+		overdue: 'bg-red-50 text-red-700 ring-red-200 dark:bg-red-500/10 dark:text-red-300 dark:ring-red-500/30',
+		today: 'bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/30',
+		upcoming: 'bg-slate-50 text-slate-600 ring-slate-200 dark:bg-neutral-800/40 dark:text-neutral-400 dark:ring-neutral-700'
+	};
 
-function discardEdit(): void {
-editId = null;
-editErrors = {};
-editSaveError = '';
-}
+	function dueKind(due: string): keyof typeof dueClasses {
+		return due < todayIso ? 'overdue' : due === todayIso ? 'today' : 'upcoming';
+	}
 
-async function onEditCustomerChange(v: string): Promise<void> {
-editProjectId = '';
-editIssueIdentifier = '';
-editProjects = [];
-editIssues = [];
-if (v) editProjects = await loadProjects(parseInt(v));
-}
+	onMount(() => {
+		void load();
+	});
 
-async function onEditProjectChange(v: string): Promise<void> {
-editIssueIdentifier = '';
-editIssues = [];
-if (v) editIssues = await loadIssues(parseInt(v));
-}
-
-async function updateEntry(): Promise<void> {
-editErrors = validateEntry(editDate, editCustomerId, editProjectId, editIssueIdentifier, editHours);
-if (Object.keys(editErrors).length > 0) return;
-editSaving = true;
-editSaveError = '';
-try {
-const updated = await invoke<TimeEntryRow>('update_time_entry', {
-id: editId,
-projectId: parseInt(editProjectId),
-issueIdentifier: editIssueIdentifier.trim(),
-date: editDate,
-hours: parseFloat(editHours),
-notes: editNotes.trim() || null
-});
-entries = entries.map((e) => (e.id === updated.id ? updated : e));
-editId = null;
-await loadEntries();
-} catch {
-editSaveError = 'Failed to save.';
-} finally {
-editSaving = false;
-}
-}
-
-async function deleteEntry(id: number): Promise<void> {
-deleteError = '';
-try {
-await invoke('delete_time_entry', { id });
-entries = entries.filter((e) => e.id !== id);
-} catch {
-deleteError = 'Failed to delete entry.';
-}
-}
-
-onMount(async () => {
-entriesLoading = true;
-const initial = await loadInitialTimesheetData({
-listCustomers: () => invoke<Customer[]>('list_customers'),
-listProjects: (customerId) => loadProjects(customerId),
-listIssues: (projectId) => loadIssues(projectId),
-listTimeEntries: (startDate, endDate) =>
-invoke<TimeEntryRow[]>('list_time_entries', { startDate, endDate }),
-getDateRange
-});
-
-customers = initial.customers;
-projects = initial.projects;
-issues = initial.issues;
-entries = initial.entries;
-newDate = today();
-newErrors = {};
-newSaveError = '';
-newHours = '';
-newNotes = '';
-newCustomerId = initial.newCustomerId;
-newProjectId = initial.newProjectId;
-newIssueIdentifier = '';
-entriesLoading = false;
-canReloadEntries = true;
-});
-
-$effect(() => {
-void dateFilter;
-void customStart;
-void customEnd;
-void changes.timeEntries;
-if (!canReloadEntries) return;
-entriesLoading = true;
-void loadEntries().finally(() => {
-entriesLoading = false;
-});
-});
-
-// The palette may have created an issue in the selected project; refresh the picker list.
-let seenEntryChanges = changes.timeEntries;
-$effect(() => {
-if (changes.timeEntries === seenEntryChanges) return;
-seenEntryChanges = changes.timeEntries;
-const projectId = parseInt(untrack(() => newProjectId));
-if (projectId) void loadIssues(projectId).then((list) => (issues = list));
-});
-
-let totalHours = $derived(entries.reduce((sum, e) => sum + e.hours, 0));
+	// Reload when the command palette logs time or adds a todo.
+	let seenChanges = `${changes.timeEntries}:${changes.todos}`;
+	$effect(() => {
+		const current = `${changes.timeEntries}:${changes.todos}`;
+		if (current === seenChanges) return;
+		seenChanges = current;
+		void load();
+	});
 </script>
 
+{#snippet progressBar(hours: number, goal: number)}
+	{@const fraction = progress(hours, goal)}
+	<div class="today-bar-track mt-2" role="progressbar" aria-valuemin={0} aria-valuemax={goal} aria-valuenow={hours}>
+		<div
+			class="today-bar-fill {fraction >= 1 ? 'bg-emerald-400' : ''}"
+			style="width: {fraction * 100}%"
+		></div>
+	</div>
+{/snippet}
+
+{#snippet hoursStat(label: string, hours: number, goal: number)}
+	<div class="hero-stat min-w-40 flex-1 sm:flex-none">
+		<span class="hero-stat-label">{label}</span>
+		<div class="hero-stat-value">
+			{formatHours(hours)}{#if goal > 0}<span class="font-normal text-slate-400 dark:text-neutral-400">{` / ${formatHours(goal)}`}</span>{/if}
+			<span class="text-base font-normal text-slate-400 dark:text-neutral-400">h</span>
+		</div>
+		{#if goal > 0}
+			{@render progressBar(hours, goal)}
+		{/if}
+	</div>
+{/snippet}
+
+{#snippet todoRow(t: TodoRow)}
+	<div
+		class="today-row group cursor-pointer"
+		role="button"
+		tabindex="0"
+		aria-label="Open {t.title}"
+		onclick={() => (selected = t)}
+		onkeydown={(e) => onRowKeydown(e, t)}
+	>
+		<span
+			class="h-2 w-2 shrink-0 rounded-full {t.status === 'in_progress' ? 'bg-sky-500 dark:bg-sky-400' : 'bg-slate-300 dark:bg-neutral-600'}"
+			title={t.status === 'in_progress' ? 'In progress' : 'Not started'}
+		></span>
+		<div class="min-w-0 flex-1">
+			<p class="truncate text-sm font-medium text-slate-800 dark:text-neutral-200" title={t.title}>{t.title}</p>
+			{#if t.due_date || t.issue_title}
+				<div class="mt-1 flex min-w-0 items-center gap-1.5">
+					{#if t.due_date}
+						{@const kind = dueKind(t.due_date)}
+						<span class="kanban-badge shrink-0 {dueClasses[kind]}">
+							<CalendarDays size={12} class="shrink-0" />
+							{kind === 'today' ? 'Today' : kind === 'overdue' ? `Overdue · ${formatDue(t.due_date)}` : formatDue(t.due_date)}
+						</span>
+					{/if}
+					{#if t.issue_title}
+						<span
+							class="kanban-badge min-w-0 bg-violet-50 text-violet-700 ring-violet-200 dark:bg-violet-500/10 dark:text-violet-300 dark:ring-violet-500/30"
+							title="{t.customer_name} / {t.project_name} / {t.issue_title}"
+						>
+							<Link2 size={12} class="shrink-0" />
+							<span class="truncate">{t.project_name} · {t.issue_title}</span>
+						</span>
+					{/if}
+				</div>
+			{/if}
+		</div>
+		<div class="flex shrink-0 items-center gap-1">
+			<button
+				type="button"
+				class="btn-icon-ghost"
+				title={t.issue_title ? `Log time on ${t.issue_title}` : 'Log time'}
+				aria-label="Log time for {t.title}"
+				onclick={(e) => {
+					e.stopPropagation();
+					logTime(t);
+				}}
+			>
+				<Clock size={16} />
+			</button>
+			<button
+				type="button"
+				class="inline-flex items-center justify-center rounded-md p-1.5 text-slate-400 transition hover:bg-emerald-50 hover:text-emerald-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300 disabled:opacity-50 dark:text-neutral-500 dark:hover:bg-emerald-500/10 dark:hover:text-emerald-400 dark:focus-visible:ring-emerald-500/40"
+				title="Mark done"
+				aria-label="Mark {t.title} done"
+				disabled={completing.includes(t.id)}
+				onclick={(e) => {
+					e.stopPropagation();
+					void complete(t);
+				}}
+			>
+				<Check size={16} />
+			</button>
+		</div>
+	</div>
+{/snippet}
+
+{#snippet todoSection(title: string, dot: string, items: TodoRow[], emptyText: string)}
+	<section class="today-section">
+		<header class="today-section-header">
+			<span class="h-2.5 w-2.5 rounded-full {dot}"></span>
+			<h2 class="today-section-title">{title}</h2>
+			{#if items.length}
+				<span class="today-count ml-auto">{items.length}</span>
+			{/if}
+		</header>
+		<!-- The list stays mounted so the last row's out:fade plays before the empty line fades in. -->
+		<div class="divide-y divide-slate-100 dark:divide-neutral-800">
+			{#each items as t (t.id)}
+				<div animate:flip={{ duration: 200 }} out:fade={{ duration: 150 }}>
+					{@render todoRow(t)}
+				</div>
+			{/each}
+		</div>
+		{#if items.length === 0}
+			<p class="today-empty" in:fade={{ delay: 150, duration: 150 }}>{emptyText}</p>
+		{/if}
+	</section>
+{/snippet}
+
 <div class="page-shell">
-<div class="page-view">
+	<div class="page-view">
+		<section class="page-hero">
+			<p class="page-hero-kicker">TimeTracker</p>
+			<h1 class="page-hero-title">Today</h1>
+			<p class="page-hero-copy">{dateHeading}</p>
 
-<!-- Hero band -->
-<section class="page-hero">
-<p class="page-hero-kicker">TimeTracker</p>
-<h1 class="page-hero-title">Timesheet</h1>
-<p class="page-hero-copy">Track and review your time entries.</p>
-<div class="hero-stat mt-4">
-<span class="hero-stat-label">This Month</span>
-<div class="hero-stat-value">{formatHours(totalHours)} hrs</div>
+			{#if loaded}
+				<div class="mt-4 flex flex-wrap items-stretch gap-3">
+					{@render hoursStat('Today', todayHours, target)}
+					{@render hoursStat('This week', weekHours, weekTarget)}
+					<div class="hero-stat min-w-40 flex-1 sm:flex-none">
+						<span class="hero-stat-label">Due</span>
+						<div class="mt-1 text-base font-semibold tracking-tight sm:text-lg">
+							{#if overdueCount === 0 && dueTodayCount === 0}
+								<span class="text-slate-400 dark:text-neutral-400">Nothing due</span>
+							{:else}
+								<span class={overdueCount ? 'text-red-300 dark:text-red-400' : 'text-slate-400 dark:text-neutral-400'}>{overdueCount} overdue</span>
+								<span class="text-slate-500 dark:text-neutral-500">·</span>
+								<span class={dueTodayCount ? 'text-amber-300 dark:text-amber-400' : 'text-slate-400 dark:text-neutral-400'}>{dueTodayCount} due today</span>
+							{/if}
+						</div>
+					</div>
+				</div>
+
+				<div class="mt-4 grid grid-cols-7 gap-1.5 sm:gap-2" aria-label="This week">
+					{#each days as day (day.date)}
+						{@const met = metTarget(day.date, day.hours)}
+						{@const weekend = isWeekend(day.date)}
+						<a
+							href="{resolve('/timesheet')}?day={day.date}"
+							class="today-day {day.date === todayIso ? 'today-day-today' : ''}"
+							title="{day.date} — open in Timesheet"
+						>
+							<span
+								class="text-[0.7rem] font-semibold uppercase tracking-[0.14em] {day.date === todayIso
+									? 'text-sky-300 dark:text-sky-300'
+									: weekend
+										? 'text-slate-500 dark:text-neutral-500'
+										: 'text-slate-400 dark:text-neutral-400'}"
+							>{weekdayShort(day.date)}</span>
+							<div class="flex h-14 w-3 items-end overflow-hidden rounded-full bg-white/10">
+								<div
+									class="w-full rounded-full transition-[height] duration-200 {met
+										? 'bg-emerald-400'
+										: weekend
+											? 'bg-slate-500 dark:bg-neutral-500'
+											: 'bg-slate-300 dark:bg-neutral-300'}"
+									style="height: {barHeight(day.hours)}%"
+								></div>
+							</div>
+							<span
+								class="text-sm font-semibold tabular-nums {met
+									? 'text-emerald-300 dark:text-emerald-400'
+									: day.hours > 0
+										? 'text-white dark:text-neutral-100'
+										: 'text-slate-500 dark:text-neutral-500'}"
+							>{day.hours > 0 ? formatHours(day.hours) : '—'}</span>
+						</a>
+					{/each}
+				</div>
+			{/if}
+		</section>
+
+		{#if loadError}
+			<div class="alert-panel alert-error">
+				<p class="alert-error-title">Could not load today</p>
+				<p class="alert-error-copy">{loadError}</p>
+			</div>
+		{/if}
+
+		{#if loaded}
+			<div class="grid items-start gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+				<div class="space-y-4">
+					{#if actionError}
+						<div
+							class="flex items-center justify-between gap-3 rounded-xl bg-red-50 px-4 py-2 text-sm text-red-700 ring-1 ring-red-200 dark:bg-red-500/10 dark:text-red-300 dark:ring-red-500/30"
+							role="alert"
+							transition:fade={{ duration: 150 }}
+						>
+							{actionError}
+							<button type="button" onclick={() => (actionError = '')} title="Dismiss" aria-label="Dismiss"><X size={14} /></button>
+						</div>
+					{/if}
+					{@render todoSection('Needs attention', 'bg-red-500 dark:bg-red-400', attention, 'Nothing overdue or due today')}
+					{@render todoSection('In progress', 'bg-sky-500 dark:bg-sky-400', active, 'Nothing in progress')}
+				</div>
+
+				<section class="today-section">
+					<header class="today-section-header">
+						<span class="h-2.5 w-2.5 rounded-full bg-emerald-500 dark:bg-emerald-400"></span>
+						<h2 class="today-section-title">Logged today</h2>
+						<span class="ml-auto text-sm font-semibold tabular-nums text-slate-900 dark:text-neutral-100">{formatHours(loggedHours)} h</span>
+					</header>
+					{#if logged.length === 0}
+						<p class="today-empty">Nothing logged yet today</p>
+					{:else}
+						<div class="divide-y divide-slate-100 dark:divide-neutral-800">
+							{#each logged as entry (entry.id)}
+								<a href="{resolve('/timesheet')}?day={todayIso}" class="today-row" title="Open today in Timesheet">
+									<p class="min-w-0 flex-1 truncate text-sm text-slate-700 dark:text-neutral-300">
+										<span class="text-slate-500 dark:text-neutral-400">{entry.customer_name} / {entry.project_name} ·</span>
+										<span class="font-medium text-slate-800 dark:text-neutral-200">{entry.issue_title}</span>
+									</p>
+									<span class="shrink-0 text-sm font-semibold tabular-nums text-slate-900 dark:text-neutral-100">{formatHours(entry.hours)} h</span>
+								</a>
+							{/each}
+						</div>
+					{/if}
+					<button
+						type="button"
+						class="flex w-full items-center gap-2 border-t border-slate-100 px-4 py-2.5 text-sm text-slate-500 transition hover:bg-slate-50 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-400 dark:border-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-800/60 dark:hover:text-neutral-200"
+						onclick={() => requestLogTime()}
+					>
+						<Plus size={16} />
+						Log time
+						<kbd class="palette-kbd ml-auto">{formatShortcut(palette.shortcut)}</kbd>
+					</button>
+				</section>
+			</div>
+		{/if}
+	</div>
 </div>
-</section>
 
-<!-- Main table card -->
-<section class="table-card">
+<svelte:window onfocus={reloadIfNewDay} />
+<svelte:document onvisibilitychange={reloadIfNewDay} />
 
-<!-- Toolbar -->
-<div class="table-toolbar flex items-center justify-between">
-<span class="table-title">Time Entries</span>
-<div class="flex items-center gap-2">
-<select bind:value={dateFilter} class="form-select w-40">
-<option value="this_week">This Week</option>
-<option value="last_week">Last Week</option>
-<option value="this_month">This Month</option>
-<option value="last_month">Last Month</option>
-<option value="custom">Custom Range…</option>
-</select>
-{#if dateFilter === 'custom'}
-<input type="date" bind:value={customStart} class="form-input w-36" />
-<input type="date" bind:value={customEnd} class="form-input w-36" />
+{#if selected}
+	<TodoModal todo={selected} onclose={() => (selected = null)} onchange={load} />
 {/if}
-</div>
-</div>
-
-{#if deleteError}
-<div class="stack-error mx-4 my-2">{deleteError}</div>
-{/if}
-
-<!-- Table: Date | Customer | Project | Issue | Notes | Hours | Actions -->
-<div class="table-scroll-region">
-<table class="table-base">
-<thead class="table-head">
-<tr>
-<th class="table-heading w-28">Date</th>
-<th class="table-heading w-44">Customer</th>
-<th class="table-heading w-44">Project</th>
-<th class="table-heading w-44">Issue</th>
-<th class="table-heading">Notes</th>
-<th class="table-heading w-28 text-right">Hours</th>
-<th class="table-heading-right w-16">Actions</th>
-</tr>
-</thead>
-<tbody>
-
-<!-- Always-visible new entry row -->
-<tr class="table-row-new">
-<td>
-<input type="date" bind:value={newDate} class="form-input w-full" />
-{#if newErrors.date}<span class="form-error">{newErrors.date}</span>{/if}
-</td>
-<td>
-<Combobox
-items={customers.map((c) => ({ value: c.id, label: c.name }))}
-bind:value={newCustomerId}
-placeholder="Customer…"
-onchange={onNewCustomerChange}
-/>
-{#if newErrors.customer}<span class="form-error">{newErrors.customer}</span>{/if}
-</td>
-<td>
-<Combobox
-items={projects.map((p) => ({ value: p.id, label: p.name }))}
-bind:value={newProjectId}
-placeholder="Project…"
-disabled={!newCustomerId}
-onchange={onNewProjectChange}
-/>
-{#if newErrors.project}<span class="form-error">{newErrors.project}</span>{/if}
-</td>
-<td>
-<Combobox
-items={issues.map((i) => ({ value: i.title, label: i.title }))}
-bind:value={newIssueIdentifier}
-placeholder="Issue…"
-allowNew={true}
-disabled={!newProjectId}
-/>
-{#if newErrors.issue}<span class="form-error">{newErrors.issue}</span>{/if}
-</td>
-<td>
-<input type="text" bind:value={newNotes} placeholder="Notes…" class="form-input w-full" />
-</td>
-<td>
-<input type="number" step="1" min="1" max="24" bind:value={newHours} placeholder="0" class="form-input w-full text-right" />
-{#if newErrors.hours}<span class="form-error text-right block">{newErrors.hours}</span>{/if}
-</td>
-<td>
-<div class="flex justify-end gap-1">
-<button onclick={saveEntry} disabled={newSaving} title="Save Entry" class="btn-icon-confirm">
-<Check size={14} />
-</button>
-<button onclick={resetNewRow} title="Discard" class="btn-icon-danger">
-<X size={14} />
-</button>
-</div>
-{#if newSaveError}<div class="stack-error mt-1 text-xs">{newSaveError}</div>{/if}
-</td>
-</tr>
-
-{#if entriesLoading}
-<tr>
-<td colspan="7">
-<div class="empty-state">
-<p class="font-semibold">Loading entries…</p>
-<p>Please wait while TimeTracker loads your timesheet.</p>
-</div>
-</td>
-</tr>
-{:else}
-{#each entries as entry (entry.id)}
-{#if editId === entry.id}
-<tr class="table-row-editing">
-<td>
-<input type="date" bind:value={editDate} class="form-input w-full" />
-{#if editErrors.date}<span class="form-error">{editErrors.date}</span>{/if}
-</td>
-<td>
-<Combobox
-items={customers.map((c) => ({ value: c.id, label: c.name }))}
-bind:value={editCustomerId}
-placeholder="Customer…"
-onchange={onEditCustomerChange}
-/>
-{#if editErrors.customer}<span class="form-error">{editErrors.customer}</span>{/if}
-</td>
-<td>
-<Combobox
-items={editProjects.map((p) => ({ value: p.id, label: p.name }))}
-bind:value={editProjectId}
-placeholder="Project…"
-disabled={!editCustomerId}
-onchange={onEditProjectChange}
-/>
-{#if editErrors.project}<span class="form-error">{editErrors.project}</span>{/if}
-</td>
-<td>
-<Combobox
-items={editIssues.map((i) => ({ value: i.title, label: i.title }))}
-bind:value={editIssueIdentifier}
-placeholder="Issue…"
-allowNew={true}
-disabled={!editProjectId}
-/>
-{#if editErrors.issue}<span class="form-error">{editErrors.issue}</span>{/if}
-</td>
-<td>
-<input type="text" bind:value={editNotes} placeholder="Notes…" class="form-input w-full" />
-</td>
-<td>
-<input type="number" step="1" min="1" max="24" bind:value={editHours} placeholder="0" class="form-input w-full text-right" />
-{#if editErrors.hours}<span class="form-error text-right block">{editErrors.hours}</span>{/if}
-</td>
-<td>
-<div class="flex justify-end gap-1">
-<button onclick={updateEntry} disabled={editSaving} title="Save Changes" class="btn-icon-confirm">
-<Check size={14} />
-</button>
-<button onclick={discardEdit} title="Discard" class="btn-icon-danger">
-<X size={14} />
-</button>
-</div>
-{#if editSaveError}<div class="stack-error mt-1 text-xs">{editSaveError}</div>{/if}
-</td>
-</tr>
-{:else}
-<tr class="table-row-history">
-<td class="table-cell-strong w-28">{entry.date}</td>
-<td class="table-cell w-44">{entry.customer_name}</td>
-<td class="table-cell w-44">{entry.project_name}</td>
-<td class="table-cell w-44">{entry.issue_title}</td>
-<td class="table-cell-muted max-w-xs truncate">{entry.notes ?? ''}</td>
-<td class="table-cell w-28 text-right">{formatHours(entry.hours)}</td>
-<td class="table-cell w-16">
-<div class="flex justify-end gap-1">
-<button onclick={() => startEdit(entry)} title="Edit" class="btn-icon-secondary">
-<Pencil size={14} />
-</button>
-<button onclick={() => deleteEntry(entry.id)} title="Delete" class="btn-icon-danger">
-<Trash2 size={14} />
-</button>
-</div>
-</td>
-</tr>
-{/if}
-{/each}
-
-{#if entries.length === 0}
-<tr>
-<td colspan="7">
-<div class="empty-state">
-<p class="font-semibold">No entries</p>
-<p>No time entries for this period.</p>
-</div>
-</td>
-</tr>
-{/if}
-{/if}
-
-</tbody>
-</table>
-</div>
-
-</section>
-</div>
-</div>

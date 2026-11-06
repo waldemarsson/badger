@@ -13,6 +13,25 @@ export const changes = $state({ timeEntries: 0, todos: 0 });
 
 export const toast = $state({ message: '', id: 0 });
 
+/** Log time prefill: the palette selects this project and jumps to the hours step. */
+export interface LogTimePrefill {
+	projectId: number;
+	issueId: number | null;
+	issueTitle: string;
+}
+
+/** Pending "open the palette at Log time" request; the palette reacts to each new `id`. */
+export const logTimeRequest = $state<{ id: number; prefill: LogTimePrefill | null }>({
+	id: 0,
+	prefill: null
+});
+
+/** Opens the palette's Log time flow, at the hours step when `prefill` resolves. */
+export function requestLogTime(prefill: LogTimePrefill | null = null): void {
+	logTimeRequest.prefill = prefill;
+	logTimeRequest.id += 1;
+}
+
 export function showToast(message: string): void {
 	toast.message = message;
 	toast.id += 1;

@@ -15,7 +15,8 @@ TimeTracker is a local-first desktop application built as a Tauri shell around a
 
 The main user-facing areas are:
 
-- `/` — timesheet entry and editing
+- `/` — Today: agenda of todos to act on (due today or overdue, in progress), today's logged time, and a Mon–Sun week strip with progress against the daily hours target
+- `/timesheet` — timesheet entry and editing; date filter includes Single Day, and `?day=YYYY-MM-DD` opens it on that day (an invalid `day` is ignored)
 - `/todos` — kanban board of standalone todos (drag cards between status columns), optionally linked to an issue
 - `/reports/weekly` — ISO-week report view
 - `/reports/monthly` — month report view with expandable grouping, the month's travel, and a copy-month text export
@@ -39,7 +40,7 @@ The backend is organized around command modules:
 - `travel` for business trips, listed per month
 - `reports` for weekly and monthly rollups
 - `backup` for JSON export and import
-- `settings` for app preferences (theme, command palette shortcut and last-used project/issue) stored in `app_settings`
+- `settings` for app preferences (theme, daily hours target, command palette shortcut and last-used project/issue) stored in `app_settings`
 - `startup_backup` for automatic daily backups on application startup
 - `dev_seed` for debug-only sample data
 
@@ -61,7 +62,11 @@ Dark mode uses Tailwind's `darkMode: "class"`: a `dark` class on `<html>` activa
 
 ### Command palette
 
-`src/lib/components/CommandPalette.svelte` is mounted in the root layout and listens for its shortcut on `window` in the capture phase, so it opens over text fields and modals and Esc closes only the palette. The shortcut (default `Meta+K`, configurable in Settings › Preferences) and the last project/issue used for Log time live in `app_settings` (`get_palette_settings`, `set_palette_shortcut`, `set_palette_last_used`) and are not part of backups. Shortcut rules (needs ⌘/⌃/⌥, macOS-reserved combos refused), filtering and hours/date parsing are pure helpers in `src/lib/palette.ts`. After creating data the palette bumps a counter in `src/lib/palette-state.svelte.ts` (`changes.todos` / `changes.timeEntries`); the Todos and Timesheet pages reload when it changes. The same module drives the layout's `Toast`.
+`src/lib/components/CommandPalette.svelte` is mounted in the root layout and listens for its shortcut on `window` in the capture phase, so it opens over text fields and modals and Esc closes only the palette. The shortcut (default `Meta+K`, configurable in Settings › Preferences) and the last project/issue used for Log time live in `app_settings` (`get_palette_settings`, `set_palette_shortcut`, `set_palette_last_used`) and are not part of backups. Shortcut rules (needs ⌘/⌃/⌥, macOS-reserved combos refused), filtering and hours/date parsing are pure helpers in `src/lib/palette.ts`. After creating data the palette bumps a counter in `src/lib/palette-state.svelte.ts` (`changes.todos` / `changes.timeEntries`); the Todos and Timesheet pages reload when it changes. The same module drives the layout's `Toast`. Pages can open the Log time flow with `requestLogTime(prefill?)` in the same module: the palette consumes the request, and a prefill with a project and issue (Today's todo [Log] button) jumps straight to the hours step. If the prefill's project no longer exists, the normal project step is shown.
+
+### Today
+
+Today (`src/routes/+page.svelte`) aggregates in the frontend: it loads the current week's `list_time_entries`, `list_todos` and the daily target, and the pure selection, ordering and totals helpers live in `src/lib/today.ts` (tested in `tests/today.test.mjs`). There are no dedicated list/report commands. Needs attention is non-done todos due today or earlier; In progress is the remaining `in_progress` todos, so no todo appears twice. The week runs Monday–Sunday and the weekly target is 5 × the daily target. The daily target is stored in `app_settings` via `get_daily_target`/`set_daily_target` (default 8, range 0–24, 0 turns the progress UI off, an invalid stored value falls back to 8), edited in Settings › Preferences, and is not part of backups. The page reloads when the palette bumps `changes`.
 
 The frontend keeps TypeScript interfaces in `src/lib/types.ts` aligned with the Rust response shapes so route components can work with typed command results.
 

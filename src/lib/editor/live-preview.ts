@@ -226,6 +226,8 @@ function build(view: EditorView): { decorations: DecorationSet; atomic: Decorati
 				return;
 			}
 			case 'Link': {
+				// `[text]` with no target is not a link here (e.g. a callout's `[!note]`).
+				if (!node.getChild('URL') && !node.getChild('LinkLabel')) return;
 				const marks = node.getChildren('LinkMark');
 				if (marks.length < 2 || marks[0].to >= marks[1].from) return;
 				decos.push(Decoration.mark({ class: 'cm-md-link' }).range(marks[0].to, marks[1].from));

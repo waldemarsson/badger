@@ -1,8 +1,12 @@
 // Editor look. Colors come from the --note-* CSS variables in src/app.css (light and
 // .dark), so switching themes needs no reconfigure.
-import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
+import { markdownLanguage } from '@codemirror/lang-markdown';
+import { HighlightStyle, languageDataProp, syntaxHighlighting } from '@codemirror/language';
+import { languages } from '@codemirror/language-data';
+import type { Extension } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
-import { tags } from '@lezer/highlight';
+import type { NodeType } from '@lezer/common';
+import { tags, type Highlighter } from '@lezer/highlight';
 
 const mono = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
 
@@ -151,11 +155,60 @@ const editorTheme = EditorView.theme({
 		color: 'var(--note-heading)',
 		backgroundColor: 'var(--note-table-head)'
 	},
-	'.cm-md-table th + th, .cm-md-table td + td': { borderLeft: '1px solid var(--note-border)' }
+	'.cm-md-table th + th, .cm-md-table td + td': { borderLeft: '1px solid var(--note-border)' },
+
+	// `/` menu (the selectors outweigh autocomplete's light/dark base theme)
+	'.cm-tooltip.cm-tooltip-autocomplete': {
+		border: 'none',
+		borderRadius: '0.75rem',
+		padding: '0.375rem',
+		backgroundColor: 'var(--note-popup-bg)',
+		boxShadow:
+			'0 0 0 1px var(--note-popup-ring), 0 10px 15px -3px var(--note-popup-shadow), 0 4px 6px -4px var(--note-popup-shadow)'
+	},
+	'.cm-tooltip.cm-tooltip-autocomplete > ul': {
+		fontFamily: 'inherit',
+		minWidth: '15rem',
+		maxHeight: '16rem'
+	},
+	'.cm-tooltip.cm-tooltip-autocomplete > ul > li': {
+		display: 'flex',
+		alignItems: 'baseline',
+		padding: '0.4rem 0.65rem',
+		borderRadius: '0.5rem',
+		fontSize: '0.875rem',
+		lineHeight: '1.4',
+		color: 'var(--note-fg)',
+		transition: 'background-color 150ms, color 150ms'
+	},
+	'.cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected]': {
+		backgroundColor: 'var(--note-popup-active-bg)',
+		color: 'var(--note-popup-active-fg)'
+	},
+	'.cm-tooltip.cm-tooltip-autocomplete .cm-completionLabel': { fontWeight: '500' },
+	'.cm-tooltip.cm-tooltip-autocomplete .cm-completionMatchedText': { textDecoration: 'none', fontWeight: '700' },
+	'.cm-tooltip.cm-tooltip-autocomplete .cm-completionDetail': {
+		marginLeft: 'auto',
+		paddingLeft: '1.5rem',
+		fontFamily: mono,
+		fontSize: '0.75rem',
+		fontStyle: 'normal',
+		color: 'var(--note-muted)'
+	},
+	'.cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected] .cm-completionDetail': {
+		color: 'var(--note-popup-active-fg)',
+		opacity: '0.75'
+	},
+	// Snippet tab stops
+	'.cm-content .cm-snippetField': {
+		backgroundColor: 'var(--note-snippet-field)',
+		borderRadius: '0.25rem'
+	},
+	'.cm-content .cm-snippetFieldPosition': { borderLeft: '1.5px dotted var(--note-snippet-marker)' }
 });
 
-/** Colors for source that shows while editing (markers, URLs, fenced code). */
-const highlight = HighlightStyle.define([
+/** Colors for markdown source that shows while editing (markers, URLs). */
+const markdownHighlight = HighlightStyle.define([
 	{ tag: tags.processingInstruction, color: 'var(--note-mark)' },
 	{ tag: tags.contentSeparator, color: 'var(--note-mark)' },
 	{ tag: tags.url, color: 'var(--note-muted)' },
@@ -164,4 +217,61 @@ const highlight = HighlightStyle.define([
 	{ tag: tags.comment, color: 'var(--note-muted)' }
 ]);
 
-export const noteTheme = [editorTheme, syntaxHighlighting(highlight)];
+/** Syntax colors inside fenced code blocks whose language language-data loaded. */
+const codeHighlight = HighlightStyle.define([
+	{
+		tag: [
+			tags.keyword,
+			tags.controlKeyword,
+			tags.operatorKeyword,
+			tags.definitionKeyword,
+			tags.moduleKeyword,
+			tags.modifier,
+			tags.self
+		],
+		color: 'var(--note-code-keyword)'
+	},
+	{ tag: [tags.string, tags.special(tags.string), tags.regexp, tags.character, tags.escape], color: 'var(--note-code-string)' },
+	{ tag: [tags.number, tags.bool, tags.null, tags.atom, tags.unit, tags.constant(tags.name)], color: 'var(--note-code-number)' },
+	{ tag: [tags.typeName, tags.className, tags.namespace, tags.attributeName], color: 'var(--note-code-type)' },
+	{
+		tag: [tags.function(tags.variableName), tags.function(tags.propertyName), tags.macroName],
+		color: 'var(--note-code-function)'
+	},
+	{ tag: [tags.propertyName, tags.tagName], color: 'var(--note-code-property)' },
+	{ tag: tags.comment, color: 'var(--note-code-comment)', fontStyle: 'italic' },
+	{ tag: [tags.meta, tags.annotation, tags.processingInstruction], color: 'var(--note-code-meta)' },
+	{ tag: [tags.invalid, tags.deleted], color: 'var(--note-code-invalid)' },
+	{ tag: tags.inserted, color: 'var(--note-code-string)' },
+	{ tag: [tags.heading, tags.strong], fontWeight: '650' },
+	{ tag: tags.emphasis, fontStyle: 'italic' }
+]);
+
+const codeTypes = new WeakSet<NodeType>();
+
+/** Is `type` the top node of a fenced-code language (loaded from language-data)? */
+export function isCodeLanguage(type: NodeType): boolean {
+	if (codeTypes.has(type)) return true;
+	const data = type.prop(languageDataProp);
+	// Every markdown language shares one data facet, including the one a ```md block loads:
+	// markdown is never code here, or the note itself would get code colors.
+	if (!data || data === markdownLanguage.data) return false;
+	// Only positive answers are cached: a description may load later.
+	if (!languages.some((desc) => desc.support?.language.data === data)) return false;
+	codeTypes.add(type);
+	return true;
+}
+
+/** `style`, applied only within languages `scope` accepts (checked at each language's top node). */
+function scopedHighlighting(style: HighlightStyle, scope: (type: NodeType) => boolean): Extension {
+	const highlighter: Highlighter = { style: (t) => style.style(t), scope };
+	return [syntaxHighlighting(highlighter), style.module ? EditorView.styleModule.of(style.module) : []];
+}
+
+export const noteTheme = [
+	editorTheme,
+	// Each style stays in its own language: markdown colors never leak into code, and code
+	// colors never restyle markdown text the live preview already styles.
+	scopedHighlighting(markdownHighlight, (type) => !isCodeLanguage(type)),
+	scopedHighlighting(codeHighlight, isCodeLanguage)
+];

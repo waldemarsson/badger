@@ -42,6 +42,24 @@
     --note-check: theme('colors.emerald.500');
     --note-checkbox-border: theme('colors.slate.300');
     --note-checkbox-bg: theme('colors.white');
+    /* Code-block syntax colors (on --note-code-bg) */
+    --note-code-keyword: theme('colors.violet.600');
+    --note-code-string: theme('colors.emerald.700');
+    --note-code-number: theme('colors.amber.700');
+    --note-code-type: theme('colors.amber.800');
+    --note-code-function: theme('colors.sky.700');
+    --note-code-property: theme('colors.sky.800');
+    --note-code-comment: theme('colors.slate.500');
+    --note-code-meta: theme('colors.slate.500');
+    --note-code-invalid: theme('colors.red.600');
+    /* `/` menu and snippet fields */
+    --note-popup-bg: theme('colors.white');
+    --note-popup-ring: theme('colors.slate.200');
+    --note-popup-shadow: rgb(15 23 42 / 0.12);
+    --note-popup-active-bg: theme('colors.sky.50');
+    --note-popup-active-fg: theme('colors.sky.700');
+    --note-snippet-field: rgb(14 165 233 / 0.12);
+    --note-snippet-marker: theme('colors.sky.500');
   }
 
   .dark {
@@ -62,6 +80,22 @@
     --note-check: theme('colors.emerald.500');
     --note-checkbox-border: theme('colors.neutral.600');
     --note-checkbox-bg: theme('colors.neutral.900');
+    --note-code-keyword: theme('colors.violet.400');
+    --note-code-string: theme('colors.emerald.400');
+    --note-code-number: theme('colors.amber.400');
+    --note-code-type: theme('colors.amber.300');
+    --note-code-function: theme('colors.sky.400');
+    --note-code-property: theme('colors.sky.300');
+    --note-code-comment: theme('colors.neutral.400');
+    --note-code-meta: theme('colors.neutral.400');
+    --note-code-invalid: theme('colors.red.400');
+    --note-popup-bg: theme('colors.neutral.900');
+    --note-popup-ring: theme('colors.neutral.700');
+    --note-popup-shadow: rgb(0 0 0 / 0.5);
+    --note-popup-active-bg: rgb(14 165 233 / 0.12);
+    --note-popup-active-fg: theme('colors.sky.300');
+    --note-snippet-field: rgb(56 189 248 / 0.16);
+    --note-snippet-marker: theme('colors.sky.400');
   }
 }
 

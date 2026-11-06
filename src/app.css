@@ -9,7 +9,7 @@
   }
 
   body {
-    @apply m-0 min-h-screen bg-slate-50 font-sans text-slate-950 antialiased dark:bg-neutral-950 dark:text-neutral-100;
+    @apply m-0 min-h-screen bg-white font-sans text-slate-950 antialiased dark:bg-neutral-900 dark:text-neutral-100;
   }
 
   h1,
@@ -143,7 +143,7 @@
   }
 
   .panel-card {
-    @apply rounded-[1.375rem] border border-slate-200/80 bg-white p-5 shadow-sm shadow-slate-200/50 dark:border-neutral-800 dark:bg-neutral-900 dark:shadow-black/20;
+    @apply py-2;
   }
 
   .panel-muted {
@@ -296,22 +296,13 @@
     @apply text-sm text-green-800 dark:text-green-400;
   }
 
+  /* Flat layout: content sits on the page, separated by dividers instead of card chrome. */
   .table-card {
-    @apply rounded-[1.375rem] border border-slate-200/80 bg-white shadow-sm shadow-slate-200/50 dark:border-neutral-800 dark:bg-neutral-900 dark:shadow-black/20;
+    @apply w-full;
   }
 
   .table-scroll-region {
     overflow: visible;
-  }
-
-  /* The card can't clip (popups escape it), so round the last row's outer cells to keep
-     row tints from squaring off the card's bottom corners. Inset by the card's 1px border. */
-  .table-card .table-base > :last-child > tr:last-child > :first-child {
-    border-bottom-left-radius: calc(1.375rem - 1px);
-  }
-
-  .table-card .table-base > :last-child > tr:last-child > :last-child {
-    border-bottom-right-radius: calc(1.375rem - 1px);
   }
 
   @media (max-width: 1023px) {
@@ -321,7 +312,7 @@
   }
 
   .table-toolbar {
-    @apply border-b border-slate-200 bg-slate-50/80 px-4 py-3.5 dark:border-neutral-800 dark:bg-neutral-800/40;
+    @apply border-b border-slate-200 px-3 pb-3 dark:border-neutral-800;
   }
 
   .table-title {
@@ -333,7 +324,7 @@
   }
 
   .table-head {
-    @apply bg-slate-100/80 dark:bg-neutral-800/60;
+    @apply border-b border-slate-200 dark:border-neutral-800;
   }
 
   .table-heading {
@@ -489,12 +480,13 @@
   }
 
   /* Todos kanban board */
+  /* Flat board: lanes are full-height columns split by dividers (see todos page grid). */
   .kanban-lane {
-    @apply flex min-h-[24rem] flex-col rounded-2xl bg-slate-100/80 p-3 ring-1 ring-slate-200/70 transition-colors duration-200 dark:bg-neutral-900/60 dark:ring-neutral-800;
+    @apply flex min-h-[24rem] flex-col px-3 pb-4 transition-colors duration-200 sm:px-4 lg:px-6;
   }
 
   .kanban-lane-target {
-    @apply bg-sky-50 ring-2 ring-sky-300/70 dark:bg-sky-500/10 dark:ring-sky-500/50;
+    @apply bg-sky-50/70 dark:bg-sky-500/5;
   }
 
   .kanban-card {
@@ -507,7 +499,7 @@
   }
 
   .kanban-add-card {
-    @apply mt-2 flex w-full items-center gap-1.5 rounded-xl px-2 py-1.5 text-sm text-slate-500 transition hover:bg-slate-200/70 hover:text-slate-800 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200;
+    @apply mt-2 flex w-full items-center gap-1.5 rounded-xl px-2 py-1.5 text-sm text-slate-500 transition hover:bg-slate-100 hover:text-slate-800 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200;
   }
 
   .kanban-badge {
@@ -521,7 +513,7 @@
 
   /* Today page */
   .today-bar-track {
-    @apply h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-neutral-800;
+    @apply h-2 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-neutral-800;
   }
 
   .today-bar-fill {
@@ -537,11 +529,11 @@
   }
 
   .today-section {
-    @apply overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-200 dark:bg-neutral-900 dark:shadow-black/20 dark:ring-neutral-800;
+    @apply overflow-hidden;
   }
 
   .today-section-header {
-    @apply flex items-center gap-2 border-b border-slate-100 px-4 py-3 dark:border-neutral-800;
+    @apply flex items-center gap-2 border-b border-slate-200 px-1 py-2 dark:border-neutral-800;
   }
 
   .today-section-title {
@@ -553,16 +545,16 @@
   }
 
   .today-row {
-    @apply flex min-w-0 items-center gap-3 px-4 py-2.5 transition-colors duration-150 hover:bg-slate-50 focus:outline-none focus-visible:bg-sky-50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-400 dark:hover:bg-neutral-800/60 dark:focus-visible:bg-sky-500/10;
+    @apply flex min-w-0 items-center gap-3 rounded-lg px-1 py-2.5 transition-colors duration-150 hover:bg-slate-50 focus:outline-none focus-visible:bg-sky-50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-400 dark:hover:bg-neutral-800/60 dark:focus-visible:bg-sky-500/10;
   }
 
   .today-empty {
-    @apply px-4 py-3 text-sm text-slate-400 dark:text-neutral-500;
+    @apply px-1 py-3 text-sm text-slate-400 dark:text-neutral-500;
   }
 
   /* Notes page */
   .notes-pane {
-    @apply flex min-h-0 flex-col overflow-hidden rounded-[1.375rem] border border-slate-200/80 bg-white shadow-sm shadow-slate-200/50 dark:border-neutral-800 dark:bg-neutral-900 dark:shadow-black/20;
+    @apply flex min-h-0 flex-col overflow-hidden;
   }
 
   /* Search bar and note title bar share one height so their borders line up. */

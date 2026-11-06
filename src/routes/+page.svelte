@@ -162,7 +162,7 @@
 
 {#snippet progressBar(hours: number, goal: number)}
 	{@const fraction = progress(hours, goal)}
-	<div class="today-bar-track mt-1.5" role="progressbar" aria-valuemin={0} aria-valuemax={goal} aria-valuenow={hours}>
+	<div class="today-bar-track mt-2" role="progressbar" aria-valuemin={0} aria-valuemax={goal} aria-valuenow={hours}>
 		<div
 			class="today-bar-fill {fraction >= 1 ? 'bg-emerald-500 dark:bg-emerald-400' : 'bg-sky-500 dark:bg-sky-400'}"
 			style="width: {fraction * 100}%"
@@ -173,8 +173,8 @@
 {#snippet hoursStat(label: string, hours: number, goal: number)}
 	<div>
 		<div class="flex items-baseline justify-between gap-2">
-			<span class="text-xs font-medium text-slate-500 dark:text-neutral-400">{label}</span>
-			<span class="text-sm font-semibold tabular-nums text-slate-900 dark:text-neutral-100">
+			<span class="text-sm font-medium text-slate-500 dark:text-neutral-400">{label}</span>
+			<span class="text-base font-semibold tabular-nums text-slate-900 dark:text-neutral-100">
 				{formatHours(hours)}{#if goal > 0}<span class="font-normal text-slate-400 dark:text-neutral-500">{` / ${formatHours(goal)}`}</span>{/if}
 				<span class="font-normal text-slate-400 dark:text-neutral-500">h</span>
 			</span>
@@ -288,7 +288,7 @@
 		{/if}
 
 		{#if loaded}
-			<div class="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
+			<div class="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_24rem]">
 				<div class="space-y-4">
 					{#if actionError}
 						<div
@@ -309,7 +309,7 @@
 						<span class="h-2.5 w-2.5 rounded-full bg-slate-400 dark:bg-neutral-500"></span>
 						<h2 class="today-section-title">Hours</h2>
 					</header>
-					<div class="space-y-3 px-4 py-3">
+					<div class="space-y-4 px-1 py-4">
 						{@render hoursStat('Today', todayHours, target)}
 						{@render hoursStat('This week', weekHours, weekTarget)}
 						<div class="grid grid-cols-7 gap-1" aria-label="This week">
@@ -322,13 +322,13 @@
 									title="{day.date} — open in Timesheet"
 								>
 									<span
-										class="text-[0.65rem] font-semibold uppercase {day.date === todayIso
+										class="text-xs font-semibold uppercase {day.date === todayIso
 											? 'text-sky-600 dark:text-sky-400'
 											: weekend
 												? 'text-slate-400 dark:text-neutral-500'
 												: 'text-slate-500 dark:text-neutral-400'}"
 									>{weekdayShort(day.date)}</span>
-									<div class="flex h-9 w-2 items-end overflow-hidden rounded-full bg-slate-100 dark:bg-neutral-800">
+									<div class="flex h-16 w-2.5 items-end overflow-hidden rounded-full bg-slate-100 dark:bg-neutral-800">
 										<div
 											class="w-full rounded-full transition-[height] duration-200 {met
 												? 'bg-emerald-500 dark:bg-emerald-400'
@@ -339,7 +339,7 @@
 										></div>
 									</div>
 									<span
-										class="text-xs font-semibold tabular-nums {met
+										class="text-sm font-semibold tabular-nums {met
 											? 'text-emerald-600 dark:text-emerald-400'
 											: day.hours > 0
 												? 'text-slate-900 dark:text-neutral-100'
@@ -372,7 +372,7 @@
 					{/if}
 					<button
 						type="button"
-						class="flex w-full items-center gap-2 border-t border-slate-100 px-4 py-2.5 text-sm text-slate-500 transition hover:bg-slate-50 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-400 dark:border-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-800/60 dark:hover:text-neutral-200"
+						class="flex w-full items-center gap-2 border-t border-slate-100 px-1 py-2.5 text-sm text-slate-500 transition hover:bg-slate-50 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-400 dark:border-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-800/60 dark:hover:text-neutral-200"
 						onclick={() => requestLogTime()}
 					>
 						<Plus size={16} />

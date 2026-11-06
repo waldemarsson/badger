@@ -105,3 +105,25 @@ export interface PaletteSettings {
 	last_project_id: number | null;
 	last_issue_id: number | null;
 }
+
+/** Note list row (list_notes, rename_note, update_note_body, set_note_pinned). */
+export interface NoteSummary {
+	id: number;
+	folder_id: number | null;
+	title: string;
+	excerpt: string; // first meaningful body line, markers stripped; '' for an empty body
+	pinned: boolean;
+	created_at: string; // local YYYY-MM-DDTHH:MM:SS.mmm
+	updated_at: string;
+}
+
+/** Full note (get_note, create_note). */
+export interface Note {
+	id: number;
+	folder_id: number | null;
+	title: string;
+	body: string;
+	pinned: boolean;
+	created_at: string;
+	updated_at: string;
+}

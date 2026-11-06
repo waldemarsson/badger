@@ -1,7 +1,7 @@
 //! Dev-only database seeding. Excluded from release builds via #[cfg(debug_assertions)].
 
 #[cfg(debug_assertions)]
-use chrono::{Datelike, Duration, NaiveDate, Utc, Weekday};
+use chrono::{Datelike, Duration, Local, NaiveDate, Utc, Weekday};
 #[cfg(debug_assertions)]
 use sqlx::{Pool, Sqlite};
 #[cfg(debug_assertions)]
@@ -73,10 +73,15 @@ pub(crate) async fn seed_test_data_if_empty_with_anchor(
         .fetch_one(pool)
         .await?;
 
-    if existing_customers.0 > 0 {
-        return Ok(());
+    if existing_customers.0 == 0 {
+        seed_core_data(pool, today).await?;
     }
+    seed_notes_if_empty(pool).await
+}
 
+/// Customers, projects, issues, time entries, and trips.
+#[cfg(debug_assertions)]
+async fn seed_core_data(pool: &Pool<Sqlite>, today: NaiveDate) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
 
     let northwind_customer_id: i64 =
@@ -272,6 +277,167 @@ pub(crate) async fn seed_test_data_if_empty_with_anchor(
 }
 
 #[cfg(debug_assertions)]
+const SEED_NOTE_WELCOME: &str = "# Welcome to Notes
+
+Notes are **markdown** with a *live preview*: markers like `**` hide unless the cursor is on the line.
+
+## Inline styles
+
+**Bold**, *italic*, ~~strikethrough~~, `inline code`, and a [link](https://tauri.app) with its URL hidden.
+
+> Blockquotes look like this.
+> They can span lines.
+
+---
+
+### Lists
+
+- Bullet one
+- Bullet two
+  - Nested bullet
+1. First
+2. Second
+
+- [ ] Open task
+- [x] Finished task
+
+![Images stay as raw markdown](https://example.com/image.png)
+";
+
+#[cfg(debug_assertions)]
+const SEED_NOTE_TABLES: &str = "Tables render as a grid until the cursor enters them.
+
+| Task | Owner | Hours |
+| :--- | :---: | ----: |
+| **Release** notes | Åsa | 1.5 |
+| `cargo test` run | Erik | 0.25 |
+| ~~Old item~~ | *nobody* | 0 |
+| Short row |
+
+Rows with too few cells are padded.
+";
+
+#[cfg(debug_assertions)]
+const SEED_NOTE_CODE: &str = "Setext heading
+==============
+
+Smaller setext heading
+----------------------
+
+```rust
+fn main() {
+    println!(\"Hello from a fenced block\");
+}
+```
+
+```bash
+npm run vite:build
+```
+";
+
+#[cfg(debug_assertions)]
+const SEED_NOTE_MEETING: &str = "## Weekly sync
+
+- Demo the *Notes* page
+- [ ] Follow up on billing export
+- [x] Ship the Today overview
+
+> Decision: keep notes local-first.
+";
+
+#[cfg(debug_assertions)]
+const SEED_NOTE_ARCHIVED: &str = "# Old roadmap
+
+Lives in **Projects / Archive**, a nested folder.
+";
+
+/// Creates `Projects / Archive` when there are no folders yet; otherwise reuses an existing
+/// seeded `Archive` (so reseeding after deleting every note doesn't duplicate folders).
+/// Returns the Archive folder, or `None` (seed at the root) when other folders exist.
+#[cfg(debug_assertions)]
+async fn seed_folders(tx: &mut sqlx::Transaction<'_, Sqlite>) -> Result<Option<i64>, sqlx::Error> {
+    let existing_folders: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM folders")
+        .fetch_one(&mut **tx)
+        .await?;
+    if existing_folders.0 > 0 {
+        return sqlx::query_scalar(
+            "SELECT c.id FROM folders c JOIN folders p ON p.id = c.ParentId \
+             WHERE c.Name = 'Archive' AND p.Name = 'Projects' AND p.ParentId IS NULL \
+             ORDER BY c.id LIMIT 1",
+        )
+        .fetch_optional(&mut **tx)
+        .await;
+    }
+
+    let projects_folder_id: i64 = sqlx::query_scalar(
+        "INSERT INTO folders (ParentId, Name, Position) VALUES (NULL, ?, 0) RETURNING id",
+    )
+    .bind("Projects")
+    .fetch_one(&mut **tx)
+    .await?;
+    let archive_folder_id: i64 = sqlx::query_scalar(
+        "INSERT INTO folders (ParentId, Name, Position) VALUES (?, ?, 0) RETURNING id",
+    )
+    .bind(projects_folder_id)
+    .bind("Archive")
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(Some(archive_folder_id))
+}
+
+/// Sample notes covering every live-preview element, plus a folder with a nested child.
+/// Runs whenever the `notes` table is empty, independent of the customer seed.
+#[cfg(debug_assertions)]
+async fn seed_notes_if_empty(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
+    let existing_notes: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM notes")
+        .fetch_one(pool)
+        .await?;
+    if existing_notes.0 > 0 {
+        return Ok(());
+    }
+
+    let mut tx = pool.begin().await?;
+    let archive_folder_id = seed_folders(&mut tx).await?;
+
+    let mut long_note =
+        String::from("# Long note\n\nScroll down: the table at the end still renders.\n\n");
+    for i in 1..=300 {
+        long_note.push_str(&format!("Line {i} of filler text.\n"));
+    }
+    long_note.push_str("\n| Far | Down |\n| --- | --- |\n| still | rendered |\n");
+
+    let now = Local::now();
+    let notes: [(Option<i64>, &str, &str, bool); 6] = [
+        (None, "Welcome to Notes", SEED_NOTE_WELCOME, true),
+        (None, "Markdown tables", SEED_NOTE_TABLES, false),
+        (None, "Code and setext headings", SEED_NOTE_CODE, false),
+        (None, "Weekly sync", SEED_NOTE_MEETING, false),
+        (None, "Long note", &long_note, false),
+        (archive_folder_id, "Old roadmap", SEED_NOTE_ARCHIVED, false),
+    ];
+    for (age_hours, (folder_id, title, body, pinned)) in (0_i64..).zip(notes) {
+        let ts = (now - Duration::hours(age_hours * 7))
+            .format("%Y-%m-%dT%H:%M:%S%.3f")
+            .to_string();
+        sqlx::query(
+            "INSERT INTO notes (FolderId, Title, Body, Pinned, CreatedAt, UpdatedAt) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(folder_id)
+        .bind(title)
+        .bind(body)
+        .bind(pinned)
+        .bind(&ts)
+        .bind(&ts)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok(())
+}
+
+#[cfg(debug_assertions)]
 pub async fn seed_test_data_if_empty(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
     seed_test_data_if_empty_with_anchor(pool, Utc::now().date_naive()).await
 }
@@ -356,6 +522,109 @@ mod tests {
         assert_eq!(defaults[0].0, "Northwind Studio");
         assert_eq!(seeded_range.0, "2026-02-02");
         assert_eq!(seeded_range.1, "2026-04-06");
+        assert_eq!(count(&pool, "notes").await, 6, "expected seeded notes");
+        assert_eq!(count(&pool, "folders").await, 2, "expected seeded folders");
+        let nested: (String, String, String) = sqlx::query_as(
+            "SELECT p.Name, c.Name, n.Title FROM notes n
+             JOIN folders c ON c.id = n.FolderId
+             JOIN folders p ON p.id = c.ParentId",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            nested,
+            ("Projects".into(), "Archive".into(), "Old roadmap".into())
+        );
+        let pinned: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM notes WHERE Pinned = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(pinned.0, 1, "expected one pinned note");
+    }
+
+    async fn count(pool: &Pool<Sqlite>, table: &str) -> i64 {
+        let row: (i64,) = sqlx::query_as(&format!("SELECT COUNT(*) FROM {table}"))
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        row.0
+    }
+
+    #[tokio::test]
+    async fn test_seed_notes_skips_when_notes_exist() {
+        let pool = crate::test_db().await;
+        sqlx::query("INSERT INTO notes (Title, CreatedAt, UpdatedAt) VALUES ('Mine', 'x', 'x')")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        seed_test_data_if_empty_with_anchor(&pool, NaiveDate::from_ymd_opt(2026, 4, 6).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(count(&pool, "notes").await, 1);
+        assert_eq!(count(&pool, "folders").await, 0);
+        assert_eq!(
+            count(&pool, "customers").await,
+            2,
+            "customers seed independently"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reseeding_notes_reuses_seeded_folders() {
+        let pool = crate::test_db().await;
+        let anchor = NaiveDate::from_ymd_opt(2026, 4, 6).unwrap();
+        seed_test_data_if_empty_with_anchor(&pool, anchor)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM notes")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        seed_test_data_if_empty_with_anchor(&pool, anchor)
+            .await
+            .unwrap();
+
+        assert_eq!(count(&pool, "notes").await, 6);
+        assert_eq!(
+            count(&pool, "folders").await,
+            2,
+            "folders are not duplicated"
+        );
+        let nested: (String, String) = sqlx::query_as(
+            "SELECT c.Name, n.Title FROM notes n
+             JOIN folders c ON c.id = n.FolderId
+             JOIN folders p ON p.id = c.ParentId AND p.Name = 'Projects'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(nested, ("Archive".into(), "Old roadmap".into()));
+    }
+
+    #[tokio::test]
+    async fn test_reseeding_notes_with_other_folders_seeds_at_root() {
+        let pool = crate::test_db().await;
+        sqlx::query("INSERT INTO folders (ParentId, Name, Position) VALUES (NULL, 'Mine', 0)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        seed_test_data_if_empty_with_anchor(&pool, NaiveDate::from_ymd_opt(2026, 4, 6).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(count(&pool, "notes").await, 6);
+        assert_eq!(count(&pool, "folders").await, 1, "no folders added");
+        let in_folders: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM notes WHERE FolderId IS NOT NULL")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(in_folders.0, 0, "seeded notes go to the root");
     }
 
     #[tokio::test]
@@ -377,6 +646,12 @@ mod tests {
             .unwrap();
 
         assert_eq!(customers, vec![("Existing Co".to_string(),)]);
+        assert_eq!(
+            count(&pool, "notes").await,
+            6,
+            "notes seed even when customers exist"
+        );
+        assert_eq!(count(&pool, "folders").await, 2);
     }
 
     #[tokio::test]

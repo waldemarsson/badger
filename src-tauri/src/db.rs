@@ -64,6 +64,27 @@ CREATE TABLE IF NOT EXISTS app_settings (
     Key       TEXT    PRIMARY KEY,
     Value     TEXT    NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS folders (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    ParentId  INTEGER REFERENCES folders(id) ON DELETE SET NULL,
+    Name      TEXT    NOT NULL,
+    Position  INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS notes (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    FolderId  INTEGER REFERENCES folders(id) ON DELETE SET NULL,
+    Title     TEXT    NOT NULL,
+    Body      TEXT    NOT NULL DEFAULT '',
+    Pinned    INTEGER NOT NULL DEFAULT 0,
+    CreatedAt TEXT    NOT NULL,
+    UpdatedAt TEXT    NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_title ON notes(Title COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_notes_folder ON notes(FolderId);
+CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(ParentId);
 ";
 
 /// Opens (or creates) the SQLite database at `db_path` with WAL mode and FK enforcement,
@@ -160,6 +181,143 @@ mod tests {
             names.contains(&"app_settings"),
             "app_settings table missing"
         );
+        assert!(names.contains(&"folders"), "folders table missing");
+        assert!(names.contains(&"notes"), "notes table missing");
+    }
+
+    async fn object_names(pool: &sqlx::SqlitePool, kind: &str) -> Vec<String> {
+        sqlx::query_as::<_, (String,)>(
+            "SELECT name FROM sqlite_master WHERE type = ? AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        )
+        .bind(kind)
+        .fetch_all(pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(n,)| n)
+        .collect()
+    }
+
+    /// Unique DB file under the OS temp dir; removed (with WAL/SHM siblings) on drop.
+    struct TempDb(std::path::PathBuf);
+
+    impl TempDb {
+        fn new(tag: &str) -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let name = format!("timetracker-{tag}-{}-{nanos}.db", std::process::id());
+            TempDb(std::env::temp_dir().join(name))
+        }
+    }
+
+    impl Drop for TempDb {
+        fn drop(&mut self) {
+            for suffix in ["", "-wal", "-shm"] {
+                let mut p = self.0.clone().into_os_string();
+                p.push(suffix);
+                let _ = std::fs::remove_file(p);
+            }
+        }
+    }
+
+    async fn assert_notes_schema(pool: &sqlx::SqlitePool) {
+        let tables = object_names(pool, "table").await;
+        assert!(tables.contains(&"folders".to_string()), "folders missing");
+        assert!(tables.contains(&"notes".to_string()), "notes missing");
+        let indexes = object_names(pool, "index").await;
+        for idx in ["idx_folders_parent", "idx_notes_folder", "idx_notes_title"] {
+            assert!(indexes.contains(&idx.to_string()), "{idx} missing");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_init_db_creates_notes_schema_on_fresh_file_and_is_idempotent() {
+        let db = TempDb::new("fresh");
+        let pool = super::init_db(&db.0).await.unwrap();
+        assert_notes_schema(&pool).await;
+        let before = (
+            object_names(&pool, "table").await,
+            object_names(&pool, "index").await,
+        );
+        pool.close().await;
+
+        let pool = super::init_db(&db.0).await.unwrap(); // second run is a no-op
+        let after = (
+            object_names(&pool, "table").await,
+            object_names(&pool, "index").await,
+        );
+        assert_eq!(before, after);
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn test_init_db_adds_notes_schema_to_pre_notes_file() {
+        let db = TempDb::new("pre-notes");
+        {
+            use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+            let opts = SqliteConnectOptions::new()
+                .filename(&db.0)
+                .create_if_missing(true);
+            let pool = SqlitePoolOptions::new().connect_with(opts).await.unwrap();
+            // Pre-notes shape: everything in SCHEMA_SQL before `folders`.
+            let old_schema = super::SCHEMA_SQL
+                .split("CREATE TABLE IF NOT EXISTS folders")
+                .next()
+                .unwrap();
+            sqlx::raw_sql(old_schema).execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO customers (Name) VALUES ('Kept')")
+                .execute(&pool)
+                .await
+                .unwrap();
+            assert!(!object_names(&pool, "table")
+                .await
+                .contains(&"notes".to_string()));
+            pool.close().await;
+        }
+
+        let pool = super::init_db(&db.0).await.unwrap();
+        assert_notes_schema(&pool).await;
+        let kept: (String,) = sqlx::query_as("SELECT Name FROM customers")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(kept.0, "Kept");
+        pool.close().await;
+        let pool = super::init_db(&db.0).await.unwrap();
+        assert_notes_schema(&pool).await;
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn test_deleting_folder_nulls_children_and_keeps_notes() {
+        let pool = crate::test_db().await;
+        sqlx::raw_sql(
+            "INSERT INTO folders (id, ParentId, Name) VALUES (1, NULL, 'Parent'), (2, 1, 'Child');
+             INSERT INTO notes (id, FolderId, Title, CreatedAt, UpdatedAt)
+                 VALUES (1, 1, 'In parent', 'x', 'x'), (2, 2, 'In child', 'x', 'x');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query("DELETE FROM folders WHERE id = 1")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let child: (Option<i64>,) = sqlx::query_as("SELECT ParentId FROM folders WHERE id = 2")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(child.0, None, "child folder must be detached, not deleted");
+        let notes: Vec<(i64, Option<i64>)> =
+            sqlx::query_as("SELECT id, FolderId FROM notes ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(notes, vec![(1, None), (2, Some(2))]);
     }
 
     #[tokio::test]

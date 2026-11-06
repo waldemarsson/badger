@@ -22,6 +22,47 @@
   p {
     @apply text-slate-600 dark:text-neutral-400;
   }
+
+  /* Note editor colors (src/lib/editor/theme.ts reads these) */
+  :root {
+    --note-fg: theme('colors.slate.800');
+    --note-heading: theme('colors.slate.950');
+    --note-muted: theme('colors.slate.400');
+    --note-mark: theme('colors.slate.400');
+    --note-caret: theme('colors.sky.500');
+    --note-selection: rgb(14 165 233 / 0.18);
+    --note-link: theme('colors.sky.700');
+    --note-link-underline: rgb(3 105 161 / 0.35);
+    --note-code-fg: theme('colors.slate.800');
+    --note-code-bg: theme('colors.slate.100');
+    --note-border: theme('colors.slate.200');
+    --note-quote-border: theme('colors.slate.300');
+    --note-quote-fg: theme('colors.slate.600');
+    --note-table-head: theme('colors.slate.50');
+    --note-check: theme('colors.emerald.500');
+    --note-checkbox-border: theme('colors.slate.300');
+    --note-checkbox-bg: theme('colors.white');
+  }
+
+  .dark {
+    --note-fg: theme('colors.neutral.200');
+    --note-heading: theme('colors.neutral.50');
+    --note-muted: theme('colors.neutral.500');
+    --note-mark: theme('colors.neutral.500');
+    --note-caret: theme('colors.sky.400');
+    --note-selection: rgb(56 189 248 / 0.22);
+    --note-link: theme('colors.sky.400');
+    --note-link-underline: rgb(56 189 248 / 0.35);
+    --note-code-fg: theme('colors.neutral.200');
+    --note-code-bg: theme('colors.neutral.800');
+    --note-border: theme('colors.neutral.800');
+    --note-quote-border: theme('colors.neutral.700');
+    --note-quote-fg: theme('colors.neutral.400');
+    --note-table-head: rgb(38 38 38 / 0.6);
+    --note-check: theme('colors.emerald.500');
+    --note-checkbox-border: theme('colors.neutral.600');
+    --note-checkbox-bg: theme('colors.neutral.900');
+  }
 }
 
 @layer components {
@@ -469,6 +510,71 @@
 
   .today-empty {
     @apply px-4 py-3 text-sm text-slate-400 dark:text-neutral-500;
+  }
+
+  /* Notes page */
+  .notes-pane {
+    @apply flex min-h-0 flex-col overflow-hidden rounded-[1.375rem] border border-slate-200/80 bg-white shadow-sm shadow-slate-200/50 dark:border-neutral-800 dark:bg-neutral-900 dark:shadow-black/20;
+  }
+
+  .note-row {
+    @apply block w-full cursor-pointer rounded-xl px-3 py-2.5 text-left transition duration-150 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-400 dark:hover:bg-neutral-800/60;
+  }
+
+  .note-row-active {
+    @apply bg-sky-50 ring-1 ring-inset ring-sky-200 hover:bg-sky-50 dark:bg-sky-500/10 dark:ring-sky-500/30 dark:hover:bg-sky-500/10;
+  }
+
+  .note-row-title {
+    @apply truncate text-sm font-semibold text-slate-900 dark:text-neutral-100;
+  }
+
+  .note-row-excerpt {
+    @apply mt-0.5 line-clamp-2 break-words text-xs leading-relaxed text-slate-500 dark:text-neutral-400;
+  }
+
+  .note-row-date {
+    @apply mt-1 text-[11px] font-medium text-slate-400 dark:text-neutral-500;
+  }
+
+  .note-row-pin {
+    @apply absolute right-2 top-2 rounded-md p-1 text-slate-400 opacity-0 transition hover:bg-slate-200/70 hover:text-amber-500 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 group-hover:opacity-100 dark:text-neutral-500 dark:hover:bg-neutral-700 dark:hover:text-amber-400;
+  }
+
+  .note-title-input {
+    @apply -mx-2 min-w-0 flex-1 rounded-lg border border-transparent bg-transparent px-2 py-1 text-2xl font-semibold tracking-tight text-slate-950 outline-none transition placeholder:text-slate-300 hover:border-slate-200 focus:border-sky-300 focus:ring-4 focus:ring-sky-100 dark:text-neutral-100 dark:placeholder:text-neutral-600 dark:hover:border-neutral-700 dark:focus:border-sky-500/60 dark:focus:ring-sky-500/10;
+  }
+
+  .note-title-input-error {
+    @apply border-red-300 hover:border-red-300 focus:border-red-400 focus:ring-red-100 dark:border-red-500/60 dark:hover:border-red-500/60 dark:focus:border-red-500 dark:focus:ring-red-500/20;
+  }
+
+  .note-save-state {
+    @apply inline-flex shrink-0 items-center gap-1.5 text-xs font-medium text-slate-400 dark:text-neutral-500;
+  }
+
+  .notes-inline-error {
+    @apply flex items-start gap-2 rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700 ring-1 ring-red-200 dark:bg-red-500/10 dark:text-red-300 dark:ring-red-500/30;
+  }
+
+  .notes-empty {
+    @apply flex flex-col items-center gap-1.5 rounded-xl border border-dashed border-slate-200 px-4 py-8 text-center text-sm text-slate-500 dark:border-neutral-800 dark:text-neutral-400;
+  }
+
+  .notes-hero-kbd {
+    @apply rounded-md border border-white/15 bg-white/10 px-1.5 py-0.5 font-sans text-xs text-white;
+  }
+
+  .notes-btn-kbd {
+    @apply ml-1 rounded border border-white/25 px-1 font-sans text-[10px] font-medium text-white/70 dark:border-neutral-950/20 dark:text-neutral-950/60;
+  }
+
+  .note-editor {
+    @apply flex flex-col;
+  }
+
+  .note-editor > .cm-editor {
+    @apply min-h-0 flex-1;
   }
 
   body.is-dragging,

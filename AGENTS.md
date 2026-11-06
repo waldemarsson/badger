@@ -41,13 +41,14 @@ Gotchas:
 - **Use runtime queries** (`sqlx::query`, `sqlx::query_as`), not the `query!` macros. `SQLX_OFFLINE` is set and there is no `.sqlx/` metadata.
 - **Errors** are `AppError` and reach the user as their display string, so write messages for the user (`"Title is required"`). Return `AppError::Custom` for validation and not-found errors; never panic in commands.
 - **Multi-step writes** go in a transaction (`pool.begin()`).
+- **Quit/close must go through `flush_guard.rs`** (flushes unsaved notes). Don't restore the native macOS Quit menu item or exit via `std::process::exit`; both bypass `RunEvent::ExitRequested`.
 
 ### Schema changes
 
 - Tables are created by `SCHEMA_SQL` in `src-tauri/src/db.rs` with `CREATE TABLE IF NOT EXISTS`. That does **not** alter existing tables.
 - Changing an existing table needs an idempotent migration function in `db.rs`, called from `init_db` after `SCHEMA_SQL`, with a test that builds the old shape and migrates it (see `migrate_todos_status`).
 - Foreign keys are on. Choose `ON DELETE CASCADE` vs `SET NULL` on purpose and test it.
-- **Every new table must be included in backup/restore** (`commands/backup.rs`): export, both restore modes, and `#[serde(default)]` on the new `BackupData` field so older backups still restore. Add a round-trip test.
+- **Every new table must be included in backup/restore** (`commands/backup.rs`): export, restore (overwrite-only: add an explicit `DELETE`, since cascades won't reach a new table), and `#[serde(default)]` on the new `BackupData` field so older backups still restore. Add a round-trip test.
 
 ## Frontend (Svelte 5 / SvelteKit)
 

@@ -1,5 +1,7 @@
 <script lang="ts" generics="Href extends string">
 	import { invoke } from '@tauri-apps/api/core';
+	import { goto } from '$app/navigation';
+	import { resolve } from '$app/paths';
 	import { onMount, tick, untrack } from 'svelte';
 	import { fade, scale } from 'svelte/transition';
 	import Search from 'lucide-svelte/icons/search';
@@ -9,6 +11,7 @@
 	import Plus from 'lucide-svelte/icons/plus';
 	import Calendar from 'lucide-svelte/icons/calendar';
 	import ChevronRight from 'lucide-svelte/icons/chevron-right';
+	import NotebookPen from 'lucide-svelte/icons/notebook-pen';
 	import { today } from '#lib/date-ranges.js';
 	import {
 		filterItems,
@@ -20,7 +23,7 @@
 		shiftDate
 	} from '#lib/palette.js';
 	import { changes, logTimeRequest, palette, showToast, type LogTimePrefill } from '#lib/palette-state.svelte.js';
-	import type { Customer, Issue, PaletteSettings, Project, TimeEntryRow } from '#lib/types.js';
+	import type { Customer, Issue, Note, PaletteSettings, Project, TimeEntryRow } from '#lib/types.js';
 
 	let {
 		pages,
@@ -66,6 +69,7 @@
 	const commands: Command[] = $derived([
 		{ id: 'new-todo', label: 'New todo', group: 'Actions', run: () => goTo('todo') },
 		{ id: 'log-time', label: 'Log time', group: 'Actions', run: () => void startLogTime() },
+		{ id: 'new-note', label: 'New note', group: 'Actions', run: () => void createNote() },
 		...pages.map((p): Command => ({
 			id: `page:${p.href}`,
 			label: p.label,
@@ -291,6 +295,25 @@
 		}
 	}
 
+	// ── New note ───────────────────────────────────────────────────────────────────
+
+	async function createNote(): Promise<void> {
+		if (busy) return;
+		busy = true;
+		error = '';
+		try {
+			const note = await invoke<Note>('create_note');
+			changes.notes += 1;
+			close();
+			// eslint-disable-next-line svelte/no-navigation-without-resolve -- resolved path plus a query string
+			await goto(`${resolve('/notes')}?id=${note.id}`);
+		} catch (e) {
+			error = String(e);
+		} finally {
+			busy = false;
+		}
+	}
+
 	// ── Keyboard ───────────────────────────────────────────────────────────────────
 
 	function pick(index: number): void {
@@ -490,7 +513,10 @@
 									{@render row(
 										filteredCommands.indexOf(c),
 										c.label,
-										c.id === 'new-todo' ? ListTodo : c.id === 'log-time' ? Clock : ArrowRight
+										c.id === 'new-todo' ? ListTodo
+										: c.id === 'log-time' ? Clock
+										: c.id === 'new-note' ? NotebookPen
+										: ArrowRight
 									)}
 								{/each}
 							{/if}

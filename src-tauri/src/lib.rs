@@ -3,6 +3,7 @@ pub mod app_settings;
 pub mod commands;
 pub mod db;
 pub mod error;
+pub mod flush_guard;
 pub mod logger;
 pub mod runtime_paths;
 pub mod startup_backup;
@@ -84,6 +85,12 @@ async fn run_startup_backup(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .manage(flush_guard::FlushGuard::default())
+        .on_menu_event(|app, event| {
+            if event.id() == flush_guard::QUIT_MENU_ID {
+                app.exit(0); // goes through RunEvent::ExitRequested → flush guard
+            }
+        })
         .setup(|app| {
             // ── Logging ──────────────────────────────────────────────────────
             // init_logger() returns a WorkerGuard. It MUST be stored in managed
@@ -116,6 +123,14 @@ pub fn run() {
                     tracing::debug!("Startup backup task completed with error: {}", e);
                 }
             });
+
+            // ── Quit/close flush guard ───────────────────────────────────────
+            // ⌘Q must reach RunEvent::ExitRequested so unsaved notes get flushed.
+            if cfg!(target_os = "macos") {
+                if let Err(e) = flush_guard::install_quit_menu(app.handle()) {
+                    tracing::error!("Flush guard: failed to install Quit menu item: {}", e);
+                }
+            }
 
             Ok(())
         })
@@ -161,6 +176,14 @@ pub fn run() {
                     commands::travel::update_travel,
                     commands::travel::delete_travel,
                     commands::travel::list_travel_places,
+                    // Notes
+                    commands::notes::list_notes,
+                    commands::notes::get_note,
+                    commands::notes::create_note,
+                    commands::notes::rename_note,
+                    commands::notes::update_note_body,
+                    commands::notes::set_note_pinned,
+                    commands::notes::delete_note,
                     // Backup (BE-07)
                     commands::backup::backup_data_to_file,
                     commands::backup::read_backup_file,
@@ -176,6 +199,8 @@ pub fn run() {
                     commands::settings::set_palette_last_used,
                     commands::settings::get_daily_target,
                     commands::settings::set_daily_target,
+                    // Quit/close flush guard
+                    flush_guard::flush_done,
                     // Dev-only
                     dev_seed::seed_database,
                 ]
@@ -221,6 +246,14 @@ pub fn run() {
                     commands::travel::update_travel,
                     commands::travel::delete_travel,
                     commands::travel::list_travel_places,
+                    // Notes
+                    commands::notes::list_notes,
+                    commands::notes::get_note,
+                    commands::notes::create_note,
+                    commands::notes::rename_note,
+                    commands::notes::update_note_body,
+                    commands::notes::set_note_pinned,
+                    commands::notes::delete_note,
                     // Backup (BE-07)
                     commands::backup::backup_data_to_file,
                     commands::backup::read_backup_file,
@@ -236,11 +269,14 @@ pub fn run() {
                     commands::settings::set_palette_last_used,
                     commands::settings::get_daily_target,
                     commands::settings::set_daily_target,
+                    // Quit/close flush guard
+                    flush_guard::flush_done,
                 ]
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| flush_guard::on_run_event(app, &event));
 }
 #[cfg(test)]
 mod tests {

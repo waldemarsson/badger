@@ -588,6 +588,10 @@
     @apply border-red-300 hover:border-red-300 focus:border-red-400 focus:ring-red-100 dark:border-red-500/60 dark:hover:border-red-500/60 dark:focus:border-red-500 dark:focus:ring-red-500/20;
   }
 
+  .note-dates {
+    @apply hidden shrink-0 items-center gap-1.5 whitespace-nowrap text-xs text-slate-400 lg:inline-flex dark:text-neutral-500;
+  }
+
   .note-save-state {
     @apply inline-flex shrink-0 items-center gap-1.5 text-xs font-medium text-slate-400 dark:text-neutral-500;
   }

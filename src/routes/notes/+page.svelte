@@ -5,7 +5,7 @@
 	import { onMount, tick, untrack } from 'svelte';
 	import { flip } from 'svelte/animate';
 	import { fade } from 'svelte/transition';
-	import { filterNotes, neighborAfterRemoval, sortNotes, upsertNote } from '#lib/notes.js';
+	import { filterNotes, formatNoteDate, neighborAfterRemoval, sortNotes, upsertNote } from '#lib/notes.js';
 	import { NoteSaveQueue } from '#lib/note-save-queue.js';
 	import { registerFlushHandler } from '#lib/flush-guard.js';
 	import type { Note, NoteSummary } from '#lib/types.js';
@@ -44,6 +44,7 @@
 	let editor = $state<ReturnType<typeof NoteEditor>>();
 	let titleInput = $state<HTMLInputElement>();
 	let searchInput = $state<HTMLInputElement>();
+	let listEl = $state<HTMLElement>();
 	let layout = $state<HTMLElement>();
 	let paneHeight = $state(560);
 
@@ -170,11 +171,34 @@
 		}
 	}
 
+	function rowElements(): HTMLElement[] {
+		return [...(listEl?.querySelectorAll<HTMLElement>('.note-row') ?? [])];
+	}
+
 	function onRowKeydown(e: KeyboardEvent, id: number): void {
 		if (e.target !== e.currentTarget) return; // keys on the row's own buttons
 		if (e.key === 'Enter' || e.key === ' ') {
 			e.preventDefault();
 			void select(id);
+		} else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+			e.preventDefault();
+			const rows = rowElements();
+			const index = rows.indexOf(e.currentTarget as HTMLElement);
+			const next = e.key === 'ArrowDown' ? rows[index + 1] : rows[index - 1];
+			// ↑ on the first row goes back to the search box.
+			(next ?? (e.key === 'ArrowUp' ? searchInput : undefined))?.focus();
+		}
+	}
+
+	function onSearchKeydown(e: KeyboardEvent): void {
+		if (e.key === 'Escape') {
+			query = '';
+		} else if (e.key === 'ArrowDown') {
+			e.preventDefault();
+			rowElements()[0]?.focus();
+		} else if (e.key === 'Enter' && visible.length) {
+			e.preventDefault();
+			void select(visible[0].id); // open the top match
 		}
 	}
 
@@ -221,7 +245,14 @@
 	}
 
 	function onWindowKeydown(e: KeyboardEvent): void {
-		if (e.code !== 'KeyN' || !e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+		if (!e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+		if (e.code === 'KeyF') {
+			e.preventDefault();
+			searchInput?.focus();
+			searchInput?.select();
+			return;
+		}
+		if (e.code !== 'KeyN') return;
 		e.preventDefault();
 		if (e.repeat) return; // held down: one note per press
 		requestCreate();
@@ -436,7 +467,7 @@
 							aria-label="Search notes"
 							autocomplete="off"
 							spellcheck="false"
-							onkeydown={(e) => e.key === 'Escape' && (query = '')}
+							onkeydown={onSearchKeydown}
 						/>
 						{#if query}
 							<button
@@ -463,7 +494,7 @@
 					<div class="px-3 pt-3">{@render dismissible(actionError, () => (actionError = ''))}</div>
 				{/if}
 
-				<div class="min-h-0 flex-1 overflow-y-auto p-2" role="list" aria-label="Notes">
+				<div bind:this={listEl} class="min-h-0 flex-1 overflow-y-auto p-2" role="list" aria-label="Notes">
 					{#if !loaded && !loadError}
 						<p class="px-3 py-6 text-center text-sm text-slate-400 dark:text-neutral-500">Loading…</p>
 					{:else if notes.length === 0}
@@ -539,6 +570,11 @@
 								onkeydown={onTitleKeydown}
 								onblur={() => void commitTitle(true)}
 							/>
+							<span class="note-dates" title="Created {current.created_at.replace('T', ' ').slice(0, 16)} · Modified {current.updated_at.replace('T', ' ').slice(0, 16)}">
+								Created {formatNoteDate(current.created_at, new Date())}
+								<span aria-hidden="true">·</span>
+								Modified {formatNoteDate(current.updated_at, new Date())}
+							</span>
 							<span class="note-save-state" aria-live="polite">
 								{#if saveStatus === 'error'}
 									<span class="text-red-600 dark:text-red-400">Not saved</span>

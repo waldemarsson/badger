@@ -6,6 +6,8 @@ const {
 	filterNotes,
 	upsertNote,
 	neighborAfterRemoval,
+	parseTimestamp,
+	formatNoteDate,
 	splitTableRow,
 	parseTableAlign,
 	parseTable,
@@ -68,6 +70,31 @@ test('neighborAfterRemoval: next in list, else previous, else null', () => {
 	assert.equal(neighborAfterRemoval([4, 7, 9], 9), 7);
 	assert.equal(neighborAfterRemoval([4], 4), null);
 	assert.equal(neighborAfterRemoval([4, 7], 99), null);
+});
+
+// ── Dates ───────────────────────────────────────────────────────────────────
+
+test('parseTimestamp reads the stored local timestamp as local time', () => {
+	const d = parseTimestamp('2026-11-06T09:05:03.250');
+	assert.deepEqual(
+		[d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds()],
+		[2026, 10, 6, 9, 5, 3]
+	);
+	assert.ok(Number.isNaN(parseTimestamp('garbage').getTime()));
+});
+
+test('formatNoteDate: date and time this year, date with year otherwise, empty when invalid', () => {
+	const now = new Date(2026, 10, 6, 12, 0, 0);
+	const thisYear = new Date(2026, 9, 3, 14, 7);
+	assert.equal(
+		formatNoteDate('2026-10-03T14:07:00.000', now),
+		`${thisYear.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}, ${thisYear.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`
+	);
+	assert.equal(
+		formatNoteDate('2025-12-24T08:00:00.000', now),
+		new Date(2025, 11, 24).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+	);
+	assert.equal(formatNoteDate('not a date', now), '');
 });
 
 // ── Tables ──────────────────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 <script lang="ts" generics="Href extends string">
 	import { invoke } from '@tauri-apps/api/core';
-	import { onMount, tick } from 'svelte';
+	import { onMount, tick, untrack } from 'svelte';
 	import { fade, scale } from 'svelte/transition';
 	import Search from 'lucide-svelte/icons/search';
 	import ListTodo from 'lucide-svelte/icons/list-todo';
@@ -19,7 +19,7 @@
 		parseHours,
 		shiftDate
 	} from '#lib/palette.js';
-	import { changes, palette, showToast } from '#lib/palette-state.svelte.js';
+	import { changes, logTimeRequest, palette, showToast, type LogTimePrefill } from '#lib/palette-state.svelte.js';
 	import type { Customer, Issue, PaletteSettings, Project, TimeEntryRow } from '#lib/types.js';
 
 	let {
@@ -163,7 +163,8 @@
 
 	// ── Log time flow ──────────────────────────────────────────────────────────────
 
-	async function startLogTime(): Promise<void> {
+	/** With a prefill whose project still exists, continues straight to the hours step. */
+	async function startLogTime(prefill: LogTimePrefill | null = null): Promise<void> {
 		loading = true;
 		texts.project = '';
 		await goTo('project');
@@ -180,7 +181,12 @@
 				ps.map((p) => ({ id: p.id, label: `${c.name} / ${p.name}`, isDefault: c.use_as_default && p.use_as_default }))
 			);
 			const fallback = projects.find((p) => p.isDefault)?.id;
-			highlight = initialIndex(projects, lastUsed.projectId, fallback);
+			highlight = initialIndex(projects, prefill?.projectId ?? lastUsed.projectId, fallback);
+			const match = prefill && projects.find((p) => p.id === prefill.projectId);
+			if (prefill && match) {
+				loading = false;
+				await pickProject(match, { id: prefill.issueId, title: prefill.issueTitle });
+			}
 		} catch (e) {
 			error = String(e);
 		} finally {
@@ -188,15 +194,17 @@
 		}
 	}
 
-	async function pickProject(p: ProjectOption): Promise<void> {
-		if (project?.id !== p.id) texts.issue = '';
+	/** A `preset` issue skips the issue step; issues still load so Back lands on a full list. */
+	async function pickProject(p: ProjectOption, preset: IssueOption | null = null): Promise<void> {
+		if (project?.id !== p.id || preset) texts.issue = '';
 		project = p;
 		loading = true;
 		issues = [];
-		await goTo('issue');
+		if (preset) issue = preset;
+		await goTo(preset ? 'hours' : 'issue');
 		try {
 			issues = await invoke<Issue[]>('list_issues_by_recent', { projectId: p.id });
-			if (!texts.issue) {
+			if (!preset && !texts.issue) {
 				highlight = p.id === lastUsed.projectId ? initialIndex(issues, lastUsed.issueId) : 0;
 			}
 		} catch (e) {
@@ -350,6 +358,15 @@
 			close();
 		}
 	}
+
+	// Pages (e.g. Today's [Log]) ask for the Log time flow through `requestLogTime`.
+	let seenLogTimeRequest = logTimeRequest.id;
+	$effect(() => {
+		if (logTimeRequest.id === seenLogTimeRequest) return;
+		seenLogTimeRequest = logTimeRequest.id;
+		const prefill = untrack(() => (logTimeRequest.prefill ? { ...logTimeRequest.prefill } : null));
+		void openPalette().then(() => startLogTime(prefill));
+	});
 
 	onMount(() => {
 		window.addEventListener('keydown', onWindowKeydown, true);

@@ -174,6 +174,8 @@ pub fn run() {
                     commands::settings::get_palette_settings,
                     commands::settings::set_palette_shortcut,
                     commands::settings::set_palette_last_used,
+                    commands::settings::get_daily_target,
+                    commands::settings::set_daily_target,
                     // Dev-only
                     dev_seed::seed_database,
                 ]
@@ -232,6 +234,8 @@ pub fn run() {
                     commands::settings::get_palette_settings,
                     commands::settings::set_palette_shortcut,
                     commands::settings::set_palette_last_used,
+                    commands::settings::get_daily_target,
+                    commands::settings::set_daily_target,
                 ]
             }
         })

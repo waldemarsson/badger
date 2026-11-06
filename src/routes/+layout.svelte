@@ -16,7 +16,8 @@
   let { children } = $props();
 
   const navLinks = [
-    { href: '/', label: 'Timesheet' },
+    { href: '/', label: 'Today' },
+    { href: '/timesheet', label: 'Timesheet' },
     { href: '/todos', label: 'Todos' },
     { href: '/reports/weekly', label: 'Weekly' },
     { href: '/reports/monthly', label: 'Monthly' },

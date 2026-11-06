@@ -13,12 +13,14 @@
   import { applyTheme, theme } from '#lib/theme-state.svelte.js';
   import { DEFAULT_SHORTCUT, formatShortcut, shortcutFromEvent, validateShortcut } from '#lib/palette.js';
   import { palette } from '#lib/palette-state.svelte.js';
+  import { formatHours, parseDailyTarget } from '#lib/today.js';
 
   type Tab = 'customers' | 'preferences' | 'backup' | 'dev';
   let activeTab = $state<Tab>('customers');
 
   onMount(() => {
     void loadStartupBackupSettings();
+    void loadDailyTarget();
     return () => (palette.recording = false);
   });
 
@@ -41,6 +43,53 @@
     } catch (e) {
       applyTheme(previous);
       themeError = String(e);
+    }
+  }
+
+  // ── Hours target ──────────────────────────────────────────────────────────────
+  let dailyTarget = $state('');
+  let savedDailyTarget = $state<number | null>(null);
+  let dailyTargetState = $state<'loading' | 'idle' | 'saving' | 'saved'>('loading');
+  let dailyTargetError = $state('');
+
+  async function loadDailyTarget() {
+    try {
+      const target = await invoke<number>('get_daily_target');
+      savedDailyTarget = target;
+      dailyTarget = formatHours(target);
+    } catch (e) {
+      dailyTargetError = String(e);
+    } finally {
+      dailyTargetState = 'idle';
+    }
+  }
+
+  async function saveDailyTarget() {
+    const parsed = parseDailyTarget(dailyTarget);
+    if ('error' in parsed) {
+      dailyTargetError = parsed.error;
+      return;
+    }
+    dailyTargetError = '';
+    dailyTargetState = 'saving';
+    try {
+      const target = await invoke<number>('set_daily_target', { target: parsed.target });
+      savedDailyTarget = target;
+      dailyTarget = formatHours(target);
+      dailyTargetState = 'saved';
+    } catch (e) {
+      dailyTargetError = String(e);
+      dailyTargetState = 'idle';
+    }
+  }
+
+  function onDailyTargetKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      void saveDailyTarget();
+    } else if (e.key === 'Escape' && savedDailyTarget !== null) {
+      dailyTarget = formatHours(savedDailyTarget);
+      dailyTargetError = '';
     }
   }
 
@@ -365,6 +414,50 @@
 
         {#if themeError}
           <p class="form-error">{themeError}</p>
+        {/if}
+      </section>
+
+      <section class="panel-card mt-4 space-y-4">
+        <div>
+          <h2 class="panel-title">Hours target</h2>
+          <p class="panel-copy">Daily hours for Today's progress bars. The week target is five workdays. Set 0 to turn progress off.</p>
+        </div>
+
+        <div class="flex flex-wrap items-end gap-2">
+          <div>
+            <label class="form-label mb-2" for="daily-target">Daily target</label>
+            <div class="relative w-32">
+              <input
+                id="daily-target"
+                class="form-input pr-8"
+                type="text"
+                inputmode="decimal"
+                autocomplete="off"
+                bind:value={dailyTarget}
+                oninput={() => { dailyTargetError = ''; if (dailyTargetState === 'saved') dailyTargetState = 'idle'; }}
+                onkeydown={onDailyTargetKeydown}
+                disabled={dailyTargetState === 'loading' || dailyTargetState === 'saving'}
+                aria-invalid={dailyTargetError ? 'true' : undefined}
+                aria-describedby={dailyTargetError ? 'daily-target-error' : undefined}
+              />
+              <span class="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-slate-400 dark:text-neutral-500">h</span>
+            </div>
+          </div>
+          <button
+            type="button"
+            class="btn-secondary"
+            onclick={saveDailyTarget}
+            disabled={dailyTargetState === 'loading' || dailyTargetState === 'saving'}
+          >{dailyTargetState === 'saving' ? 'Saving…' : 'Save'}</button>
+          {#if dailyTargetState === 'saved'}
+            <span class="pb-2 text-xs text-emerald-600 dark:text-emerald-400">
+              {savedDailyTarget === 0 ? 'Saved — progress off' : `Saved — ${formatHours((savedDailyTarget ?? 0) * 5)} h per week`}
+            </span>
+          {/if}
+        </div>
+
+        {#if dailyTargetError}
+          <p id="daily-target-error" class="form-error">{dailyTargetError}</p>
         {/if}
       </section>
 

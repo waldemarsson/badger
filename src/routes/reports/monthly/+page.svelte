@@ -153,9 +153,7 @@
   <div class="page-view">
 
     <section class="page-hero">
-      <p class="page-hero-kicker">TimeTracker</p>
       <h1 class="page-hero-title">Monthly Report</h1>
-      <p class="page-hero-copy">Time totals and travel by month.</p>
     </section>
 
     <div class="table-card">

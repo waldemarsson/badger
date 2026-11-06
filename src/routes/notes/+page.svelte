@@ -530,7 +530,7 @@
 	{/each}
 {/snippet}
 
-<div class="page-shell max-w-none">
+<div class="page-shell">
 	<div class="page-view">
 		{#if loadError}
 			<div class="alert-panel alert-error">

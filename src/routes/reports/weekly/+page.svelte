@@ -120,9 +120,7 @@
   <div class="page-view">
 
     <section class="page-hero">
-      <p class="page-hero-kicker">TimeTracker</p>
       <h1 class="page-hero-title">Weekly Report</h1>
-      <p class="page-hero-copy">Hours by issue for the selected ISO week.</p>
     </section>
 
     <div class="table-card">

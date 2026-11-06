@@ -101,40 +101,45 @@
 
 @layer components {
   .page-shell {
-    max-width: 118rem;
-    @apply mx-auto w-full px-3 py-4 sm:px-4 lg:px-6;
+    @apply w-full px-3 py-4 sm:px-4 lg:px-6;
   }
 
   .page-view {
     @apply w-full space-y-4;
   }
 
+  /* Continues the nav bar: bleeds out of page-shell padding, below the nav's muted divider.
+     Fixed height so every page's header lines up; stats sit right as plain muted text. */
   .page-hero {
-    @apply rounded-[1.5rem] bg-slate-950 px-5 py-5 text-white shadow-lg shadow-slate-950/10 ring-1 ring-slate-900/70 sm:px-6 dark:bg-neutral-900 dark:shadow-black/30 dark:ring-neutral-800;
-  }
-
-  .page-hero-kicker {
-    @apply text-sm font-semibold uppercase tracking-[0.24em] text-slate-300 dark:text-neutral-300;
+    @apply -mx-3 -mt-4 flex h-14 items-center justify-between gap-6 border-b border-slate-200 bg-white px-3 sm:-mx-4 sm:px-4 lg:-mx-6 lg:px-6 dark:border-neutral-800 dark:bg-neutral-900;
   }
 
   .page-hero-title {
-    @apply text-3xl font-semibold tracking-tight text-white sm:text-[2rem];
+    @apply flex min-w-0 items-baseline gap-3 truncate text-2xl font-semibold tracking-tight text-slate-950 dark:text-neutral-100;
   }
 
-  .page-hero-copy {
-    @apply max-w-3xl text-sm leading-6 text-slate-300 dark:text-neutral-300;
+  .page-hero-subtitle {
+    @apply truncate text-base font-normal tracking-normal text-slate-500 dark:text-neutral-400;
+  }
+
+  .hero-stats {
+    @apply flex shrink-0 items-baseline gap-5 text-sm;
   }
 
   .hero-stat {
-    @apply min-w-28 rounded-xl border border-white/10 bg-white/5 px-3 py-2 shadow-sm backdrop-blur-sm;
+    @apply flex items-baseline gap-1.5 whitespace-nowrap;
   }
 
   .hero-stat-label {
-    @apply text-[0.7rem] font-semibold uppercase tracking-[0.18em] text-slate-400 dark:text-neutral-400;
+    @apply text-slate-400 dark:text-neutral-500;
   }
 
   .hero-stat-value {
-    @apply mt-1 text-xl font-semibold tracking-tight text-white sm:text-2xl;
+    @apply tabular-nums text-slate-500 dark:text-neutral-400;
+  }
+
+  .hero-stat-muted {
+    @apply font-normal text-slate-400 dark:text-neutral-500;
   }
 
   .panel-card {
@@ -299,6 +304,16 @@
     overflow: visible;
   }
 
+  /* The card can't clip (popups escape it), so round the last row's outer cells to keep
+     row tints from squaring off the card's bottom corners. Inset by the card's 1px border. */
+  .table-card .table-base > :last-child > tr:last-child > :first-child {
+    border-bottom-left-radius: calc(1.375rem - 1px);
+  }
+
+  .table-card .table-base > :last-child > tr:last-child > :last-child {
+    border-bottom-right-radius: calc(1.375rem - 1px);
+  }
+
   @media (max-width: 1023px) {
     .table-scroll-region {
       overflow-x: auto;
@@ -458,8 +473,7 @@
   }
 
   .nav-shell {
-    max-width: 118rem;
-    @apply mx-auto flex w-full flex-col gap-3 px-3 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-4 lg:px-6;
+    @apply flex w-full flex-col gap-3 px-3 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-4 lg:px-6;
   }
 
   .nav-brand {
@@ -505,7 +519,7 @@
     animation: kanban-lift 160ms ease-out forwards;
   }
 
-  /* Today page (the hero is dark in both themes) */
+  /* Today page */
   .today-bar-track {
     @apply h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-neutral-800;
   }

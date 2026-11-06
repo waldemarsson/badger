@@ -309,7 +309,7 @@
 						<span class="h-2.5 w-2.5 rounded-full bg-slate-400 dark:bg-neutral-500"></span>
 						<h2 class="today-section-title">Hours</h2>
 					</header>
-					<div class="space-y-3 px-4 py-3">
+					<div class="space-y-3 px-1 py-3">
 						{@render hoursStat('Today', todayHours, target)}
 						{@render hoursStat('This week', weekHours, weekTarget)}
 						<div class="grid grid-cols-7 gap-1" aria-label="This week">
@@ -372,7 +372,7 @@
 					{/if}
 					<button
 						type="button"
-						class="flex w-full items-center gap-2 border-t border-slate-100 px-4 py-2.5 text-sm text-slate-500 transition hover:bg-slate-50 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-400 dark:border-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-800/60 dark:hover:text-neutral-200"
+						class="flex w-full items-center gap-2 border-t border-slate-100 px-1 py-2.5 text-sm text-slate-500 transition hover:bg-slate-50 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-400 dark:border-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-800/60 dark:hover:text-neutral-200"
 						onclick={() => requestLogTime()}
 					>
 						<Plus size={16} />

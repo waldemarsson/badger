@@ -480,7 +480,7 @@
 	function measure(): void {
 		if (!layout) return;
 		const top = layout.getBoundingClientRect().top + window.scrollY;
-		paneHeight = Math.max(420, window.innerHeight - top - 16);
+		paneHeight = Math.max(420, window.innerHeight - top);
 	}
 
 	// Re-measure when the load error banner above the panes comes or goes.
@@ -539,9 +539,9 @@
 			</div>
 		{/if}
 
-		<div bind:this={layout} class="grid grid-cols-[18rem_minmax(0,1fr)] gap-4" style="height: {paneHeight}px">
+		<div bind:this={layout} class="-mx-3 -mb-4 grid grid-cols-[18rem_minmax(0,1fr)] first:-mt-4 sm:-mx-4 lg:-mx-6" style="height: {paneHeight}px">
 			<!-- List -->
-			<aside class="notes-pane">
+			<aside class="notes-pane border-r border-slate-200 dark:border-neutral-800">
 				<div class="notes-bar gap-2 px-3">
 					<label class="relative min-w-0 flex-1">
 						<Search size={15} class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 dark:text-neutral-500" />

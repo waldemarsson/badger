@@ -235,14 +235,15 @@ void load();
 </div>
 {/if}
 
-<div class="grid grid-cols-1 items-stretch gap-4 md:grid-cols-3">
+<!-- Bleeds to the window edges and fills the height below the nav (4rem + 1px border) and header (3.5rem). -->
+<div class="-mx-3 !-mb-4 !mt-0 grid min-h-[calc(100vh-7.5rem-1px)] grid-cols-1 items-stretch divide-slate-200 sm:-mx-4 md:grid-cols-3 md:divide-x lg:-mx-6 dark:divide-neutral-800">
 {#each COLUMNS as col (col.status)}
 <section
 data-column={col.status}
 class="kanban-lane"
 class:kanban-lane-target={drag?.status === col.status}
 >
-<header class="flex items-center gap-2 px-1 pb-3">
+<header class="-mx-1 mb-3 flex items-center gap-2 border-b border-slate-200 px-1 py-3 dark:border-neutral-800">
 <span class="h-2.5 w-2.5 rounded-full {col.dot}"></span>
 <h2 class="text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-neutral-400">{col.label}</h2>
 <span class="ml-auto rounded-full bg-white dark:bg-neutral-900 px-2 py-0.5 text-xs font-medium text-slate-500 dark:text-neutral-400 ring-1 ring-slate-200 dark:ring-neutral-800">

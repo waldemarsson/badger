@@ -164,20 +164,22 @@
 
 {#snippet progressBar(hours: number, goal: number)}
 	{@const fraction = progress(hours, goal)}
-	<div class="today-bar-track mt-2" role="progressbar" aria-valuemin={0} aria-valuemax={goal} aria-valuenow={hours}>
+	<div class="today-bar-track mt-1.5" role="progressbar" aria-valuemin={0} aria-valuemax={goal} aria-valuenow={hours}>
 		<div
-			class="today-bar-fill {fraction >= 1 ? 'bg-emerald-400' : ''}"
+			class="today-bar-fill {fraction >= 1 ? 'bg-emerald-500 dark:bg-emerald-400' : 'bg-sky-500 dark:bg-sky-400'}"
 			style="width: {fraction * 100}%"
 		></div>
 	</div>
 {/snippet}
 
 {#snippet hoursStat(label: string, hours: number, goal: number)}
-	<div class="hero-stat min-w-40 flex-1 sm:flex-none">
-		<span class="hero-stat-label">{label}</span>
-		<div class="hero-stat-value">
-			{formatHours(hours)}{#if goal > 0}<span class="font-normal text-slate-400 dark:text-neutral-400">{` / ${formatHours(goal)}`}</span>{/if}
-			<span class="text-base font-normal text-slate-400 dark:text-neutral-400">h</span>
+	<div>
+		<div class="flex items-baseline justify-between gap-2">
+			<span class="text-xs font-medium text-slate-500 dark:text-neutral-400">{label}</span>
+			<span class="text-sm font-semibold tabular-nums text-slate-900 dark:text-neutral-100">
+				{formatHours(hours)}{#if goal > 0}<span class="font-normal text-slate-400 dark:text-neutral-500">{` / ${formatHours(goal)}`}</span>{/if}
+				<span class="font-normal text-slate-400 dark:text-neutral-500">h</span>
+			</span>
 		</div>
 		{#if goal > 0}
 			{@render progressBar(hours, goal)}
@@ -279,63 +281,19 @@
 		<section class="page-hero">
 			<p class="page-hero-kicker">TimeTracker</p>
 			<h1 class="page-hero-title">Today</h1>
-			<p class="page-hero-copy">{dateHeading}</p>
-
-			{#if loaded}
-				<div class="mt-4 flex flex-wrap items-stretch gap-3">
-					{@render hoursStat('Today', todayHours, target)}
-					{@render hoursStat('This week', weekHours, weekTarget)}
-					<div class="hero-stat min-w-40 flex-1 sm:flex-none">
-						<span class="hero-stat-label">Due</span>
-						<div class="mt-1 text-base font-semibold tracking-tight sm:text-lg">
-							{#if overdueCount === 0 && dueTodayCount === 0}
-								<span class="text-slate-400 dark:text-neutral-400">Nothing due</span>
-							{:else}
-								<span class={overdueCount ? 'text-red-300 dark:text-red-400' : 'text-slate-400 dark:text-neutral-400'}>{overdueCount} overdue</span>
-								<span class="text-slate-500 dark:text-neutral-500">·</span>
-								<span class={dueTodayCount ? 'text-amber-300 dark:text-amber-400' : 'text-slate-400 dark:text-neutral-400'}>{dueTodayCount} due today</span>
-							{/if}
-						</div>
-					</div>
-				</div>
-
-				<div class="mt-4 grid grid-cols-7 gap-1.5 sm:gap-2" aria-label="This week">
-					{#each days as day (day.date)}
-						{@const met = metTarget(day.date, day.hours)}
-						{@const weekend = isWeekend(day.date)}
-						<a
-							href="{resolve('/timesheet')}?day={day.date}"
-							class="today-day {day.date === todayIso ? 'today-day-today' : ''}"
-							title="{day.date} — open in Timesheet"
-						>
-							<span
-								class="text-[0.7rem] font-semibold uppercase tracking-[0.14em] {day.date === todayIso
-									? 'text-sky-300 dark:text-sky-300'
-									: weekend
-										? 'text-slate-500 dark:text-neutral-500'
-										: 'text-slate-400 dark:text-neutral-400'}"
-							>{weekdayShort(day.date)}</span>
-							<div class="flex h-14 w-3 items-end overflow-hidden rounded-full bg-white/10">
-								<div
-									class="w-full rounded-full transition-[height] duration-200 {met
-										? 'bg-emerald-400'
-										: weekend
-											? 'bg-slate-500 dark:bg-neutral-500'
-											: 'bg-slate-300 dark:bg-neutral-300'}"
-									style="height: {barHeight(day.hours)}%"
-								></div>
-							</div>
-							<span
-								class="text-sm font-semibold tabular-nums {met
-									? 'text-emerald-300 dark:text-emerald-400'
-									: day.hours > 0
-										? 'text-white dark:text-neutral-100'
-										: 'text-slate-500 dark:text-neutral-500'}"
-							>{day.hours > 0 ? formatHours(day.hours) : '—'}</span>
-						</a>
-					{/each}
-				</div>
-			{/if}
+			<p class="page-hero-copy">
+				{dateHeading}
+				{#if loaded}
+					<span class="text-slate-500 dark:text-neutral-500">·</span>
+					{#if overdueCount === 0 && dueTodayCount === 0}
+						<span class="text-slate-400 dark:text-neutral-400">Nothing due</span>
+					{:else}
+						<span class={overdueCount ? 'font-medium text-red-300 dark:text-red-400' : 'text-slate-400 dark:text-neutral-400'}>{overdueCount} overdue</span>
+						<span class="text-slate-500 dark:text-neutral-500">·</span>
+						<span class={dueTodayCount ? 'font-medium text-amber-300 dark:text-amber-400' : 'text-slate-400 dark:text-neutral-400'}>{dueTodayCount} due today</span>
+					{/if}
+				{/if}
+			</p>
 		</section>
 
 		{#if loadError}
@@ -346,7 +304,7 @@
 		{/if}
 
 		{#if loaded}
-			<div class="grid items-start gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+			<div class="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
 				<div class="space-y-4">
 					{#if actionError}
 						<div
@@ -362,8 +320,53 @@
 					{@render todoSection('In progress', 'bg-sky-500 dark:bg-sky-400', active, 'Nothing in progress')}
 				</div>
 
-				<section class="today-section">
+				<aside class="today-section">
 					<header class="today-section-header">
+						<span class="h-2.5 w-2.5 rounded-full bg-slate-400 dark:bg-neutral-500"></span>
+						<h2 class="today-section-title">Hours</h2>
+					</header>
+					<div class="space-y-3 px-4 py-3">
+						{@render hoursStat('Today', todayHours, target)}
+						{@render hoursStat('This week', weekHours, weekTarget)}
+						<div class="grid grid-cols-7 gap-1" aria-label="This week">
+							{#each days as day (day.date)}
+								{@const met = metTarget(day.date, day.hours)}
+								{@const weekend = isWeekend(day.date)}
+								<a
+									href="{resolve('/timesheet')}?day={day.date}"
+									class="today-day {day.date === todayIso ? 'today-day-today' : ''}"
+									title="{day.date} — open in Timesheet"
+								>
+									<span
+										class="text-[0.65rem] font-semibold uppercase {day.date === todayIso
+											? 'text-sky-600 dark:text-sky-400'
+											: weekend
+												? 'text-slate-400 dark:text-neutral-500'
+												: 'text-slate-500 dark:text-neutral-400'}"
+									>{weekdayShort(day.date)}</span>
+									<div class="flex h-9 w-2 items-end overflow-hidden rounded-full bg-slate-100 dark:bg-neutral-800">
+										<div
+											class="w-full rounded-full transition-[height] duration-200 {met
+												? 'bg-emerald-500 dark:bg-emerald-400'
+												: weekend
+													? 'bg-slate-300 dark:bg-neutral-600'
+													: 'bg-slate-400 dark:bg-neutral-400'}"
+											style="height: {barHeight(day.hours)}%"
+										></div>
+									</div>
+									<span
+										class="text-xs font-semibold tabular-nums {met
+											? 'text-emerald-600 dark:text-emerald-400'
+											: day.hours > 0
+												? 'text-slate-900 dark:text-neutral-100'
+												: 'text-slate-400 dark:text-neutral-500'}"
+									>{day.hours > 0 ? formatHours(day.hours) : '—'}</span>
+								</a>
+							{/each}
+						</div>
+					</div>
+
+					<header class="today-section-header border-t">
 						<span class="h-2.5 w-2.5 rounded-full bg-emerald-500 dark:bg-emerald-400"></span>
 						<h2 class="today-section-title">Logged today</h2>
 						<span class="ml-auto text-sm font-semibold tabular-nums text-slate-900 dark:text-neutral-100">{formatHours(loggedHours)} h</span>
@@ -373,11 +376,11 @@
 					{:else}
 						<div class="divide-y divide-slate-100 dark:divide-neutral-800">
 							{#each logged as entry (entry.id)}
-								<a href="{resolve('/timesheet')}?day={todayIso}" class="today-row" title="Open today in Timesheet">
-									<p class="min-w-0 flex-1 truncate text-sm text-slate-700 dark:text-neutral-300">
-										<span class="text-slate-500 dark:text-neutral-400">{entry.customer_name} / {entry.project_name} ·</span>
-										<span class="font-medium text-slate-800 dark:text-neutral-200">{entry.issue_title}</span>
-									</p>
+								<a href="{resolve('/timesheet')}?day={todayIso}" class="today-row" title="{entry.customer_name} / {entry.project_name} · {entry.issue_title} — open in Timesheet">
+									<div class="min-w-0 flex-1">
+										<p class="truncate text-sm font-medium text-slate-800 dark:text-neutral-200">{entry.issue_title}</p>
+										<p class="truncate text-xs text-slate-500 dark:text-neutral-400">{entry.customer_name} / {entry.project_name}</p>
+									</div>
 									<span class="shrink-0 text-sm font-semibold tabular-nums text-slate-900 dark:text-neutral-100">{formatHours(entry.hours)} h</span>
 								</a>
 							{/each}
@@ -392,7 +395,7 @@
 						Log time
 						<kbd class="palette-kbd ml-auto">{formatShortcut(palette.shortcut)}</kbd>
 					</button>
-				</section>
+				</aside>
 			</div>
 		{/if}
 	</div>

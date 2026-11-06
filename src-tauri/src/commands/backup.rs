@@ -248,6 +248,8 @@ pub async fn inner_restore_data(json: &str, pool: &Pool<Sqlite>) -> Result<(), A
     insert_todos(&data.todos, &mut tx).await?;
     insert_travel(&data.travel, &mut tx).await?;
     insert_folders_and_notes(&data.folders, &data.notes, &mut tx).await?;
+    // The search index is derived and not in the backup: rebuild it in the same transaction.
+    crate::commands::notes::rebuild_index(&mut tx).await?;
 
     tx.commit().await.map_err(|e| match &e {
         sqlx::Error::Database(db) if db.is_foreign_key_violation() => {
@@ -559,6 +561,36 @@ mod tests {
             let expected = serde_json::to_string(&(&original.folders, &original.notes)).unwrap();
             assert_eq!(exported, expected, "byte-for-byte");
         }
+    }
+
+    #[tokio::test]
+    async fn test_restore_rebuilds_search_index() {
+        let pool = crate::test_db().await;
+        seed_notes(&pool).await; // raw SQL: not indexed yet
+        let json = inner_backup_data(&pool).await.unwrap();
+        let ids = |q: &'static str, pool: Pool<Sqlite>| async move {
+            crate::commands::notes::inner_search_notes(q, None, &pool)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|h| h.note.id)
+                .collect::<Vec<i64>>()
+        };
+        let extra = crate::commands::notes::inner_create_note(&pool)
+            .await
+            .unwrap();
+        crate::commands::notes::inner_rename_note(extra.id, "Stray", &pool)
+            .await
+            .unwrap();
+        assert_eq!(ids("stray", pool.clone()).await, vec![extra.id]);
+
+        inner_restore_data(&json, &pool).await.unwrap();
+        assert!(
+            ids("stray", pool.clone()).await.is_empty(),
+            "old notes gone"
+        );
+        assert_eq!(ids("plan", pool.clone()).await, vec![2]);
+        assert_eq!(ids("åsa", pool.clone()).await, vec![1]);
     }
 
     #[tokio::test]

@@ -578,6 +578,15 @@
     @apply mt-0.5 truncate text-xs text-slate-500 dark:text-neutral-400;
   }
 
+  .note-row-snippet {
+    @apply mt-0.5 line-clamp-2 break-words text-xs text-slate-500 dark:text-neutral-400;
+  }
+
+  /* Search hit in a note row or the palette. */
+  .search-hit {
+    @apply rounded-sm bg-sky-100 px-px text-sky-900 dark:bg-sky-500/20 dark:text-sky-200;
+  }
+
   .note-row-pin {
     @apply absolute right-1.5 top-1.5 rounded-md p-1 text-slate-400 opacity-0 transition hover:bg-slate-200/70 hover:text-amber-500 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 group-hover:opacity-100 dark:text-neutral-500 dark:hover:bg-neutral-700 dark:hover:text-amber-400;
   }

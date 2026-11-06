@@ -20,7 +20,7 @@ The main user-facing areas are:
 - `/todos` — kanban board of standalone todos (drag cards between status columns), optionally linked to an issue
 - `/reports/weekly` — ISO-week report view
 - `/reports/monthly` — month report view with expandable grouping, the month's travel, and a copy-month text export
-- `/notes` — note list (pinned first, then most recently updated; client-side title/excerpt filter) on the left and a markdown live-preview editor on the right; the selected note lives in the URL (`?id=12`)
+- `/notes` — note list (pinned first, then most recently updated; search via the `search_notes` command, ranked by relevance with highlighted title and snippet) on the left and a markdown live-preview editor on the right; the selected note lives in the URL (`?id=12`)
 - `/travel` — month-scoped list of business trips (date, from/to, optional km and kr) with inline add, edit, repeat, and delete
 - `/settings` — customer and project management (cards with inline add, rename, default, and delete), preferences (System/Light/Dark appearance), backup/restore, and dev-only seed tooling
 
@@ -39,7 +39,7 @@ The backend is organized around command modules:
 - `issues` and `time_entries` for core timesheet operations
 - `todos` for standalone todos and their optional issue link
 - `travel` for business trips, listed per month
-- `notes` for markdown notes (create, rename, body save, pin, delete) and the list excerpt, which is computed in Rust
+- `notes` for markdown notes (create, rename, body save, pin, delete), the list excerpt, which is computed in Rust, and full-text search (`search_notes`, `search_index_stats`, `rebuild_search_index`)
 - `markdown` for `render_markdown`, which turns note markdown into safe HTML (read view, copy as HTML)
 - `reports` for weekly and monthly rollups
 - `backup` for JSON export and import
@@ -97,6 +97,10 @@ An edit within the debounce window must survive ⌘Q. `src-tauri/src/flush_guard
 On macOS the native app-menu Quit item sends `terminate:`, which tao turns into an unpreventable exit that skips `ExitRequested`. At startup `install_quit_menu` therefore replaces it with a custom "Quit" item (id `app-quit`, accelerator `CmdOrCtrl+Q`) that calls `AppHandle::exit`, which does go through the guard. It only applies when the default menu's app submenu ends in a Quit item; otherwise it logs a warning and keeps the native menu. The guard is unit-tested for its state machine only; it has not been verified in the real Tauri shell.
 
 The frontend keeps TypeScript interfaces in `src/lib/types.ts` aligned with the Rust response shapes so route components can work with typed command results.
+
+### Notes search
+
+`search_notes` (in `commands/notes.rs`) queries the `notes_fts` FTS5 table, which holds each note's title and a plain-text body from `markdown::to_plain_text` (markers and markdown link/image destinations dropped; raw HTML and autolinks are indexed as written). The `trigram` tokenizer matches case-insensitive substrings, which suits Swedish compounds; it can't match terms under 3 characters, so those filter the rows in Rust (Unicode case folding) without highlights. Every whitespace-separated term must match and is quoted, so FTS5 operators are plain text. Results are ranked with `bm25` (title weighted 10×), and hits come back wrapped in `\u0002`/`\u0003`, which are stripped from indexed text. The frontend splits them into `<mark>` segments (`splitHighlights` in `src/lib/notes.ts`) and never uses `{@html}`. The list re-searches only when the query changes, and rows are drawn from the current summaries, so the note you are editing never drops out mid-edit. The palette shows the top 5 hits under its commands once the query has 3 characters; shorter queries list commands only.
 
 ## Storage model
 

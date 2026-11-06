@@ -185,6 +185,9 @@ pub fn run() {
                     commands::notes::update_note_body,
                     commands::notes::set_note_pinned,
                     commands::notes::delete_note,
+                    commands::notes::search_notes,
+                    commands::notes::search_index_stats,
+                    commands::notes::rebuild_search_index,
                     commands::markdown::render_markdown,
                     // Backup (BE-07)
                     commands::backup::backup_data_to_file,
@@ -256,6 +259,9 @@ pub fn run() {
                     commands::notes::update_note_body,
                     commands::notes::set_note_pinned,
                     commands::notes::delete_note,
+                    commands::notes::search_notes,
+                    commands::notes::search_index_stats,
+                    commands::notes::rebuild_search_index,
                     commands::markdown::render_markdown,
                     // Backup (BE-07)
                     commands::backup::backup_data_to_file,

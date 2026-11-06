@@ -131,6 +131,45 @@ pub fn to_html(markdown: &str) -> String {
     out
 }
 
+/// Plain text for the search index: text, code and raw HTML as written; markers, link
+/// URLs and image URLs dropped (image alt text kept). Blocks end with a newline and table
+/// cells with a space, so words from neighbouring blocks don't run together.
+pub fn to_plain_text(markdown: &str) -> String {
+    let options =
+        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+    let mut out = String::with_capacity(markdown.len());
+    for event in Parser::new_ext(markdown, options) {
+        match event {
+            Event::Text(t) | Event::Code(t) | Event::Html(t) | Event::InlineHtml(t) => {
+                out.push_str(&t)
+            }
+            Event::SoftBreak | Event::HardBreak | Event::Rule => out.push('\n'),
+            // A block starting inside another (a nested list or quote in an item) must not
+            // run into the parent's text.
+            Event::Start(
+                Tag::Paragraph
+                | Tag::Heading { .. }
+                | Tag::BlockQuote(_)
+                | Tag::CodeBlock(_)
+                | Tag::List(_)
+                | Tag::Item
+                | Tag::Table(_),
+            ) if !out.is_empty() && !out.ends_with('\n') => out.push('\n'),
+            Event::End(TagEnd::TableCell) => out.push(' '),
+            Event::End(
+                TagEnd::Paragraph
+                | TagEnd::Heading(_)
+                | TagEnd::Item
+                | TagEnd::TableRow
+                | TagEnd::TableHead
+                | TagEnd::CodeBlock,
+            ) if !out.ends_with('\n') => out.push('\n'),
+            _ => {}
+        }
+    }
+    out.trim_end().to_string()
+}
+
 /// Renders markdown for the read view and "Copy as HTML". Async so a long note
 /// doesn't render on the main thread.
 #[tauri::command]
@@ -293,5 +332,28 @@ mod tests {
     fn empty_input_renders_nothing() {
         assert_eq!(to_html(""), "");
         assert_eq!(to_html("   \n\n"), "");
+    }
+
+    #[test]
+    fn plain_text_drops_markers_and_urls() {
+        let text = to_plain_text(
+            "# Head\n\nSome **bold** [link](https://example.com/secret) ![alt](https://x.test/i.png)\n\n- [ ] task\n\n| a | b |\n| - | - |\n| c | d |\n\n```rust\nlet x = 1;\n```\n",
+        );
+        assert_eq!(
+            text,
+            "Head\nSome bold link alt\ntask\na b \nc d \nlet x = 1;"
+        );
+        assert!(!text.contains("example.com"));
+    }
+
+    #[test]
+    fn plain_text_separates_nested_blocks() {
+        assert_eq!(to_plain_text("- parent\n  - child"), "parent\nchild");
+        assert_eq!(to_plain_text("1. one\n   > quoted"), "one\nquoted");
+    }
+
+    #[test]
+    fn plain_text_of_empty_input_is_empty() {
+        assert_eq!(to_plain_text(""), "");
     }
 }

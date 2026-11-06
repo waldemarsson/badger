@@ -8,7 +8,7 @@ Markdown notes stored in SQLite, written in Obsidian-compatible markdown so note
 
 1. **Notes core** — done, see Done below
 2. **Read view and copy as HTML** — done, see Done below
-3. **Search** — SQLite FTS5 over title and body with highlighted snippets, used by the note list and by ⌘K
+3. **Search** — done, see Done below
 4. **Linking** — `#tags` with `#` autocomplete that also suggests customers (`#acme`), projects (`#acme/website`), issues (`#issue/123`) and todos (`#todo/42`, shown as chips); `[[wikilinks]]` between notes with backlinks; renaming a customer, project or note rewrites matching tags and links; deleting an item leaves its tag as a plain tag
 5. **Folders** — folder tree, move, drag and drop; deleting a folder moves its contents to the parent
 6. **Semantic search** — embedding model embedded in the app (downloaded on first use, configured in Settings), hybrid keyword and semantic results
@@ -18,6 +18,7 @@ Markdown notes stored in SQLite, written in Obsidian-compatible markdown so note
 
 ## Done
 
+- Notes search — SQLite FTS5 (`trigram`: case-insensitive substrings, so `rapport` finds `tidrapport`; å/ä/ö stay distinct) over titles and plain-text bodies; the note list ranks by relevance (title hits first) with highlighted titles and snippets, ⌘K lists the top 5 notes (from 3 typed characters), and Settings › Preferences shows the index size with a Rebuild button
 - Notes read view — ⌘E toggles a read view rendered in Rust (`pulldown-cmark`; raw HTML escaped, only http/https/mailto links, images never load) with highlighted code and links that open in the browser; "Copy as HTML" puts rendered HTML and the markdown source on the clipboard
 - Notes core — `/notes` page with a filtered note list and a CodeMirror 6 editor with Obsidian-style live preview (headings, emphasis, code, quotes, lists, task checkboxes, tables), autosave, pinning, ⌘N and a palette "New note" action; `notes` and nestable `folders` tables (no folder UI yet) included in backup/restore; a quit/close guard flushes unsaved edits
 - Today — start page at `/` with todos needing attention, in-progress todos, today's logged time and a Mon–Sun week strip with progress against a daily hours target (Settings › Preferences); the Timesheet moved to `/timesheet` and gained a Single Day filter

@@ -12,6 +12,7 @@
 	import Calendar from 'lucide-svelte/icons/calendar';
 	import ChevronRight from 'lucide-svelte/icons/chevron-right';
 	import NotebookPen from 'lucide-svelte/icons/notebook-pen';
+	import FileText from 'lucide-svelte/icons/file-text';
 	import { today } from '#lib/date-ranges.js';
 	import {
 		filterItems,
@@ -23,7 +24,8 @@
 		shiftDate
 	} from '#lib/palette.js';
 	import { changes, logTimeRequest, palette, showToast, type LogTimePrefill } from '#lib/palette-state.svelte.js';
-	import type { Customer, Issue, PaletteSettings, Project, TimeEntryRow } from '#lib/types.js';
+	import { splitHighlights } from '#lib/notes.js';
+	import type { Customer, Issue, NoteHit, PaletteSettings, Project, TimeEntryRow } from '#lib/types.js';
 
 	let {
 		pages,
@@ -82,6 +84,33 @@
 	]);
 
 	const filteredCommands = $derived(filterItems(commands, texts.root, (c) => c.label));
+
+	// Notes matching the root query, from the search index; listed after the commands.
+	const NOTE_HIT_LIMIT = 5;
+	// Shorter queries are for commands ("ne" → New note), and would scan every note.
+	const MIN_NOTE_QUERY_CHARS = 3;
+	let noteResults = $state<{ term: string; hits: NoteHit[] }>({ term: '', hits: [] });
+	let noteSeq = 0;
+	const noteTerm = $derived.by(() => {
+		const term = open && step === 'root' ? texts.root.trim() : '';
+		return [...term].length >= MIN_NOTE_QUERY_CHARS ? term : '';
+	});
+	// Only hits for the current text: stale ones could be picked with Enter.
+	const noteHits = $derived(noteResults.term === noteTerm ? noteResults.hits : []);
+	const notesPending = $derived(noteTerm !== '' && noteResults.term !== noteTerm);
+	$effect(() => {
+		const term = noteTerm;
+		const seq = ++noteSeq;
+		if (!term) return;
+		invoke<NoteHit[]>('search_notes', { query: term, limit: NOTE_HIT_LIMIT })
+			.then((hits) => {
+				if (seq === noteSeq) noteResults = { term, hits };
+			})
+			.catch(() => {
+				// commands still work; the notes page shows search errors
+				if (seq === noteSeq) noteResults = { term, hits: [] };
+			});
+	});
 	const filteredProjects = $derived(filterItems(projects, texts.project, (p) => p.label));
 	const issueOptions: IssueOption[] = $derived.by(() => {
 		const typed = texts.issue.trim();
@@ -91,7 +120,7 @@
 	});
 
 	const listLength = $derived(
-		step === 'root' ? filteredCommands.length
+		step === 'root' ? filteredCommands.length + noteHits.length
 		: step === 'project' ? filteredProjects.length
 		: step === 'issue' ? issueOptions.length
 		: 0
@@ -304,10 +333,19 @@
 		void goto(`${resolve('/notes')}?new=1`);
 	}
 
+	function openNote(id: number): void {
+		close();
+		// eslint-disable-next-line svelte/no-navigation-without-resolve -- resolved path plus a query string
+		void goto(`${resolve('/notes')}?id=${id}`);
+	}
+
 	// ── Keyboard ───────────────────────────────────────────────────────────────────
 
 	function pick(index: number): void {
-		if (step === 'root') filteredCommands[index]?.run();
+		if (step === 'root') {
+			if (index < filteredCommands.length) filteredCommands[index].run();
+			else if (noteHits[index - filteredCommands.length]) openNote(noteHits[index - filteredCommands.length].id);
+		}
 		else if (step === 'project' && filteredProjects[index]) void pickProject(filteredProjects[index]);
 		else if (step === 'issue' && issueOptions[index]) pickIssue(issueOptions[index]);
 	}
@@ -416,6 +454,34 @@
 	</button>
 {/snippet}
 
+{#snippet marked(text: string)}
+	{#each splitHighlights(text) as seg, i (i)}{#if seg.hit}<mark class="search-hit">{seg.text}</mark>{:else}{seg.text}{/if}{/each}
+{/snippet}
+
+{#snippet noteRow(index: number, hit: NoteHit)}
+	{@const active = index === highlight}
+	<button
+		type="button"
+		tabindex="-1"
+		data-active={active}
+		class="flex w-full min-w-0 items-start gap-3 rounded-lg px-3 py-2 text-left text-sm transition-colors {active
+			? 'bg-sky-50 text-sky-900 dark:bg-sky-500/10 dark:text-sky-300'
+			: 'text-slate-700 dark:text-neutral-300'}"
+		onmousemove={() => (highlight = index)}
+		onclick={() => pick(index)}
+	>
+		<FileText size={16} class="mt-0.5 shrink-0 {active ? 'text-sky-500 dark:text-sky-400' : 'text-slate-400 dark:text-neutral-500'}" />
+		<span class="min-w-0 flex-1">
+			<span class="block truncate">{@render marked(hit.title_marked)}</span>
+			{#if hit.snippet || hit.excerpt}
+				<span class="block truncate text-xs text-slate-500 dark:text-neutral-400">
+					{#if hit.snippet}{@render marked(hit.snippet)}{:else}{hit.excerpt}{/if}
+				</span>
+			{/if}
+		</span>
+	</button>
+{/snippet}
+
 {#snippet empty(message: string)}
 	<p class="px-3 py-6 text-center text-sm text-slate-500 dark:text-neutral-400">{message}</p>
 {/snippet}
@@ -492,8 +558,8 @@
 			{#if step === 'root' || step === 'project' || step === 'issue'}
 				<div bind:this={list} class="max-h-96 overflow-y-auto border-t border-slate-100 p-2 dark:border-neutral-800">
 					{#if step === 'root'}
-						{#if filteredCommands.length === 0}
-							{@render empty('No matching commands')}
+						{#if filteredCommands.length === 0 && noteHits.length === 0 && !notesPending}
+							{@render empty('No matching commands or notes')}
 						{/if}
 						{#each ['Actions', 'Go to'] as const as group (group)}
 							{@const items = filteredCommands.filter((c) => c.group === group)}
@@ -511,6 +577,12 @@
 								{/each}
 							{/if}
 						{/each}
+						{#if noteHits.length}
+							<p class="px-3 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400 dark:text-neutral-500">Notes</p>
+							{#each noteHits as hit, i (hit.id)}
+								{@render noteRow(filteredCommands.length + i, hit)}
+							{/each}
+						{/if}
 					{:else if step === 'project'}
 						{#if loading}
 							{@render empty('Loading…')}

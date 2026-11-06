@@ -34,7 +34,7 @@ Log time, create a todo or note, jump to any page, or search notes without touch
 
 ### Timesheet — every entry, editable inline
 
-Add, edit, and delete entries in place, with pickers for customer → project → issue. Filter by day, week, month, or a custom range; the header shows the period total.
+Add, edit, and delete entries in place, with pickers for customer → project → issue. Filter by day, week, month, or a custom range; the toolbar shows the period total.
 
 ![Timesheet](docs/screenshots/timesheet.png)
 

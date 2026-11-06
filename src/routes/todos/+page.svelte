@@ -224,9 +224,7 @@ void load();
 <div class="page-shell">
 <div class="page-view">
 
-<section class="page-hero">
-<h1 class="page-hero-title">Todos</h1>
-</section>
+<h1 class="sr-only">Todos</h1>
 
 {#if error}
 <div class="flex items-center justify-between rounded-xl bg-red-50 dark:bg-red-500/10 px-4 py-2 text-sm text-red-700 dark:text-red-300 ring-1 ring-red-200 dark:ring-red-500/30">

@@ -38,7 +38,7 @@ Notes and folders are seeded separately: whenever the `notes` table is empty, th
 
 - Weekly and monthly reports are computed in Rust rather than assembled entirely in the frontend
 - Backup export/import also stays in Rust so file access and SQLite writes remain on the native side
-- The Settings page currently contains the active backup/restore UI even though a `/backup` route still exists as a placeholder
+- Backup/restore UI lives in the Settings page (Backup & Restore tab)
 
 ## Formatting and lint split
 

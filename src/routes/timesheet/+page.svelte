@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { onMount, untrack } from 'svelte';
 import { page } from '$app/state';
 import { getMonthBounds, getWeekBounds, today } from '#lib/date-ranges.js';
-import { formatDayLabel, parseDayParam } from '#lib/today.js';
+import { parseDayParam } from '#lib/today.js';
 import { loadInitialTimesheetData } from '#lib/timesheet-startup.js';
 import type { Customer, Project, Issue, TimeEntryRow } from '#lib/types.js';
 import Combobox from '#lib/components/Combobox.svelte';
@@ -69,14 +69,6 @@ if (dateFilter === 'last_month') return getMonthBounds(-1);
 if (dateFilter === 'single_day') return { start: singleDay, end: singleDay };
 return { start: customStart, end: customEnd };
 }
-
-const filterLabels: Record<string, string> = {
-this_week: 'This Week',
-last_week: 'Last Week',
-this_month: 'This Month',
-last_month: 'Last Month',
-custom: 'Custom Range'
-};
 
 async function loadEntries(): Promise<void> {
 const { start, end } = getDateRange();
@@ -302,33 +294,22 @@ dateFilter = 'single_day';
 });
 
 let totalHours = $derived(entries.reduce((sum, e) => sum + e.hours, 0));
-let totalLabel = $derived(
-dateFilter === 'single_day'
-? parseDayParam(singleDay) ? formatDayLabel(singleDay) : 'Single Day'
-: (filterLabels[dateFilter] ?? 'Total')
-);
 </script>
 
 <div class="page-shell">
 <div class="page-view">
 
-<!-- Hero band -->
-<section class="page-hero">
-<h1 class="page-hero-title">Timesheet</h1>
-<div class="hero-stats">
-<div class="hero-stat">
-<span class="hero-stat-label">{totalLabel}</span>
-<span class="hero-stat-value">{formatHours(totalHours)} <span class="hero-stat-muted">h</span></span>
-</div>
-</div>
-</section>
+<h1 class="sr-only">Timesheet</h1>
 
 <!-- Main table card -->
 <section class="table-card">
 
 <!-- Toolbar -->
 <div class="table-toolbar flex items-center justify-between">
-<span class="table-title">Time Entries</span>
+<div class="toolbar-stat">
+<span class="toolbar-stat-label">Total</span>
+<span class="toolbar-stat-value">{formatHours(totalHours)} <span class="toolbar-stat-muted">h</span></span>
+</div>
 <div class="flex items-center gap-2">
 <select bind:value={dateFilter} class="form-select w-40">
 <option value="this_week">This Week</option>

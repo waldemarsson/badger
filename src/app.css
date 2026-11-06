@@ -108,37 +108,24 @@
     @apply w-full space-y-4;
   }
 
-  /* Continues the nav bar: bleeds out of page-shell padding, below the nav's muted divider.
-     Fixed height so every page's header lines up; stats sit right as plain muted text. */
-  .page-hero {
-    @apply -mx-3 -mt-4 flex h-14 items-center justify-between gap-6 border-b border-slate-200 bg-white px-3 sm:-mx-4 sm:px-4 lg:-mx-6 lg:px-6 dark:border-neutral-800 dark:bg-neutral-900;
-  }
-
-  .page-hero-title {
-    @apply flex min-w-0 items-baseline gap-3 truncate text-2xl font-semibold tracking-tight text-slate-950 dark:text-neutral-100;
-  }
-
-  .page-hero-subtitle {
-    @apply truncate text-base font-normal tracking-normal text-slate-500 dark:text-neutral-400;
-  }
-
-  .hero-stats {
+  /* Totals beside the control that scopes them (month/range pickers). */
+  .toolbar-stats {
     @apply flex shrink-0 items-baseline gap-5 text-sm;
   }
 
-  .hero-stat {
+  .toolbar-stat {
     @apply flex items-baseline gap-1.5 whitespace-nowrap;
   }
 
-  .hero-stat-label {
+  .toolbar-stat-label {
     @apply text-slate-400 dark:text-neutral-500;
   }
 
-  .hero-stat-value {
+  .toolbar-stat-value {
     @apply tabular-nums text-slate-500 dark:text-neutral-400;
   }
 
-  .hero-stat-muted {
+  .toolbar-stat-muted {
     @apply font-normal text-slate-400 dark:text-neutral-500;
   }
 

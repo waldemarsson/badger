@@ -1,6 +1,6 @@
 use crate::AppError;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Pool, Sqlite};
+use sqlx::{FromRow, Pool, Sqlite, SqliteConnection};
 use tauri::State;
 
 /// Maximum title length in characters (not bytes).
@@ -228,21 +228,27 @@ pub fn excerpt(body: &str, title: &str) -> String {
 
 /// Writes a title without the Rust-side duplicate check; the unique index is the backstop.
 async fn store_title(id: i64, title: &str, pool: &Pool<Sqlite>) -> Result<u64, AppError> {
+    let mut tx = pool.begin().await?;
     let result =
         sqlx::query("UPDATE notes SET Title = ?, UpdatedAt = ? WHERE id = ? AND Title IS NOT ?")
             .bind(title)
             .bind(now())
             .bind(id)
             .bind(title)
-            .execute(pool)
+            .execute(&mut *tx)
             .await
             .map_err(|e| map_unique(e, title))?;
+    if result.rows_affected() > 0 {
+        index_note(id, &mut tx).await?;
+    }
+    tx.commit().await?;
     Ok(result.rows_affected())
 }
 
 /// Inserts a note without the Rust-side duplicate check; the unique index is the backstop.
 async fn insert_note(title: &str, pool: &Pool<Sqlite>) -> Result<i64, AppError> {
     let ts = now();
+    let mut tx = pool.begin().await?;
     let row: (i64,) = sqlx::query_as(
         "INSERT INTO notes (Title, Body, Pinned, CreatedAt, UpdatedAt) \
          VALUES (?, '', 0, ?, ?) RETURNING id",
@@ -250,9 +256,11 @@ async fn insert_note(title: &str, pool: &Pool<Sqlite>) -> Result<i64, AppError> 
     .bind(title)
     .bind(&ts)
     .bind(&ts)
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await
     .map_err(|e| map_unique(e, title))?;
+    index_note(row.0, &mut tx).await?;
+    tx.commit().await?;
     Ok(row.0)
 }
 
@@ -311,13 +319,19 @@ pub async fn inner_update_note_body(
     pool: &Pool<Sqlite>,
 ) -> Result<NoteSummary, AppError> {
     // 0 rows affected means unchanged or missing; get_summary tells them apart.
-    sqlx::query("UPDATE notes SET Body = ?, UpdatedAt = ? WHERE id = ? AND Body IS NOT ?")
-        .bind(body)
-        .bind(now())
-        .bind(id)
-        .bind(body)
-        .execute(pool)
-        .await?;
+    let mut tx = pool.begin().await?;
+    let result =
+        sqlx::query("UPDATE notes SET Body = ?, UpdatedAt = ? WHERE id = ? AND Body IS NOT ?")
+            .bind(body)
+            .bind(now())
+            .bind(id)
+            .bind(body)
+            .execute(&mut *tx)
+            .await?;
+    if result.rows_affected() > 0 {
+        index_note(id, &mut tx).await?;
+    }
+    tx.commit().await?;
     get_summary(id, pool).await
 }
 
@@ -339,14 +353,224 @@ pub async fn inner_set_note_pinned(
 }
 
 pub async fn inner_delete_note(id: i64, pool: &Pool<Sqlite>) -> Result<(), AppError> {
+    let mut tx = pool.begin().await?;
     let result = sqlx::query("DELETE FROM notes WHERE id = ?")
         .bind(id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
     if result.rows_affected() == 0 {
         return Err(not_found());
     }
+    sqlx::query("DELETE FROM notes_fts WHERE rowid = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
     Ok(())
+}
+
+// ── Search ────────────────────────────────────────────────────────────────────
+
+/// Search result: a list row plus the title and a body snippet with hits wrapped in
+/// `HIT_START`/`HIT_END`. `snippet` is empty when the body has no highlighted hit.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NoteHit {
+    #[serde(flatten)]
+    pub note: NoteSummary,
+    pub title_marked: String,
+    pub snippet: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SearchIndexStats {
+    pub notes: i64,
+    pub bytes: i64,
+}
+
+/// Highlight delimiters (STX/ETX). Stripped from indexed text, so they only ever come
+/// from FTS5 and user content can't fake a highlight.
+pub const HIT_START: char = '\u{2}';
+pub const HIT_END: char = '\u{3}';
+/// The trigram tokenizer can't match terms shorter than this.
+const MIN_TRIGRAM_CHARS: usize = 3;
+/// Snippet length in tokens; trigram tokens are roughly one character each.
+const SNIPPET_TOKENS: i64 = 64;
+/// bm25 column weights: a title hit counts ten times a body hit.
+const TITLE_WEIGHT: f64 = 10.0;
+
+fn strip_hit_markers(text: &str) -> String {
+    text.replace([HIT_START, HIT_END], "")
+}
+
+/// Writes (or rewrites) one note's index row from its stored title and body.
+async fn index_note(id: i64, conn: &mut SqliteConnection) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM notes_fts WHERE rowid = ?")
+        .bind(id)
+        .execute(&mut *conn)
+        .await?;
+    let row: Option<(String, String)> =
+        sqlx::query_as("SELECT Title, Body FROM notes WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&mut *conn)
+            .await?;
+    if let Some((title, body)) = row {
+        insert_index_row(id, &title, &body, conn).await?;
+    }
+    Ok(())
+}
+
+async fn insert_index_row(
+    id: i64,
+    title: &str,
+    body: &str,
+    conn: &mut SqliteConnection,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT INTO notes_fts (rowid, Title, Body) VALUES (?, ?, ?)")
+        .bind(id)
+        .bind(strip_hit_markers(title))
+        .bind(strip_hit_markers(&super::markdown::to_plain_text(body)))
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+/// Replaces the whole index with rows built from `notes`. Callers own the transaction,
+/// so restore and seeding rebuild atomically with their writes.
+pub(crate) async fn rebuild_index(conn: &mut SqliteConnection) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM notes_fts")
+        .execute(&mut *conn)
+        .await?;
+    let notes: Vec<(i64, String, String)> = sqlx::query_as("SELECT id, Title, Body FROM notes")
+        .fetch_all(&mut *conn)
+        .await?;
+    for (id, title, body) in notes {
+        insert_index_row(id, &title, &body, conn).await?;
+    }
+    Ok(())
+}
+
+/// Quotes a term as an FTS5 string so operators and punctuation are literal.
+fn fts_phrase(term: &str) -> String {
+    format!("\"{}\"", term.replace('"', "\"\""))
+}
+
+#[derive(FromRow)]
+struct HitRow {
+    #[sqlx(flatten)]
+    note: Note,
+    plain_title: String,
+    plain_body: String,
+    title_marked: String,
+    snippet: String,
+}
+
+/// Full-text search over titles and plain-text bodies. Every whitespace-separated term
+/// must occur as a case-insensitive substring. Terms of 3+ chars use the trigram index
+/// (ranked, highlighted); shorter terms filter the rows in Rust. Only short terms:
+/// no ranking or highlights, title matches first, then most recently updated.
+/// A blank query returns nothing; `limit` caps the result count.
+pub async fn inner_search_notes(
+    query: &str,
+    limit: Option<i64>,
+    pool: &Pool<Sqlite>,
+) -> Result<Vec<NoteHit>, AppError> {
+    let terms: Vec<String> = query
+        .split_whitespace()
+        .map(strip_hit_markers)
+        .filter(|t| !t.is_empty())
+        .collect();
+    if terms.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (long, short): (Vec<&String>, Vec<&String>) = terms
+        .iter()
+        .partition(|t| t.chars().count() >= MIN_TRIGRAM_CHARS);
+
+    let mut sql = String::from(
+        "SELECT n.id, n.FolderId AS folder_id, n.Title AS title, n.Body AS body,
+                n.Pinned AS pinned, n.CreatedAt AS created_at, n.UpdatedAt AS updated_at,
+                notes_fts.Title AS plain_title, notes_fts.Body AS plain_body,",
+    );
+    if long.is_empty() {
+        sql.push_str(" n.Title AS title_marked, '' AS snippet");
+    } else {
+        sql.push_str(&format!(
+            " highlight(notes_fts, 0, char(2), char(3)) AS title_marked,
+              snippet(notes_fts, 1, char(2), char(3), '…', {SNIPPET_TOKENS}) AS snippet"
+        ));
+    }
+    sql.push_str(" FROM notes_fts JOIN notes n ON n.id = notes_fts.rowid");
+    if long.is_empty() {
+        sql.push_str(" ORDER BY n.UpdatedAt DESC, n.id");
+    } else {
+        sql.push_str(&format!(
+            " WHERE notes_fts MATCH ? ORDER BY bm25(notes_fts, {TITLE_WEIGHT}, 1.0), n.UpdatedAt DESC, n.id"
+        ));
+    }
+    // Short terms filter in Rust (Unicode case folding; SQLite's LIKE folds ASCII only),
+    // so the limit applies after filtering.
+    let sql_limit = if short.is_empty() { limit } else { None };
+    sql.push_str(" LIMIT ?");
+
+    let mut q = sqlx::query_as::<_, HitRow>(&sql);
+    if !long.is_empty() {
+        let phrases: Vec<String> = long.iter().map(|t| fts_phrase(t)).collect();
+        q = q.bind(phrases.join(" "));
+    }
+    q = q.bind(sql_limit.unwrap_or(-1));
+    let rows = q.fetch_all(pool).await?;
+
+    let short: Vec<String> = short.iter().map(|t| t.to_lowercase()).collect();
+    let mut rows: Vec<(HitRow, String)> = rows
+        .into_iter()
+        .map(|r| {
+            let title = r.plain_title.to_lowercase();
+            (r, title)
+        })
+        .filter(|(r, title)| {
+            let body = r.plain_body.to_lowercase();
+            short.iter().all(|t| title.contains(t) || body.contains(t))
+        })
+        .collect();
+    if long.is_empty() {
+        // No ranking without MATCH: title matches first (stable, so most recent next).
+        rows.sort_by_key(|(_, title)| !title.contains(&short[0]));
+    }
+    let cap = limit
+        .and_then(|l| usize::try_from(l).ok())
+        .unwrap_or(usize::MAX);
+    Ok(rows
+        .into_iter()
+        .take(cap)
+        .map(|(r, _)| NoteHit {
+            note: NoteSummary::from(r.note),
+            title_marked: r.title_marked,
+            snippet: if r.snippet.contains(HIT_START) {
+                r.snippet
+            } else {
+                String::new()
+            },
+        })
+        .collect())
+}
+
+pub async fn inner_search_index_stats(pool: &Pool<Sqlite>) -> Result<SearchIndexStats, AppError> {
+    let (notes,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM notes_fts")
+        .fetch_one(pool)
+        .await?;
+    let (bytes,): (i64,) = sqlx::query_as(
+        "SELECT COALESCE(SUM(pgsize), 0) FROM dbstat WHERE name LIKE 'notes\\_fts%' ESCAPE '\\'",
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(SearchIndexStats { notes, bytes })
+}
+
+pub async fn inner_rebuild_search_index(pool: &Pool<Sqlite>) -> Result<SearchIndexStats, AppError> {
+    let mut tx = pool.begin().await?;
+    rebuild_index(&mut tx).await?;
+    tx.commit().await?;
+    inner_search_index_stats(pool).await
 }
 
 // ── Tauri command wrappers ────────────────────────────────────────────────────
@@ -396,6 +620,29 @@ pub async fn set_note_pinned(
 #[tauri::command]
 pub async fn delete_note(id: i64, pool: State<'_, Pool<Sqlite>>) -> Result<(), AppError> {
     inner_delete_note(id, pool.inner()).await
+}
+
+#[tauri::command]
+pub async fn search_notes(
+    query: String,
+    limit: Option<i64>,
+    pool: State<'_, Pool<Sqlite>>,
+) -> Result<Vec<NoteHit>, AppError> {
+    inner_search_notes(&query, limit, pool.inner()).await
+}
+
+#[tauri::command]
+pub async fn search_index_stats(
+    pool: State<'_, Pool<Sqlite>>,
+) -> Result<SearchIndexStats, AppError> {
+    inner_search_index_stats(pool.inner()).await
+}
+
+#[tauri::command]
+pub async fn rebuild_search_index(
+    pool: State<'_, Pool<Sqlite>>,
+) -> Result<SearchIndexStats, AppError> {
+    inner_rebuild_search_index(pool.inner()).await
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
@@ -702,5 +949,176 @@ mod tests {
         assert_eq!(e, "å🎉".repeat(60));
         let short = "é".repeat(120);
         assert_eq!(excerpt(&short, ""), short);
+    }
+
+    // ── Search ────────────────────────────────────────────────────────────────
+
+    async fn note_with(title: &str, body: &str, pool: &Pool<Sqlite>) -> i64 {
+        let n = note_titled(title, pool).await;
+        inner_update_note_body(n.id, body, pool).await.unwrap();
+        n.id
+    }
+
+    async fn hit_ids(query: &str, pool: &Pool<Sqlite>) -> Vec<i64> {
+        inner_search_notes(query, None, pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|h| h.note.id)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn search_follows_create_rename_update_and_delete() {
+        let pool = crate::test_db().await;
+        let n = inner_create_note(&pool).await.unwrap();
+        assert_eq!(hit_ids("untitled", &pool).await, vec![n.id]);
+
+        inner_rename_note(n.id, "Kickoff", &pool).await.unwrap();
+        assert!(hit_ids("untitled", &pool).await.is_empty());
+        assert_eq!(hit_ids("kickoff", &pool).await, vec![n.id]);
+
+        inner_update_note_body(n.id, "agenda: budget", &pool)
+            .await
+            .unwrap();
+        assert_eq!(hit_ids("budget", &pool).await, vec![n.id]);
+        inner_update_note_body(n.id, "agenda: hiring", &pool)
+            .await
+            .unwrap();
+        assert!(hit_ids("budget", &pool).await.is_empty());
+        assert_eq!(hit_ids("hiring", &pool).await, vec![n.id]);
+
+        inner_delete_note(n.id, &pool).await.unwrap();
+        assert!(hit_ids("kickoff", &pool).await.is_empty());
+        let stats = inner_search_index_stats(&pool).await.unwrap();
+        assert_eq!(stats.notes, 0);
+    }
+
+    #[tokio::test]
+    async fn search_matches_substrings_case_insensitively_but_keeps_diacritics() {
+        let pool = crate::test_db().await;
+        let a = note_with("Tidrapport", "Veckans TIMMAR", &pool).await;
+        let b = note_with("Mötet", "det är bra", &pool).await;
+        assert_eq!(hit_ids("rapport", &pool).await, vec![a]);
+        assert_eq!(hit_ids("timmar", &pool).await, vec![a]);
+        assert_eq!(hit_ids("möt", &pool).await, vec![b]);
+        assert!(hit_ids("mot", &pool).await.is_empty(), "ö stays distinct");
+        assert!(
+            hit_ids("ar bra", &pool).await.is_empty(),
+            "ä stays distinct"
+        );
+        assert_eq!(hit_ids("är bra", &pool).await, vec![b]);
+    }
+
+    #[tokio::test]
+    async fn search_ignores_markdown_syntax_and_link_urls() {
+        let pool = crate::test_db().await;
+        let id = note_with(
+            "Links",
+            "**bold** see [docs](https://secret.example.com/path) and `code here`",
+            &pool,
+        )
+        .await;
+        assert!(hit_ids("secret.example", &pool).await.is_empty());
+        assert!(hit_ids("**bold", &pool).await.is_empty());
+        assert_eq!(hit_ids("bold see docs", &pool).await, vec![id]);
+        assert_eq!(hit_ids("code here", &pool).await, vec![id]);
+    }
+
+    #[tokio::test]
+    async fn search_requires_all_terms_and_treats_operators_as_text() {
+        let pool = crate::test_db().await;
+        let a = note_with("Alpha", "apples and pears", &pool).await;
+        note_with("Beta", "apples only", &pool).await;
+        assert_eq!(hit_ids("apples pears", &pool).await, vec![a]);
+        for q in [
+            "\"",
+            "apples\"",
+            "*",
+            "-x",
+            "OR",
+            "pears OR",
+            "(",
+            "a:b",
+            "NEAR(x y)",
+            "%",
+            "_",
+        ] {
+            inner_search_notes(q, None, &pool).await.unwrap();
+        }
+        assert!(
+            hit_ids("apples OR beta", &pool).await.is_empty(),
+            "OR is literal"
+        );
+        assert!(hit_ids("   ", &pool).await.is_empty());
+        assert!(hit_ids("", &pool).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn short_terms_use_like_without_highlights() {
+        let pool = crate::test_db().await;
+        let body_hit = note_with("Zeta", "xy in body", &pool).await;
+        let title_hit = note_with("Axy", "nothing", &pool).await;
+        note_with("Other", "none", &pool).await;
+        note_with("Pct", "100_0", &pool).await;
+        let hits = inner_search_notes("xy", None, &pool).await.unwrap();
+        let ids: Vec<i64> = hits.iter().map(|h| h.note.id).collect();
+        assert_eq!(ids, vec![title_hit, body_hit], "title matches first");
+        assert!(hits
+            .iter()
+            .all(|h| h.snippet.is_empty() && !h.title_marked.contains(HIT_START)));
+        // `_` is literal, not a wildcard
+        assert!(hit_ids("y_", &pool).await.is_empty());
+        // Unicode case folding for short terms too
+        let a = note_with("Ärende", "x", &pool).await;
+        assert_eq!(hit_ids("är", &pool).await, vec![a]);
+        assert_eq!(hit_ids("ÄR", &pool).await, vec![a]);
+        // mixed: long term via MATCH, short term filters
+        assert_eq!(hit_ids("body xy", &pool).await, vec![body_hit]);
+        assert!(hit_ids("body qq", &pool).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn title_hits_rank_above_body_hits_and_are_highlighted() {
+        let pool = crate::test_db().await;
+        let body = note_with("Notes", "talked about the budget at length", &pool).await;
+        let title = note_with("Budget", "numbers", &pool).await;
+        let hits = inner_search_notes("budget", None, &pool).await.unwrap();
+        assert_eq!(
+            hits.iter().map(|h| h.note.id).collect::<Vec<_>>(),
+            vec![title, body]
+        );
+        assert_eq!(hits[0].title_marked, "\u{2}Budget\u{3}");
+        assert!(hits[0].snippet.is_empty(), "no body hit → no snippet");
+        assert!(hits[1].snippet.contains("\u{2}budget\u{3}"));
+        assert_eq!(hits[1].title_marked, "Notes");
+
+        let limited = inner_search_notes("budget", Some(1), &pool).await.unwrap();
+        assert_eq!(limited.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn marker_chars_in_content_cannot_fake_highlights() {
+        let pool = crate::test_db().await;
+        let id = note_with("Plain", "fake \u{2}mark\u{3} text", &pool).await;
+        let hits = inner_search_notes("text", None, &pool).await.unwrap();
+        assert_eq!(hits[0].note.id, id);
+        assert_eq!(hits[0].snippet.matches(HIT_START).count(), 1);
+        assert!(hits[0].snippet.contains("fake mark \u{2}text\u{3}"));
+    }
+
+    #[tokio::test]
+    async fn rebuild_restores_a_drifted_index_and_reports_stats() {
+        let pool = crate::test_db().await;
+        let id = note_with("Kept", "searchable words", &pool).await;
+        sqlx::query("DELETE FROM notes_fts")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(hit_ids("searchable", &pool).await.is_empty());
+        let stats = inner_rebuild_search_index(&pool).await.unwrap();
+        assert_eq!(stats.notes, 1);
+        assert!(stats.bytes > 0);
+        assert_eq!(hit_ids("searchable", &pool).await, vec![id]);
     }
 }

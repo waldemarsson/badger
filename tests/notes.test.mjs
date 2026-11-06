@@ -3,7 +3,10 @@ import test from 'node:test';
 
 const {
 	sortNotes,
-	filterNotes,
+	splitHighlights,
+	formatBytes,
+	plainRows,
+	searchRows,
 	upsertNote,
 	neighborAfterRemoval,
 	parseTimestamp,
@@ -41,19 +44,52 @@ test('sortNotes: pinned first, then updated_at desc, then id', () => {
 	assert.deepEqual(ids(rows), [1, 2, 3, 4, 5], 'input is not mutated');
 });
 
-test('filterNotes: case-insensitive substring over title and excerpt', () => {
-	const rows = [
-		note(1, 'x', { title: 'Meeting notes', excerpt: 'Agenda for Monday' }),
-		note(2, 'x', { title: 'Groceries', excerpt: 'Milk, ÄGG, bread' }),
-		note(3, 'x', { title: 'Ideas', excerpt: '' })
+test('splitHighlights: marked text into hit and plain segments', () => {
+	assert.deepEqual(splitHighlights('a \u0002Budget\u0003 plan'), [
+		{ text: 'a ', hit: false },
+		{ text: 'Budget', hit: true },
+		{ text: ' plan', hit: false }
+	]);
+	assert.deepEqual(splitHighlights('\u0002x\u0003\u0002y\u0003'), [
+		{ text: 'x', hit: true },
+		{ text: 'y', hit: true }
+	]);
+	assert.deepEqual(splitHighlights('…möte 🎉 \u0002är\u0003'), [
+		{ text: '…möte 🎉 ', hit: false },
+		{ text: 'är', hit: true }
+	]);
+	assert.deepEqual(splitHighlights(''), []);
+	assert.deepEqual(splitHighlights('plain'), [{ text: 'plain', hit: false }]);
+});
+
+test('searchRows: hit order, current summaries, deleted and renamed notes', () => {
+	const notes = [
+		note(1, 'b', { title: 'Budget', excerpt: 'numbers' }),
+		note(2, 'a', { title: 'Renamed', excerpt: 'new' }),
+		note(3, 'c', { title: 'Notes', excerpt: 'first line' })
 	];
-	assert.deepEqual(ids(filterNotes(rows, 'meet')), [1]);
-	assert.deepEqual(ids(filterNotes(rows, 'MONDAY')), [1]);
-	assert.deepEqual(ids(filterNotes(rows, 'ägg')), [2]);
-	assert.deepEqual(ids(filterNotes(rows, '  ideas ')), [3]);
-	assert.deepEqual(ids(filterNotes(rows, '')), [1, 2, 3]);
-	assert.deepEqual(ids(filterNotes(rows, '   ')), [1, 2, 3]);
-	assert.deepEqual(filterNotes(rows, 'zzz'), []);
+	const hit = (n, title_marked, snippet = '') => ({ ...n, title_marked, snippet });
+	const rows = searchRows(notes, [
+		hit(note(3, 'c', { title: 'Notes' }), 'Notes', 'the \u0002budget\u0003'),
+		hit(note(1, 'b', { title: 'Budget' }), '\u0002Budget\u0003'),
+		hit(note(2, 'a', { title: 'Budget old' }), '\u0002Budget\u0003 old'),
+		hit(note(9, 'z', { title: 'Gone' }), '\u0002Gone\u0003')
+	]);
+	assert.deepEqual(rows.map((r) => r.note.id), [3, 1, 2], 'hit order; deleted note 9 dropped');
+	assert.equal(rows[0].note, notes[2], 'current summary, not the hit copy');
+	assert.deepEqual(rows[0].snippet, [
+		{ text: 'the ', hit: false },
+		{ text: 'budget', hit: true }
+	]);
+	assert.deepEqual(rows[1].title, [{ text: 'Budget', hit: true }]);
+	assert.equal(rows[1].snippet, null, 'no snippet → excerpt');
+	assert.deepEqual(rows[2].title, [{ text: 'Renamed', hit: false }], 'renamed: marks dropped');
+});
+
+test('plainRows: every note, unhighlighted', () => {
+	const rows = plainRows([note(1, 'x', { title: 'A' })]);
+	assert.deepEqual(rows[0].title, [{ text: 'A', hit: false }]);
+	assert.equal(rows[0].snippet, null);
 });
 
 test('upsertNote replaces by id or adds, and keeps list order', () => {
@@ -207,4 +243,14 @@ test('parseInline: unmatched delimiters, intraword underscores and escapes stay 
 	assert.deepEqual(flat(parseInline('\\*not\\* a \\| pipe')), ['*not* a | pipe']);
 	assert.deepEqual(flat(parseInline('`unclosed')), ['`unclosed']);
 	assert.deepEqual(flat(parseInline('emoji 🎉 **å**')), ['emoji 🎉 ', 'bold:å']);
+});
+
+test('formatBytes: B, KB, MB with one decimal under 10', () => {
+	assert.equal(formatBytes(0), '0 B');
+	assert.equal(formatBytes(1023), '1023 B');
+	assert.equal(formatBytes(1536), '1.5 KB');
+	assert.equal(formatBytes(48 * 1024), '48 KB');
+	assert.equal(formatBytes(12.4 * 1024 * 1024), '12 MB');
+	assert.equal(formatBytes(3.25 * 1024 * 1024), '3.3 MB');
+	assert.equal(formatBytes(2048 * 1024 ** 3), '2048 GB');
 });

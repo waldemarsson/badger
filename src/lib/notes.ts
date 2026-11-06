@@ -1,6 +1,6 @@
-// Pure helpers for the Notes page: list order and filter, relative dates, and the
+// Pure helpers for the Notes page: list order and search rows, relative dates, and the
 // markdown table/inline parsing the editor's table widget renders from.
-import type { NoteSummary } from '#lib/types.js';
+import type { NoteHit, NoteSummary } from '#lib/types.js';
 
 // ── List ──────────────────────────────────────────────────────────────────────
 
@@ -14,11 +14,61 @@ export function sortNotes(notes: NoteSummary[]): NoteSummary[] {
 	);
 }
 
-/** Case-insensitive substring match on title + excerpt; a blank query keeps everything. */
-export function filterNotes(notes: NoteSummary[], query: string): NoteSummary[] {
-	const q = query.trim().toLowerCase();
-	if (!q) return notes;
-	return notes.filter((n) => n.title.toLowerCase().includes(q) || n.excerpt.toLowerCase().includes(q));
+/** A run of text, `hit` when search highlighted it. */
+export interface Segment {
+	text: string;
+	hit: boolean;
+}
+
+/** A visible list row: the current summary plus how to draw its title and snippet. */
+export interface ListRow {
+	note: NoteSummary;
+	title: Segment[];
+	snippet: Segment[] | null; // null: show the excerpt
+}
+
+const HIT_START = '\u0002';
+const HIT_END = '\u0003';
+
+/** Splits search_notes' marked text (hits wrapped in \u0002…\u0003) into segments. */
+export function splitHighlights(marked: string): Segment[] {
+	const segments: Segment[] = [];
+	let hit = false;
+	let text = '';
+	const push = () => {
+		if (text) segments.push({ text, hit });
+		text = '';
+	};
+	for (const ch of marked) {
+		if (ch === HIT_START || ch === HIT_END) {
+			push();
+			hit = ch === HIT_START;
+		} else {
+			text += ch;
+		}
+	}
+	push();
+	return segments;
+}
+
+/** Rows for a blank query: every note, nothing highlighted. */
+export function plainRows(notes: NoteSummary[]): ListRow[] {
+	return notes.map((note) => ({ note, title: [{ text: note.title, hit: false }], snippet: null }));
+}
+
+/**
+ * Rows for search hits, in hit (relevance) order, drawn from the current summaries so
+ * edits since the search show up. Deleted notes drop out; a renamed note loses its
+ * title highlight (the marks belong to the old title).
+ */
+export function searchRows(notes: NoteSummary[], hits: NoteHit[]): ListRow[] {
+	const byId = new Map(notes.map((n) => [n.id, n]));
+	return hits.flatMap((hit) => {
+		const note = byId.get(hit.id);
+		if (!note) return [];
+		const title = note.title === hit.title ? splitHighlights(hit.title_marked) : [{ text: note.title, hit: false }];
+		return [{ note, title, snippet: hit.snippet ? splitHighlights(hit.snippet) : null }];
+	});
 }
 
 /** Replaces the row with the same id (or adds it) and re-sorts. */
@@ -31,6 +81,19 @@ export function neighborAfterRemoval(ids: number[], id: number): number | null {
 	const index = ids.indexOf(id);
 	if (index === -1) return null;
 	return ids[index + 1] ?? ids[index - 1] ?? null;
+}
+
+/** "512 B", "48 KB", "12.4 MB" (1024-based). */
+export function formatBytes(bytes: number): string {
+	if (bytes < 1024) return `${bytes} B`;
+	const units = ['KB', 'MB', 'GB'];
+	let value = bytes / 1024;
+	let unit = 0;
+	while (value >= 1024 && unit < units.length - 1) {
+		value /= 1024;
+		unit++;
+	}
+	return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
 }
 
 // ── Dates ─────────────────────────────────────────────────────────────────────

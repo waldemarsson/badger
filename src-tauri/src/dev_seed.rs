@@ -432,6 +432,7 @@ async fn seed_notes_if_empty(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
         .execute(&mut *tx)
         .await?;
     }
+    crate::commands::notes::rebuild_index(&mut tx).await?;
 
     tx.commit().await?;
     Ok(())

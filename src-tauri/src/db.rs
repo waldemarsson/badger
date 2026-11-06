@@ -85,6 +85,10 @@ CREATE TABLE IF NOT EXISTS notes (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_title ON notes(Title COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_notes_folder ON notes(FolderId);
 CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(ParentId);
+
+-- Derived search index (rowid = notes.id, Body = plain text). Rust keeps it in sync;
+-- not part of backups: restore rebuilds it.
+CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(Title, Body, tokenize = 'trigram');
 ";
 
 /// Opens (or creates) the SQLite database at `db_path` with WAL mode and FK enforcement,
@@ -110,6 +114,7 @@ pub async fn init_db(db_path: &Path) -> Result<Pool<Sqlite>, sqlx::Error> {
     sqlx::raw_sql(SCHEMA_SQL).execute(&pool).await?;
     migrate_todos_status(&pool).await?;
     migrate_issues_drop_external_id(&pool).await?;
+    backfill_notes_fts(&pool).await?;
 
     Ok(pool)
 }
@@ -152,6 +157,22 @@ pub async fn migrate_issues_drop_external_id(pool: &Pool<Sqlite>) -> Result<(), 
     sqlx::query("ALTER TABLE issues DROP COLUMN ExternalId")
         .execute(pool)
         .await?;
+    Ok(())
+}
+
+/// Rebuilds the search index when its row count differs from `notes`: the first start
+/// after the index was added, or notes written by an older build. Idempotent.
+pub async fn backfill_notes_fts(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
+    let (indexed, notes): (i64, i64) =
+        sqlx::query_as("SELECT (SELECT COUNT(*) FROM notes_fts), (SELECT COUNT(*) FROM notes)")
+            .fetch_one(pool)
+            .await?;
+    if indexed == notes {
+        return Ok(());
+    }
+    let mut tx = pool.begin().await?;
+    crate::commands::notes::rebuild_index(&mut tx).await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -287,6 +308,63 @@ mod tests {
         pool.close().await;
         let pool = super::init_db(&db.0).await.unwrap();
         assert_notes_schema(&pool).await;
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn test_init_db_backfills_search_index_for_existing_notes() {
+        let db = TempDb::new("pre-fts");
+        {
+            use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+            let opts = SqliteConnectOptions::new()
+                .filename(&db.0)
+                .create_if_missing(true);
+            let pool = SqlitePoolOptions::new().connect_with(opts).await.unwrap();
+            // Pre-search shape: everything in SCHEMA_SQL before the FTS table.
+            let old_schema = super::SCHEMA_SQL
+                .split("-- Derived search index")
+                .next()
+                .unwrap();
+            sqlx::raw_sql(old_schema).execute(&pool).await.unwrap();
+            sqlx::query(
+                "INSERT INTO notes (Title, Body, CreatedAt, UpdatedAt) \
+                 VALUES ('Old note', 'remember the **quarterly** numbers', 'x', 'x')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            pool.close().await;
+        }
+
+        for _ in 0..2 {
+            // second run: populated index is left alone
+            let pool = super::init_db(&db.0).await.unwrap();
+            let hits = crate::commands::notes::inner_search_notes("quarterly", None, &pool)
+                .await
+                .unwrap();
+            assert_eq!(hits.len(), 1);
+            assert_eq!(hits[0].note.title, "Old note");
+            let stats = crate::commands::notes::inner_search_index_stats(&pool)
+                .await
+                .unwrap();
+            assert_eq!(stats.notes, 1);
+            pool.close().await;
+        }
+
+        // A partly stale index (a note written by a build without the index) is repaired.
+        let pool = super::init_db(&db.0).await.unwrap();
+        sqlx::query(
+            "INSERT INTO notes (Title, Body, CreatedAt, UpdatedAt) VALUES ('Unindexed', 'x', 'x', 'x')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+        let pool = super::init_db(&db.0).await.unwrap();
+        let hits = crate::commands::notes::inner_search_notes("unindexed", None, &pool)
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 1);
         pool.close().await;
     }
 

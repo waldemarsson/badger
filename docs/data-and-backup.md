@@ -12,6 +12,7 @@ TimeTracker stores its working data in a local SQLite database. The schema is in
 - `travel` — standalone business trips: date, from/to place, and optional km and amount (kr), stored as NULL when not entered
 - `notes` — markdown notes: unique `Title` (case-insensitive, via a `COLLATE NOCASE` unique index), `Body`, `Pinned`, `CreatedAt`/`UpdatedAt`, and an optional `FolderId`
 - `folders` — nestable note folders (`ParentId`, `Name`, `Position`). The schema exists, but there are no folder commands or UI yet
+- `notes_fts` — FTS5 search index (`trigram` tokenizer) over note titles and plain-text bodies; rowid = note id. Derived data: Rust writes it in the same transaction as every note write, it is not in backups, and it is rebuilt by restore, by Settings › Preferences › Search index › Rebuild, and at startup when its row count differs from `notes` (`backfill_notes_fts`: the first start after an upgrade, or notes written by an older build)
 
 Deletes cascade downward from customers to projects, issues, and time entries, so the hierarchy stays consistent without manual cleanup across tables. Todos are never deleted by a cascade: deleting a linked issue only clears the todo's link. Likewise, deleting a folder never deletes notes: `ON DELETE SET NULL` clears the `FolderId` of its notes and the `ParentId` of its child folders, so they move to the root.
 
@@ -88,6 +89,7 @@ Restore always overwrites. In one transaction it:
 - deletes all customers, which cascades to projects, issues, and time entries
 - clears todos, travel, notes and folders explicitly (the cascade does not reach them)
 - re-inserts the full backup, folders before notes
+- rebuilds the notes search index from the restored notes, in the same transaction
 
 Data not in the backup is lost, so restoring a backup made before notes existed leaves zero notes. If the backup file is invalid, nothing is changed.
 

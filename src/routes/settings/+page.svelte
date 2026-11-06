@@ -14,6 +14,8 @@
   import { DEFAULT_SHORTCUT, formatShortcut, shortcutFromEvent, validateShortcut } from '#lib/palette.js';
   import { palette } from '#lib/palette-state.svelte.js';
   import { formatHours, parseDailyTarget } from '#lib/today.js';
+  import { formatBytes } from '#lib/notes.js';
+  import type { SearchIndexStats } from '#lib/types.js';
 
   type Tab = 'customers' | 'preferences' | 'backup' | 'dev';
   let activeTab = $state<Tab>('customers');
@@ -43,6 +45,34 @@
     } catch (e) {
       applyTheme(previous);
       themeError = String(e);
+    }
+  }
+
+  // ── Search index ──────────────────────────────────────────────────────────────
+  let indexStats = $state<SearchIndexStats | null>(null);
+  let indexState = $state<'idle' | 'rebuilding' | 'rebuilt'>('idle');
+  let indexError = $state('');
+
+  async function loadIndexStats() {
+    if (indexState === 'rebuilding') return;
+    indexState = 'idle';
+    indexError = '';
+    try {
+      indexStats = await invoke<SearchIndexStats>('search_index_stats');
+    } catch (e) {
+      indexError = String(e);
+    }
+  }
+
+  async function rebuildIndex() {
+    indexState = 'rebuilding';
+    indexError = '';
+    try {
+      indexStats = await invoke<SearchIndexStats>('rebuild_search_index');
+      indexState = 'rebuilt';
+    } catch (e) {
+      indexError = String(e);
+      indexState = 'idle';
     }
   }
 
@@ -371,7 +401,7 @@
         class="border-0 bg-transparent px-4 py-2 text-sm font-medium transition {activeTab === 'preferences'
           ? 'border-b-2 border-slate-900 text-slate-900 dark:border-neutral-100 dark:text-neutral-100'
           : 'text-slate-500 dark:text-neutral-400 hover:text-slate-800 dark:hover:text-neutral-200'}"
-        onclick={() => activeTab = 'preferences'}
+        onclick={() => { activeTab = 'preferences'; void loadIndexStats(); }}
       >Preferences</button>
       <button
         class="border-0 bg-transparent px-4 py-2 text-sm font-medium transition {activeTab === 'backup'
@@ -495,6 +525,36 @@
 
         {#if shortcutError}
           <p class="form-error">{shortcutError}</p>
+        {/if}
+      </section>
+
+      <section class="panel-card mt-4 space-y-4">
+        <div>
+          <h2 class="panel-title">Search index</h2>
+          <p class="panel-copy">Notes search uses an index that updates as you write. Rebuild it if search results look wrong.</p>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-3">
+          <p class="text-sm text-slate-600 dark:text-neutral-300">
+            {#if indexStats}
+              {indexStats.notes} {indexStats.notes === 1 ? 'note' : 'notes'} · {formatBytes(indexStats.bytes)}
+            {:else if !indexError}
+              Loading…
+            {/if}
+          </p>
+          <button
+            type="button"
+            class="btn-secondary"
+            onclick={rebuildIndex}
+            disabled={indexState === 'rebuilding'}
+          >{indexState === 'rebuilding' ? 'Rebuilding…' : 'Rebuild'}</button>
+          {#if indexState === 'rebuilt'}
+            <span class="text-xs text-emerald-600 dark:text-emerald-400">Rebuilt</span>
+          {/if}
+        </div>
+
+        {#if indexError}
+          <p class="form-error" role="alert">{indexError}</p>
         {/if}
       </section>
 

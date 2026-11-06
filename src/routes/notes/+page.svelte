@@ -5,10 +5,11 @@
 	import { onMount, tick, untrack } from 'svelte';
 	import { flip } from 'svelte/animate';
 	import { fade } from 'svelte/transition';
-	import { filterNotes, formatNoteDate, neighborAfterRemoval, sortNotes, upsertNote } from '#lib/notes.js';
+	import { formatNoteDate, neighborAfterRemoval, plainRows, searchRows, sortNotes, upsertNote } from '#lib/notes.js';
+	import type { Segment } from '#lib/notes.js';
 	import { NoteSaveQueue } from '#lib/note-save-queue.js';
 	import { registerFlushHandler } from '#lib/flush-guard.js';
-	import type { Note, NoteSummary } from '#lib/types.js';
+	import type { Note, NoteHit, NoteSummary } from '#lib/types.js';
 	import NoteEditor from '#lib/components/NoteEditor.svelte';
 	import NoteReader from '#lib/components/NoteReader.svelte';
 	import BookOpen from 'lucide-svelte/icons/book-open';
@@ -153,7 +154,37 @@
 
 	// ── List ──────────────────────────────────────────────────────────────────────
 
-	const visible = $derived(filterNotes(notes, query));
+	// Search runs in Rust on query change only, so editing a note never drops it from the
+	// results. Hits are resolved against `notes`, which edits keep current.
+	let hits = $state<NoteHit[]>([]);
+	let hitsFor = $state(''); // the query `hits` answer; differs while a search is in flight
+	let searchError = $state('');
+	let searchSeq = 0;
+	const searchTerm = $derived(query.trim());
+
+	$effect(() => {
+		const term = searchTerm;
+		const seq = ++searchSeq;
+		if (!term) {
+			searchError = '';
+			return;
+		}
+		invoke<NoteHit[]>('search_notes', { query: term, limit: null })
+			.then((rows) => {
+				if (seq !== searchSeq) return;
+				hits = rows;
+				hitsFor = term;
+				searchError = '';
+			})
+			.catch((e) => {
+				if (seq !== searchSeq) return;
+				hits = []; // don't show the previous query's rows under the error
+				searchError = String(e);
+			});
+	});
+
+	const visible = $derived(searchTerm ? searchRows(notes, hits) : plainRows(notes));
+	const searching = $derived(searchTerm !== '' && hitsFor !== searchTerm && !searchError);
 
 	async function load(): Promise<void> {
 		const seq = ++loadSeq;
@@ -273,9 +304,9 @@
 		} else if (e.key === 'ArrowDown') {
 			e.preventDefault();
 			rowElements()[0]?.focus();
-		} else if (e.key === 'Enter' && visible.length) {
+		} else if (e.key === 'Enter' && visible.length && !searching) {
 			e.preventDefault();
-			void select(visible[0].id); // open the top match
+			void select(visible[0].note.id); // open the top match
 		}
 	}
 
@@ -413,7 +444,7 @@
 	async function deleteCurrent(): Promise<void> {
 		if (!current) return;
 		const id = current.id;
-		const next = neighborAfterRemoval(visible.map((n) => n.id), id);
+		const next = neighborAfterRemoval(visible.map((r) => r.note.id), id);
 		confirmingDelete = false;
 		actionError = '';
 		queue.pause(); // no autosave races the delete; the body stays dirty in case it fails
@@ -530,6 +561,10 @@
 	{/each}
 {/snippet}
 
+{#snippet marked(segments: Segment[])}
+	{#each segments as seg, i (i)}{#if seg.hit}<mark class="search-hit">{seg.text}</mark>{:else}{seg.text}{/if}{/each}
+{/snippet}
+
 <div class="page-shell">
 	<div class="page-view">
 		{#if loadError}
@@ -589,14 +624,19 @@
 							<p class="font-medium text-slate-600 dark:text-neutral-300">No notes yet</p>
 							<p class="text-xs">Create one to start writing.</p>
 						</div>
-					{:else if visible.length === 0}
+					{:else if searchError}
+						<div class="notes-inline-error mx-1" role="alert">
+							<CircleAlert size={14} class="mt-0.5 shrink-0" />
+							<span class="min-w-0 flex-1">Search failed: {searchError}</span>
+						</div>
+					{:else if visible.length === 0 && !searching}
 						<div class="notes-empty" in:fade={{ duration: 150 }}>
 							<Search size={20} class="text-slate-300 dark:text-neutral-600" />
 							<p class="font-medium text-slate-600 dark:text-neutral-300">No matches</p>
-							<p class="text-xs">Nothing matches “{query.trim()}”.</p>
+							<p class="text-xs">Nothing matches “{searchTerm}”.</p>
 						</div>
 					{/if}
-					{#each visible as n (n.id)}
+					{#each visible as { note: n, title, snippet } (n.id)}
 						<div
 							role="listitem"
 							class="group relative"
@@ -611,8 +651,10 @@
 								onclick={() => void select(n.id)}
 								onkeydown={(e) => onRowKeydown(e, n.id)}
 							>
-								<p class="note-row-title pr-6">{n.title}</p>
-								{#if n.excerpt}
+								<p class="note-row-title pr-6">{@render marked(title)}</p>
+								{#if snippet}
+									<p class="note-row-snippet">{@render marked(snippet)}</p>
+								{:else if n.excerpt}
 									<p class="note-row-excerpt">{n.excerpt}</p>
 								{/if}
 							</div>

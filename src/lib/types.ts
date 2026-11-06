@@ -117,6 +117,18 @@ export interface NoteSummary {
 	updated_at: string;
 }
 
+/** search_notes result: a list row plus title/snippet with hits wrapped in \u0002…\u0003. */
+export interface NoteHit extends NoteSummary {
+	title_marked: string;
+	snippet: string; // '' when the body has no highlighted hit
+}
+
+/** search_index_stats / rebuild_search_index. */
+export interface SearchIndexStats {
+	notes: number;
+	bytes: number;
+}
+
 /** Full note (get_note, create_note). */
 export interface Note {
 	id: number;

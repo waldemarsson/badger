@@ -107,8 +107,6 @@ The active backup and restore workflow is currently exposed in the Settings page
 - warns when the backup has no notes but the database does ("This backup has no notes; restoring deletes your N notes.")
 - warns that restore replaces all current data
 
-There is also a dedicated `/backup` route in the app, but it is still a placeholder and does not contain the live workflow yet.
-
 ## Error handling
 
 Rust command errors are serialized as strings and surfaced back to the frontend. That means backup and restore failures are presented as user-visible text rather than hidden behind silent retries or background recovery.

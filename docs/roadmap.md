@@ -16,6 +16,8 @@ Markdown notes stored in SQLite, written in Obsidian-compatible markdown so note
 
 ## 2. Due reminders on todos
 
+## 3. Encrypted backups
+
 ## Done
 
 - Notes search — SQLite FTS5 (`trigram`: case-insensitive substrings, so `rapport` finds `tidrapport`; å/ä/ö stay distinct) over titles and plain-text bodies; the note list ranks by relevance (title hits first) with highlighted titles and snippets, ⌘K lists the top 5 notes (from 3 typed characters), and Settings › Preferences shows the index size with a Rebuild button

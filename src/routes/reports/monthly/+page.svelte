@@ -152,9 +152,7 @@
 <div class="page-shell">
   <div class="page-view">
 
-    <section class="page-hero">
-      <h1 class="page-hero-title">Monthly Report</h1>
-    </section>
+    <h1 class="sr-only">Monthly Report</h1>
 
     <div class="table-card">
       <!-- Month navigator toolbar -->

@@ -385,9 +385,7 @@
 <div class="page-shell">
   <div class="page-view">
 
-    <section class="page-hero">
-      <h1 class="page-hero-title">Settings</h1>
-    </section>
+    <h1 class="sr-only">Settings</h1>
 
     <!-- Tab bar -->
     <div class="mb-4 flex gap-1 border-b border-slate-200 dark:border-neutral-800">

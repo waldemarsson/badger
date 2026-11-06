@@ -72,7 +72,7 @@ Design language (follow existing pages before inventing):
 - Palette: slate neutrals, with sky for active/drag, emerald for done, red for overdue/errors, amber for due today, and violet for issue links.
 - Dark mode: every color utility needs a `dark:` counterpart (class strategy). Dark uses the `neutral` grays (not slate, which reads blue): `neutral-950` page / `neutral-900` card / `neutral-800` ring, text `neutral-100`/`neutral-400`, accents `-400` text on `-500/10` tints. Prefer `app.css` primitives, which already handle it. Screenshot both themes.
 - Surfaces: `rounded-xl`/`rounded-2xl`, `ring-1 ring-slate-200`, `shadow-sm`, lifting on hover (`hover:-translate-y-0.5 hover:shadow-md`).
-- Every page starts with the `page-hero` block (except `/notes`, which gives the full window to the list and editor), followed by content in `table-card` / `panel-card` or purpose-built layouts.
+- No page title bands: the active nav tab already names the page. Each page has an `sr-only` `<h1>` and starts directly with content in `table-card` / `panel-card` or purpose-built layouts. Put totals beside the control that scopes them (`toolbar-stat*` in a `table-toolbar`), not in a header.
 - Reuse the `app.css` primitives: `btn-primary`, `btn-secondary(-sm)`, `btn-danger(-sm)`, `btn-icon-*`, `form-input`, `form-select`, `form-textarea`, `form-label`, `form-error`, `alert-*`.
 - States: show an empty state ("No cards"), show inline errors near the action, and confirm destructive actions inline rather than with `confirm()`.
 - Motion: short (150–200 ms) `fade`/`scale`/`flip` from Svelte. No animation libraries.

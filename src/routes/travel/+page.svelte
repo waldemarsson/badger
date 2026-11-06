@@ -198,23 +198,7 @@
 
 <div class="page-shell">
 	<div class="page-view">
-		<section class="page-hero">
-			<h1 class="page-hero-title">Travel</h1>
-			<div class="hero-stats">
-				<div class="hero-stat">
-					<span class="hero-stat-label">Trips in {MONTH_NAMES[month - 1]}</span>
-					<span class="hero-stat-value">{trips.length}</span>
-				</div>
-				<div class="hero-stat">
-					<span class="hero-stat-label">Distance</span>
-					<span class="hero-stat-value">{formatNumber(totals.km)} <span class="hero-stat-muted">km</span></span>
-				</div>
-				<div class="hero-stat">
-					<span class="hero-stat-label">Amount</span>
-					<span class="hero-stat-value">{formatNumber(totals.amount)} <span class="hero-stat-muted">kr</span></span>
-				</div>
-			</div>
-		</section>
+		<h1 class="sr-only">Travel</h1>
 
 		<section class="table-card">
 			<div class="table-toolbar flex items-center justify-between gap-3">
@@ -327,7 +311,7 @@
 							</tr>
 						{:else if trips.length > 0}
 							<tr class="border-t-2 border-slate-300 dark:border-neutral-700">
-								<td class="table-cell-strong" colspan="3">Total</td>
+								<td class="table-cell-strong" colspan="3">Total <span class="font-normal text-slate-500 dark:text-neutral-400">· {trips.length} {trips.length === 1 ? 'trip' : 'trips'}</span></td>
 								<td class="table-cell-strong text-right">{formatNumber(totals.km)}</td>
 								<td class="table-cell-strong text-right">{formatNumber(totals.amount)}</td>
 								<td></td>

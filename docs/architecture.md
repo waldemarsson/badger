@@ -24,8 +24,6 @@ The main user-facing areas are:
 - `/travel` — month-scoped list of business trips (date, from/to, optional km and kr) with inline add, edit, repeat, and delete
 - `/settings` — customer and project management (cards with inline add, rename, default, and delete), preferences (System/Light/Dark appearance), backup/restore, and dev-only seed tooling
 
-There is also a `/backup` route in the tree, but it is currently still a placeholder while the real backup and restore workflow lives under Settings.
-
 ### Backend
 
 - Located under `src-tauri/src/`

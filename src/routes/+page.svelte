@@ -9,6 +9,7 @@
 	import { changes, palette, requestLogTime } from '#lib/palette-state.svelte.js';
 	import {
 		dailyTotals,
+		formatDayLabel,
 		formatHours,
 		inProgress,
 		isWeekend,
@@ -83,10 +84,7 @@
 	const logged = $derived(todayEntries(entries, todayIso));
 	const loggedHours = $derived(sumHours(logged));
 
-	const dateHeading = $derived.by(() => {
-		const [y, m, d] = todayIso.split('-').map(Number);
-		return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
-	});
+	const dateHeading = $derived(formatDayLabel(todayIso));
 
 	function weekdayShort(ymd: string): string {
 		const [y, m, d] = ymd.split('-').map(Number);
@@ -276,9 +274,7 @@
 
 <div class="page-shell">
 	<div class="page-view">
-		<section class="page-hero">
-			<h1 class="page-hero-title">Today <span class="page-hero-subtitle">{dateHeading}</span></h1>
-		</section>
+		<h1 class="sr-only">Today</h1>
 
 		{#if loadError}
 			<div class="alert-panel alert-error">
@@ -307,7 +303,7 @@
 				<aside class="today-section">
 					<header class="today-section-header">
 						<span class="h-2.5 w-2.5 rounded-full bg-slate-400 dark:bg-neutral-500"></span>
-						<h2 class="today-section-title">Hours</h2>
+						<h2 class="today-section-title">Hours <span class="font-normal normal-case tracking-normal text-slate-500 dark:text-neutral-400">· {dateHeading}</span></h2>
 					</header>
 					<div class="space-y-4 px-1 py-4">
 						{@render hoursStat('Today', todayHours, target)}

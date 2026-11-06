@@ -85,6 +85,7 @@ async fn run_startup_backup(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(flush_guard::FlushGuard::default())
         .on_menu_event(|app, event| {
             if event.id() == flush_guard::QUIT_MENU_ID {
@@ -184,6 +185,7 @@ pub fn run() {
                     commands::notes::update_note_body,
                     commands::notes::set_note_pinned,
                     commands::notes::delete_note,
+                    commands::markdown::render_markdown,
                     // Backup (BE-07)
                     commands::backup::backup_data_to_file,
                     commands::backup::read_backup_file,
@@ -254,6 +256,7 @@ pub fn run() {
                     commands::notes::update_note_body,
                     commands::notes::set_note_pinned,
                     commands::notes::delete_note,
+                    commands::markdown::render_markdown,
                     // Backup (BE-07)
                     commands::backup::backup_data_to_file,
                     commands::backup::read_backup_file,

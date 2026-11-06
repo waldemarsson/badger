@@ -24,6 +24,8 @@ tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
 chrono = "0.4"
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+tauri-plugin-opener = "2.5"
 
 [profile.release]
 codegen-units = 1

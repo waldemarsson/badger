@@ -40,6 +40,7 @@ The backend is organized around command modules:
 - `todos` for standalone todos and their optional issue link
 - `travel` for business trips, listed per month
 - `notes` for markdown notes (create, rename, body save, pin, delete) and the list excerpt, which is computed in Rust
+- `markdown` for `render_markdown`, which turns note markdown into safe HTML (read view, copy as HTML)
 - `reports` for weekly and monthly rollups
 - `backup` for JSON export and import
 - `settings` for app preferences (theme, daily hours target, command palette shortcut and last-used project/issue) stored in `app_settings`
@@ -73,13 +74,21 @@ Today (`src/routes/+page.svelte`) aggregates in the frontend: it loads the curre
 
 ### Notes editor
 
-The editor is CodeMirror 6 (`@codemirror/*` packages only: no `codemirror` meta-package or basicSetup), hosted by `src/lib/components/NoteEditor.svelte`. The live preview is written in this repo under `src/lib/editor/` rather than taken from a library, because the existing ones are alpha or stale. It hides markdown markers except on the lines touched by the selection and renders GFM tables as a block widget (raw source shows while the cursor is inside the table). Links are styled but not clickable, and images stay as raw markdown. Editor colors are CSS variables in `src/app.css` for light and `.dark`, so a theme change needs no editor reconfigure. Each note keeps its own undo history while the page is open.
+The editor is CodeMirror 6 (`@codemirror/*` packages only: no `codemirror` meta-package or basicSetup), hosted by `src/lib/components/NoteEditor.svelte`. The live preview is written in this repo under `src/lib/editor/` rather than taken from a library, because the existing ones are alpha or stale. It hides markdown markers except on the lines touched by the selection and renders GFM tables as a block widget (raw source shows while the cursor is inside the table). Links are styled but not clickable in the editor (they are in the read view), and images stay as raw markdown. Editor colors are CSS variables in `src/app.css` for light and `.dark`, so a theme change needs no editor reconfigure. Each note keeps its own undo history while the page is open.
 
 Fenced code is highlighted per language via `@codemirror/language-data` (each language is a lazy chunk, loaded on first use; unknown languages stay plain), with code colors scoped to code so they never restyle markdown. Typing `/` at a line start or after whitespace (not in words, URLs or code) opens a snippet menu (`@codemirror/autocomplete`, its only completion source): table, code block, task list, callout and today's date; the pure rules are in `src/lib/slash-menu.ts`.
 
 The title is a separate field above the editor, not derived from a heading, because wikilinks need a stable, unique, user-controlled name. Rename commits on Enter or blur; Esc reverts.
 
 Autosave is a pure queue in `src/lib/note-save-queue.ts` (tested in `tests/note-save-queue.test.mjs`): 800 ms after the last edit, plus a flush on note switch, window blur, the tab becoming hidden and leaving `/notes`. One save per note is in flight at a time and the latest text wins. Unchanged text is never sent. A failed save keeps the note in a page-level dirty set and is retried on every edit and flush; navigating away from `/notes` is blocked until it succeeds. ⌘N on the page creates a note; the palette's "New note" navigates to `/notes?new=1`, which runs the same create path (title focused).
+
+#### Read view and copy as HTML
+
+⌘E (or the book/pencil button in the title bar) swaps the editor for a read view; the mode survives note switches and resets on page load, and creating a note always returns to edit. The editor stays mounted but hidden, so each note keeps its state. The read view renders the editor's current text, unsaved edits included, through the stateless `render_markdown` command (`src-tauri/src/commands/markdown.rs`, `pulldown-cmark` with tables, strikethrough and task lists).
+
+The app has no CSP, so Rust locks the HTML down instead of the WebView: raw HTML is escaped and shown as text, only `http:`, `https:` and `mailto:` links are kept (others render as their text), and images never load (they become links labelled with their alt text). `src/lib/components/NoteReader.svelte` inserts the result, highlights code blocks with the editor's parsers and colors (`src/lib/editor/highlight-code.ts`), and opens links in the default browser through `tauri-plugin-opener`, checking the scheme again (`src/lib/links.ts`); a link never navigates the WebView. The capability grants only `opener:allow-open-url` with `opener:allow-default-urls` (http, https, mailto, tel).
+
+"Copy as HTML" writes the same rendered HTML as `text/html` and the markdown source as `text/plain`, using a `ClipboardItem` whose HTML is a promise so WebKit's user-gesture requirement holds across the `invoke`.
 
 #### Quit/close flush guard
 

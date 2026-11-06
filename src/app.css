@@ -616,6 +616,174 @@
     @apply min-h-0 flex-1;
   }
 
+  /* Read view (⌘E): colors come from the --note-* variables, so light and dark both apply. */
+  .note-reader {
+    @apply overflow-y-auto px-8 pb-[40vh] pt-4 focus:outline-none;
+    color: var(--note-fg);
+    font-size: 15px;
+    line-height: 1.7;
+  }
+
+  .note-reader-empty {
+    @apply pt-2 italic text-slate-400 dark:text-neutral-500;
+  }
+
+  .note-prose {
+    overflow-wrap: anywhere;
+  }
+
+  .note-prose > * + * {
+    margin-top: 0.85em;
+  }
+
+  .note-prose :is(h1, h2, h3, h4, h5, h6) {
+    color: var(--note-heading);
+    font-weight: 650;
+    letter-spacing: -0.01em;
+  }
+
+  .note-prose h1 {
+    @apply mt-[0.5em] text-[1.85em] leading-[1.3];
+  }
+
+  .note-prose h2 {
+    @apply mt-[0.9em] text-[1.45em] leading-[1.35];
+  }
+
+  .note-prose h3 {
+    @apply mt-[0.8em] text-[1.2em] leading-[1.4];
+  }
+
+  .note-prose :is(h4, h5, h6) {
+    @apply mt-[0.7em] text-[1.05em];
+  }
+
+  .note-prose > :first-child {
+    @apply mt-0;
+  }
+
+  .note-prose strong {
+    color: var(--note-heading);
+    font-weight: 650;
+  }
+
+  .note-prose del {
+    text-decoration-color: var(--note-muted);
+  }
+
+  .note-prose a {
+    color: var(--note-link);
+    text-decoration: underline;
+    text-decoration-color: var(--note-link-underline);
+    text-underline-offset: 3px;
+    @apply rounded-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400;
+  }
+
+  .note-prose a:hover {
+    text-decoration-color: currentColor;
+  }
+
+  .note-prose :is(ul, ol) {
+    @apply pl-6;
+  }
+
+  .note-prose ul {
+    @apply list-disc;
+  }
+
+  .note-prose ol {
+    @apply list-decimal;
+  }
+
+  .note-prose li::marker {
+    color: var(--note-muted);
+  }
+
+  .note-prose li + li,
+  .note-prose li > :is(ul, ol) {
+    margin-top: 0.2em;
+  }
+
+  /* Task lists: no bullet, the checkbox takes its place. */
+  .note-prose li:has(> input[type='checkbox']:first-child) {
+    @apply -ml-6 list-none;
+  }
+
+  /* Floated, so the whitespace after it collapses and a done task's strike starts at its text. */
+  .note-prose input[type='checkbox'] {
+    @apply float-left mr-2 mt-[0.33em] appearance-none rounded-[0.3em];
+    width: 1.05em;
+    height: 1.05em;
+    border: 1.5px solid var(--note-checkbox-border);
+    background-color: var(--note-checkbox-bg);
+  }
+
+  .note-prose input[type='checkbox']:checked {
+    border-color: var(--note-check);
+    background-color: var(--note-check);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12.5l4.5 4.5L19 7.5'/%3E%3C/svg%3E");
+    background-size: 80%;
+    background-position: center;
+    background-repeat: no-repeat;
+  }
+
+  .note-prose li:has(> input[type='checkbox']:checked:first-child) {
+    color: var(--note-muted);
+    text-decoration: line-through;
+    text-decoration-color: var(--note-muted);
+  }
+
+  .note-prose blockquote {
+    border-left: 3px solid var(--note-quote-border);
+    color: var(--note-quote-fg);
+    @apply pl-[0.9rem];
+  }
+
+  .note-prose hr {
+    border-color: var(--note-border);
+    @apply my-6;
+  }
+
+  .note-prose :is(code, pre) {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.88em;
+    color: var(--note-code-fg);
+    background-color: var(--note-code-bg);
+  }
+
+  .note-prose code {
+    @apply rounded-[0.35rem] px-[0.3em] py-[0.1em];
+  }
+
+  .note-prose pre {
+    @apply overflow-x-auto rounded-[0.6rem] px-3 py-2 leading-[1.6];
+  }
+
+  .note-prose pre code {
+    @apply rounded-none bg-transparent p-0;
+    font-size: inherit;
+  }
+
+  .note-prose table {
+    @apply w-auto min-w-[50%] max-w-full border-separate border-spacing-0 overflow-hidden rounded-xl text-[0.93em] leading-normal;
+    border: 1px solid var(--note-border);
+  }
+
+  .note-prose :is(th, td) {
+    @apply px-[0.85rem] py-[0.4rem] text-left;
+    border-top: 1px solid var(--note-border);
+  }
+
+  .note-prose th {
+    @apply border-t-0 font-semibold;
+    color: var(--note-heading);
+    background-color: var(--note-table-head);
+  }
+
+  .note-prose :is(th + th, td + td) {
+    border-left: 1px solid var(--note-border);
+  }
+
   body.is-dragging,
   body.is-dragging * {
     @apply select-none;

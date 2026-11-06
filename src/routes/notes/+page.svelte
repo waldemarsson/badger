@@ -10,9 +10,13 @@
 	import { registerFlushHandler } from '#lib/flush-guard.js';
 	import type { Note, NoteSummary } from '#lib/types.js';
 	import NoteEditor from '#lib/components/NoteEditor.svelte';
+	import NoteReader from '#lib/components/NoteReader.svelte';
+	import BookOpen from 'lucide-svelte/icons/book-open';
 	import Check from 'lucide-svelte/icons/check';
 	import CircleAlert from 'lucide-svelte/icons/circle-alert';
+	import Copy from 'lucide-svelte/icons/copy';
 	import NotebookPen from 'lucide-svelte/icons/notebook-pen';
+	import PencilLine from 'lucide-svelte/icons/pencil-line';
 	import Pin from 'lucide-svelte/icons/pin';
 	import PinOff from 'lucide-svelte/icons/pin-off';
 	import Plus from 'lucide-svelte/icons/plus';
@@ -42,6 +46,7 @@
 	let navError = $state('');
 
 	let editor = $state<ReturnType<typeof NoteEditor>>();
+	let reader = $state<ReturnType<typeof NoteReader>>();
 	let titleInput = $state<HTMLInputElement>();
 	let searchInput = $state<HTMLInputElement>();
 	let listEl = $state<HTMLElement>();
@@ -78,6 +83,72 @@
 
 	function titleOf(id: number): string {
 		return notes.find((n) => n.id === id)?.title ?? 'a note';
+	}
+
+	// ── Read view (⌘E) and copy as HTML ───────────────────────────────────────────
+
+	let reading = $state(false); // survives note switches, not page loads
+	let rendered = $state<{ id: number; html: string } | null>(null);
+	let renderError = $state('');
+	let renderSeq = 0;
+	let viewError = $state(''); // copy or open-link failures
+	let copied = $state(false);
+	let copiedTimer: ReturnType<typeof setTimeout> | undefined;
+
+	/** Renders the open note's live text (unsaved edits included) for the read view. */
+	async function renderCurrent(): Promise<void> {
+		if (!current) return;
+		const seq = ++renderSeq;
+		const id = current.id;
+		renderError = '';
+		try {
+			const html = await invoke<string>('render_markdown', { markdown: editor?.text() ?? '' });
+			if (seq !== renderSeq) return; // switched notes or toggled meanwhile
+			rendered = { id, html };
+		} catch (e) {
+			if (seq !== renderSeq) return;
+			renderError = String(e);
+		}
+	}
+
+	async function toggleReading(): Promise<void> {
+		if (!current) return;
+		if (titleInput && document.activeElement === titleInput) await commitTitle(true);
+		reading = !reading;
+		if (reading) {
+			await renderCurrent();
+			await tick();
+			if (reading) reader?.focus();
+		} else {
+			renderSeq++;
+			rendered = null;
+			renderError = '';
+			await tick();
+			editor?.focus();
+		}
+	}
+
+	async function copyHtml(): Promise<void> {
+		if (!current) return;
+		viewError = '';
+		const markdown = editor?.text() ?? '';
+		const html = invoke<string>('render_markdown', { markdown });
+		html.catch(() => {}); // a failure surfaces through clipboard.write below
+		try {
+			// Promise-valued items keep WebKit's user-gesture check satisfied across the invoke.
+			await navigator.clipboard.write([
+				new ClipboardItem({
+					'text/html': html.then((h) => new Blob([h], { type: 'text/html' })),
+					'text/plain': new Blob([markdown], { type: 'text/plain' })
+				})
+			]);
+		} catch {
+			viewError = 'Copy failed.';
+			return;
+		}
+		copied = true;
+		clearTimeout(copiedTimer);
+		copiedTimer = setTimeout(() => (copied = false), 2000);
 	}
 
 	// ── List ──────────────────────────────────────────────────────────────────────
@@ -133,8 +204,10 @@
 		titleError = ''; // switching away discards an invalid title
 		lastFailedTitle = null;
 		confirmingDelete = false;
+		viewError = '';
 		editor?.open(note.id, note.body);
 		setUrl(note.id);
+		if (reading) void renderCurrent();
 	}
 
 	function showNothing(): void {
@@ -143,6 +216,10 @@
 		titleDraft = '';
 		titleError = '';
 		confirmingDelete = false;
+		viewError = '';
+		renderSeq++;
+		rendered = null;
+		renderError = '';
 		editor?.close();
 		setUrl(null);
 	}
@@ -235,7 +312,10 @@
 			const note = await invoke<Note>('create_note');
 			notes = upsertNote(notes, summaryOf(note));
 			query = '';
-			if (seq === selectSeq) show(note);
+			if (seq === selectSeq) {
+				reading = false; // a new note is for writing
+				show(note);
+			}
 			await tick();
 			titleInput?.focus();
 			titleInput?.select();
@@ -250,6 +330,11 @@
 			e.preventDefault();
 			searchInput?.focus();
 			searchInput?.select();
+			return;
+		}
+		if (e.code === 'KeyE') {
+			e.preventDefault();
+			if (!e.repeat) void toggleReading();
 			return;
 		}
 		if (e.code !== 'KeyN') return;
@@ -305,7 +390,7 @@
 		if (e.isComposing) return;
 		if (e.key === 'Enter') {
 			e.preventDefault();
-			if (await commitTitle()) editor?.focus();
+			if (await commitTitle()) (reading ? reader : editor)?.focus();
 		} else if (e.key === 'Escape' && current) {
 			e.preventDefault();
 			titleDraft = current.title;
@@ -413,6 +498,7 @@
 		});
 		return () => {
 			unregister();
+			clearTimeout(copiedTimer);
 			void queue.flush();
 		};
 	});
@@ -597,6 +683,29 @@
 								<div class="flex shrink-0 items-center gap-0.5">
 									<button
 										type="button"
+										class="btn-icon-ghost"
+										title={copied ? 'Copied' : 'Copy as HTML'}
+										aria-label={copied ? 'Copied as HTML' : 'Copy as HTML'}
+										onclick={copyHtml}
+									>
+										{#if copied}
+											<span class="inline-flex text-emerald-500 dark:text-emerald-400" in:fade={{ duration: 150 }}><Check size={16} /></span>
+										{:else}
+											<Copy size={16} />
+										{/if}
+									</button>
+									<button
+										type="button"
+										class="btn-icon-ghost {reading ? 'text-sky-600 dark:text-sky-400' : ''}"
+										title={reading ? 'Edit (⌘E)' : 'Read (⌘E)'}
+										aria-label={reading ? 'Edit note' : 'Read note'}
+										aria-pressed={reading}
+										onclick={() => void toggleReading()}
+									>
+										{#if reading}<PencilLine size={16} />{:else}<BookOpen size={16} />{/if}
+									</button>
+									<button
+										type="button"
 										class="btn-icon-ghost {current.pinned ? 'text-amber-500 dark:text-amber-400' : ''}"
 										title={current.pinned ? 'Unpin' : 'Pin to top'}
 										aria-label={current.pinned ? 'Unpin note' : 'Pin note'}
@@ -623,6 +732,9 @@
 						{#if navError || failedSaves.length}
 							<div class="pb-3">{@render saveAlerts()}</div>
 						{/if}
+						{#if viewError}
+							<div class="pb-3">{@render dismissible(viewError, () => (viewError = ''))}</div>
+						{/if}
 					</header>
 				{:else}
 					{#if navError || failedSaves.length}
@@ -645,7 +757,15 @@
 						</button>
 					</div>
 				{/if}
-				<NoteEditor bind:this={editor} onchange={onBodyChange} class={current ? 'min-h-0 flex-1' : 'hidden'} />
+				{#if current && reading}
+					{#if renderError}
+						<div class="px-6 pt-4">{@render dismissible(`Couldn't show the read view: ${renderError}`, () => void toggleReading())}</div>
+					{:else if rendered?.id === current.id}
+						<NoteReader bind:this={reader} html={rendered.html} onerror={(m) => (viewError = m)} class="min-h-0 flex-1" />
+					{/if}
+				{/if}
+				<!-- Hidden, not unmounted, while reading: it keeps each note's state and mounts the code colors. -->
+				<NoteEditor bind:this={editor} onchange={onBodyChange} class={current && !reading ? 'min-h-0 flex-1' : 'hidden'} />
 			</section>
 		</div>
 	</div>

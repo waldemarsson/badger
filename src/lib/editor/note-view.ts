@@ -49,6 +49,11 @@ export class NoteView {
 		this.view.focus();
 	}
 
+	/** The open note's current text, including edits not saved yet. */
+	text(): string {
+		return this.view.state.doc.toString();
+	}
+
 	destroy(): void {
 		this.view.destroy();
 	}

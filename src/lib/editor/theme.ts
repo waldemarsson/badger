@@ -217,8 +217,8 @@ const markdownHighlight = HighlightStyle.define([
 	{ tag: tags.comment, color: 'var(--note-muted)' }
 ]);
 
-/** Syntax colors inside fenced code blocks whose language language-data loaded. */
-const codeHighlight = HighlightStyle.define([
+/** Syntax colors inside fenced code blocks whose language language-data loaded (editor and read view). */
+export const codeHighlight = HighlightStyle.define([
 	{
 		tag: [
 			tags.keyword,

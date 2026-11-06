@@ -35,6 +35,11 @@
 		editor?.focus();
 	}
 
+	/** The open note's current text, including edits not saved yet. */
+	export function text(): string {
+		return editor?.text() ?? '';
+	}
+
 	onMount(() => {
 		editor = new NoteView(host, (id, body) => onchange(id, body));
 		return () => {

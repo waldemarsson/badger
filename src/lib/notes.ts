@@ -33,38 +33,6 @@ export function neighborAfterRemoval(ids: number[], id: number): number | null {
 	return ids[index + 1] ?? ids[index - 1] ?? null;
 }
 
-// ── Dates ─────────────────────────────────────────────────────────────────────
-
-/** Parses the stored local `YYYY-MM-DDTHH:MM:SS.mmm` timestamp as local time. */
-export function parseTimestamp(value: string): Date {
-	const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?/.exec(value);
-	if (!m) return new Date(NaN);
-	const [y, mo, d, h, mi, s] = m.slice(1, 7).map(Number);
-	const ms = m[7] ? Number(m[7].padEnd(3, '0')) : 0;
-	return new Date(y, mo - 1, d, h, mi, s, ms);
-}
-
-function startOfDay(date: Date): number {
-	return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
-}
-
-/** "Just now", "5 min ago", "3 h ago", "Yesterday", "Monday", "Oct 3", "Dec 24, 2025". */
-export function relativeDate(value: string, now: Date): string {
-	const date = parseTimestamp(value);
-	if (Number.isNaN(date.getTime())) return '';
-	const seconds = (now.getTime() - date.getTime()) / 1000;
-	if (seconds < 60) return 'Just now';
-	if (seconds < 3600) return `${Math.floor(seconds / 60)} min ago`;
-	const days = Math.round((startOfDay(now) - startOfDay(date)) / 86_400_000);
-	if (days === 0) return `${Math.floor(seconds / 3600)} h ago`;
-	if (days === 1) return 'Yesterday';
-	if (days < 7) return date.toLocaleDateString(undefined, { weekday: 'long' });
-	if (date.getFullYear() === now.getFullYear()) {
-		return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-	}
-	return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-}
-
 // ── Tables ────────────────────────────────────────────────────────────────────
 
 /** A table cell's trimmed source text and its [from, to) offsets. */

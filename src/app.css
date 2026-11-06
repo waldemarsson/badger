@@ -551,8 +551,13 @@
     @apply flex min-h-0 flex-col overflow-hidden rounded-[1.375rem] border border-slate-200/80 bg-white shadow-sm shadow-slate-200/50 dark:border-neutral-800 dark:bg-neutral-900 dark:shadow-black/20;
   }
 
+  /* Search bar and note title bar share one height so their borders line up. */
+  .notes-bar {
+    @apply flex h-14 shrink-0 items-center border-b border-slate-100 dark:border-neutral-800;
+  }
+
   .note-row {
-    @apply block w-full cursor-pointer rounded-xl px-3 py-2.5 text-left transition duration-150 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-400 dark:hover:bg-neutral-800/60;
+    @apply block w-full cursor-pointer rounded-lg px-3 py-2 text-left transition duration-150 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-400 dark:hover:bg-neutral-800/60;
   }
 
   .note-row-active {
@@ -564,19 +569,19 @@
   }
 
   .note-row-excerpt {
-    @apply mt-0.5 line-clamp-2 break-words text-xs leading-relaxed text-slate-500 dark:text-neutral-400;
-  }
-
-  .note-row-date {
-    @apply mt-1 text-[11px] font-medium text-slate-400 dark:text-neutral-500;
+    @apply mt-0.5 truncate text-xs text-slate-500 dark:text-neutral-400;
   }
 
   .note-row-pin {
-    @apply absolute right-2 top-2 rounded-md p-1 text-slate-400 opacity-0 transition hover:bg-slate-200/70 hover:text-amber-500 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 group-hover:opacity-100 dark:text-neutral-500 dark:hover:bg-neutral-700 dark:hover:text-amber-400;
+    @apply absolute right-1.5 top-1.5 rounded-md p-1 text-slate-400 opacity-0 transition hover:bg-slate-200/70 hover:text-amber-500 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 group-hover:opacity-100 dark:text-neutral-500 dark:hover:bg-neutral-700 dark:hover:text-amber-400;
+  }
+
+  .note-row-pin-on {
+    @apply text-amber-500 opacity-100 hover:text-amber-600 dark:text-amber-400 dark:hover:text-amber-300;
   }
 
   .note-title-input {
-    @apply -mx-2 min-w-0 flex-1 rounded-lg border border-transparent bg-transparent px-2 py-1 text-2xl font-semibold tracking-tight text-slate-950 outline-none transition placeholder:text-slate-300 hover:border-slate-200 focus:border-sky-300 focus:ring-4 focus:ring-sky-100 dark:text-neutral-100 dark:placeholder:text-neutral-600 dark:hover:border-neutral-700 dark:focus:border-sky-500/60 dark:focus:ring-sky-500/10;
+    @apply -mx-2 min-w-0 flex-1 rounded-lg border border-transparent bg-transparent px-2 py-0.5 text-xl font-semibold tracking-tight text-slate-950 outline-none transition placeholder:text-slate-300 hover:border-slate-200 focus:border-sky-300 focus:ring-4 focus:ring-sky-100 dark:text-neutral-100 dark:placeholder:text-neutral-600 dark:hover:border-neutral-700 dark:focus:border-sky-500/60 dark:focus:ring-sky-500/10;
   }
 
   .note-title-input-error {

@@ -6,8 +6,6 @@ const {
 	filterNotes,
 	upsertNote,
 	neighborAfterRemoval,
-	parseTimestamp,
-	relativeDate,
 	splitTableRow,
 	parseTableAlign,
 	parseTable,
@@ -70,40 +68,6 @@ test('neighborAfterRemoval: next in list, else previous, else null', () => {
 	assert.equal(neighborAfterRemoval([4, 7, 9], 9), 7);
 	assert.equal(neighborAfterRemoval([4], 4), null);
 	assert.equal(neighborAfterRemoval([4, 7], 99), null);
-});
-
-// ── Dates ───────────────────────────────────────────────────────────────────
-
-test('parseTimestamp reads the stored local timestamp as local time', () => {
-	const d = parseTimestamp('2026-11-06T09:05:03.250');
-	assert.deepEqual(
-		[d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds()],
-		[2026, 10, 6, 9, 5, 3]
-	);
-	assert.ok(Number.isNaN(parseTimestamp('garbage').getTime()));
-});
-
-test('relativeDate: just now, minutes, hours, yesterday, weekday, date, date with year', () => {
-	const now = new Date(2026, 10, 6, 12, 0, 0); // Fri Nov 6 2026, 12:00
-	assert.equal(relativeDate('2026-11-06T11:59:40.000', now), 'Just now');
-	assert.equal(relativeDate('2026-11-06T12:00:30.000', now), 'Just now', 'small clock skew');
-	assert.equal(relativeDate('2026-11-06T11:55:00.000', now), '5 min ago');
-	assert.equal(relativeDate('2026-11-06T09:00:00.000', now), '3 h ago');
-	assert.equal(relativeDate('2026-11-06T00:10:00.000', now), '11 h ago');
-	assert.equal(relativeDate('2026-11-05T23:00:00.000', now), 'Yesterday');
-	assert.equal(
-		relativeDate('2026-11-02T08:00:00.000', now),
-		new Date(2026, 10, 2).toLocaleDateString(undefined, { weekday: 'long' })
-	);
-	assert.equal(
-		relativeDate('2026-10-03T08:00:00.000', now),
-		new Date(2026, 9, 3).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
-	);
-	assert.equal(
-		relativeDate('2025-12-24T08:00:00.000', now),
-		new Date(2025, 11, 24).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
-	);
-	assert.equal(relativeDate('not a date', now), '');
 });
 
 // ── Tables ──────────────────────────────────────────────────────────────────

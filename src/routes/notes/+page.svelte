@@ -5,7 +5,7 @@
 	import { onMount, tick, untrack } from 'svelte';
 	import { flip } from 'svelte/animate';
 	import { fade } from 'svelte/transition';
-	import { filterNotes, neighborAfterRemoval, relativeDate, sortNotes, upsertNote } from '#lib/notes.js';
+	import { filterNotes, neighborAfterRemoval, sortNotes, upsertNote } from '#lib/notes.js';
 	import { NoteSaveQueue } from '#lib/note-save-queue.js';
 	import { registerFlushHandler } from '#lib/flush-guard.js';
 	import type { Note, NoteSummary } from '#lib/types.js';
@@ -40,7 +40,6 @@
 	let confirmingDelete = $state(false);
 	let actionError = $state('');
 	let navError = $state('');
-	let now = $state(new Date());
 
 	let editor = $state<ReturnType<typeof NoteEditor>>();
 	let titleInput = $state<HTMLInputElement>();
@@ -376,14 +375,12 @@
 
 	onMount(() => {
 		void load();
-		const clock = setInterval(() => (now = new Date()), 60_000);
 		// Title and body are written concurrently so a slow rename can't eat the quit budget.
 		const unregister = registerFlushHandler(async () => {
 			const [, saved] = await Promise.all([commitTitle(true), queue.flush()]);
 			return saved;
 		});
 		return () => {
-			clearInterval(clock);
 			unregister();
 			void queue.flush();
 		};
@@ -428,7 +425,7 @@
 		<div bind:this={layout} class="grid grid-cols-[18rem_minmax(0,1fr)] gap-4" style="height: {paneHeight}px">
 			<!-- List -->
 			<aside class="notes-pane">
-				<div class="flex items-center gap-2 border-b border-slate-100 p-3 dark:border-neutral-800">
+				<div class="notes-bar gap-2 px-3">
 					<label class="relative min-w-0 flex-1">
 						<Search size={15} class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 dark:text-neutral-500" />
 						<input
@@ -497,25 +494,26 @@
 								onclick={() => void select(n.id)}
 								onkeydown={(e) => onRowKeydown(e, n.id)}
 							>
-								<div class="flex min-w-0 items-center gap-1.5 pr-6">
-									{#if n.pinned}
-										<Pin size={12} class="shrink-0 fill-current text-amber-500 dark:text-amber-400" aria-label="Pinned" />
-									{/if}
-									<p class="note-row-title">{n.title}</p>
-								</div>
+								<p class="note-row-title pr-6">{n.title}</p>
 								{#if n.excerpt}
 									<p class="note-row-excerpt">{n.excerpt}</p>
 								{/if}
-								<p class="note-row-date">{relativeDate(n.updated_at, now)}</p>
 							</div>
 							<button
 								type="button"
-								class="note-row-pin {n.pinned ? 'note-row-pin-on' : ''}"
+								class="note-row-pin"
+								class:note-row-pin-on={n.pinned}
 								title={n.pinned ? 'Unpin' : 'Pin to top'}
 								aria-label={n.pinned ? `Unpin ${n.title}` : `Pin ${n.title}`}
 								onclick={() => void togglePin(n)}
 							>
-								{#if n.pinned}<PinOff size={13} />{:else}<Pin size={13} />{/if}
+								{#if n.pinned}
+									<!-- Pinned: a filled pin; hovering the row offers unpin. -->
+									<Pin size={13} class="fill-current group-hover:hidden" />
+									<PinOff size={13} class="hidden group-hover:block" />
+								{:else}
+									<Pin size={13} />
+								{/if}
 							</button>
 						</div>
 					{/each}
@@ -525,7 +523,8 @@
 			<!-- Editor -->
 			<section class="notes-pane">
 				{#if current}
-					<header class="border-b border-slate-100 px-6 pb-3 pt-4 dark:border-neutral-800">
+					<!-- min-h-14 (border included) matches the search bar's h-14. -->
+					<header class="flex min-h-14 shrink-0 flex-col justify-center border-b border-slate-100 px-6 dark:border-neutral-800">
 						<div class="flex items-center gap-3">
 							<input
 								bind:this={titleInput}
@@ -583,9 +582,11 @@
 							{/if}
 						</div>
 						{#if titleError}
-							<p class="form-error mt-1" role="alert" transition:fade={{ duration: 150 }}>{titleError}</p>
+							<p class="form-error -mt-1.5 pb-2" role="alert" transition:fade={{ duration: 150 }}>{titleError}</p>
 						{/if}
-						{@render saveAlerts()}
+						{#if navError || failedSaves.length}
+							<div class="pb-3">{@render saveAlerts()}</div>
+						{/if}
 					</header>
 				{:else}
 					{#if navError || failedSaves.length}

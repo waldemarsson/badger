@@ -1,5 +1,7 @@
 <script lang="ts" generics="Href extends string">
 	import { invoke } from '@tauri-apps/api/core';
+	import { goto } from '$app/navigation';
+	import { resolve } from '$app/paths';
 	import { onMount, tick, untrack } from 'svelte';
 	import { fade, scale } from 'svelte/transition';
 	import Search from 'lucide-svelte/icons/search';
@@ -9,6 +11,7 @@
 	import Plus from 'lucide-svelte/icons/plus';
 	import Calendar from 'lucide-svelte/icons/calendar';
 	import ChevronRight from 'lucide-svelte/icons/chevron-right';
+	import NotebookPen from 'lucide-svelte/icons/notebook-pen';
 	import { today } from '#lib/date-ranges.js';
 	import {
 		filterItems,
@@ -66,6 +69,7 @@
 	const commands: Command[] = $derived([
 		{ id: 'new-todo', label: 'New todo', group: 'Actions', run: () => goTo('todo') },
 		{ id: 'log-time', label: 'Log time', group: 'Actions', run: () => void startLogTime() },
+		{ id: 'new-note', label: 'New note', group: 'Actions', run: createNote },
 		...pages.map((p): Command => ({
 			id: `page:${p.href}`,
 			label: p.label,
@@ -291,6 +295,15 @@
 		}
 	}
 
+	// ── New note ───────────────────────────────────────────────────────────────────
+
+	/** The notes page creates the note on `?new=1`, so ⌘N and the palette share one path. */
+	function createNote(): void {
+		close();
+		// eslint-disable-next-line svelte/no-navigation-without-resolve -- resolved path plus a query string
+		void goto(`${resolve('/notes')}?new=1`);
+	}
+
 	// ── Keyboard ───────────────────────────────────────────────────────────────────
 
 	function pick(index: number): void {
@@ -490,7 +503,10 @@
 									{@render row(
 										filteredCommands.indexOf(c),
 										c.label,
-										c.id === 'new-todo' ? ListTodo : c.id === 'log-time' ? Clock : ArrowRight
+										c.id === 'new-todo' ? ListTodo
+										: c.id === 'log-time' ? Clock
+										: c.id === 'new-note' ? NotebookPen
+										: ArrowRight
 									)}
 								{/each}
 							{/if}

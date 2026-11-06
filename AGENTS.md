@@ -41,13 +41,14 @@ Gotchas:
 - **Use runtime queries** (`sqlx::query`, `sqlx::query_as`), not the `query!` macros. `SQLX_OFFLINE` is set and there is no `.sqlx/` metadata.
 - **Errors** are `AppError` and reach the user as their display string, so write messages for the user (`"Title is required"`). Return `AppError::Custom` for validation and not-found errors; never panic in commands.
 - **Multi-step writes** go in a transaction (`pool.begin()`).
+- **Quit/close must go through `flush_guard.rs`** (flushes unsaved notes). Don't restore the native macOS Quit menu item or exit via `std::process::exit`; both bypass `RunEvent::ExitRequested`.
 
 ### Schema changes
 
 - Tables are created by `SCHEMA_SQL` in `src-tauri/src/db.rs` with `CREATE TABLE IF NOT EXISTS`. That does **not** alter existing tables.
 - Changing an existing table needs an idempotent migration function in `db.rs`, called from `init_db` after `SCHEMA_SQL`, with a test that builds the old shape and migrates it (see `migrate_todos_status`).
 - Foreign keys are on. Choose `ON DELETE CASCADE` vs `SET NULL` on purpose and test it.
-- **Every new table must be included in backup/restore** (`commands/backup.rs`): export, both restore modes, and `#[serde(default)]` on the new `BackupData` field so older backups still restore. Add a round-trip test.
+- **Every new table must be included in backup/restore** (`commands/backup.rs`): export, restore (overwrite-only: add an explicit `DELETE`, since cascades won't reach a new table), and `#[serde(default)]` on the new `BackupData` field so older backups still restore. Add a round-trip test.
 
 ## Frontend (Svelte 5 / SvelteKit)
 
@@ -71,7 +72,7 @@ Design language (follow existing pages before inventing):
 - Palette: slate neutrals, with sky for active/drag, emerald for done, red for overdue/errors, amber for due today, and violet for issue links.
 - Dark mode: every color utility needs a `dark:` counterpart (class strategy). Dark uses the `neutral` grays (not slate, which reads blue): `neutral-950` page / `neutral-900` card / `neutral-800` ring, text `neutral-100`/`neutral-400`, accents `-400` text on `-500/10` tints. Prefer `app.css` primitives, which already handle it. Screenshot both themes.
 - Surfaces: `rounded-xl`/`rounded-2xl`, `ring-1 ring-slate-200`, `shadow-sm`, lifting on hover (`hover:-translate-y-0.5 hover:shadow-md`).
-- Every page starts with the `page-hero` block, followed by content in `table-card` / `panel-card` or purpose-built layouts.
+- Every page starts with the `page-hero` block (except `/notes`, which gives the full window to the list and editor), followed by content in `table-card` / `panel-card` or purpose-built layouts.
 - Reuse the `app.css` primitives: `btn-primary`, `btn-secondary(-sm)`, `btn-danger(-sm)`, `btn-icon-*`, `form-input`, `form-select`, `form-textarea`, `form-label`, `form-error`, `alert-*`.
 - States: show an empty state ("No cards"), show inline errors near the action, and confirm destructive actions inline rather than with `confirm()`.
 - Motion: short (150–200 ms) `fade`/`scale`/`flip` from Svelte. No animation libraries.

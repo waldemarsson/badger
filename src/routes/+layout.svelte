@@ -4,11 +4,13 @@
   import { resolve } from '$app/paths';
   import { page } from '$app/state';
   import { invoke } from '@tauri-apps/api/core';
+  import { listen } from '@tauri-apps/api/event';
   import { onMount } from 'svelte';
   import { toThemeMode } from '#lib/theme.js';
   import { applyTheme, theme } from '#lib/theme-state.svelte.js';
   import { normalizeShortcut } from '#lib/palette.js';
   import { palette } from '#lib/palette-state.svelte.js';
+  import { FLUSH_REQUEST_EVENT, runFlushHandlers } from '#lib/flush-guard.js';
   import type { PaletteSettings } from '#lib/types.js';
   import CommandPalette from '#lib/components/CommandPalette.svelte';
   import Toast from '#lib/components/Toast.svelte';
@@ -19,6 +21,7 @@
     { href: '/', label: 'Today' },
     { href: '/timesheet', label: 'Timesheet' },
     { href: '/todos', label: 'Todos' },
+    { href: '/notes', label: 'Notes' },
     { href: '/reports/weekly', label: 'Weekly' },
     { href: '/reports/monthly', label: 'Monthly' },
     { href: '/travel', label: 'Travel' },
@@ -34,6 +37,20 @@
     invoke<PaletteSettings>('get_palette_settings')
       .then((s) => (palette.shortcut = normalizeShortcut(s.shortcut)))
       .catch(() => {});
+
+    // Quit/close guard: save what pages have pending, then let Rust exit.
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
+    listen(FLUSH_REQUEST_EVENT, async () => {
+      await runFlushHandlers();
+      await invoke('flush_done').catch(() => {});
+    })
+      .then((stop) => (disposed ? stop() : (unlisten = stop)))
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   });
 
   function navigate(href: (typeof navLinks)[number]['href']) {

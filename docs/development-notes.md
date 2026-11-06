@@ -32,6 +32,8 @@ Debug builds also keep their runtime database and logs under repo-local `.timetr
 
 The seed workflow populates sample customers, projects, issues, and time entries anchored to recent dates so reporting screens have realistic data to display.
 
+Notes and folders are seeded separately: whenever the `notes` table is empty, the seed adds sample notes covering every live-preview element plus a `Projects / Archive` folder pair holding one note. This happens even if the customer seed is skipped because customers already exist, so older dev databases get notes too.
+
 ## Report and restore behavior worth knowing
 
 - Weekly and monthly reports are computed in Rust rather than assembled entirely in the frontend

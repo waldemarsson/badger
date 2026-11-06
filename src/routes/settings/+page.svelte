@@ -154,7 +154,7 @@
   let seedError = $state('');
 
   // ── Restore state ─────────────────────────────────────────────────────────────
-  type RestorePreview = { customers: number; projects: number; issues: number; time_entries: number };
+  type RestorePreview = { customers: number; projects: number; issues: number; time_entries: number; notes: number };
 
   let restoreFileName   = $state<string>('');
   let restoreJsonText   = $state<string>('');
@@ -162,6 +162,7 @@
   let restoreParseError = $state('');
   let restoreState      = $state<'idle' | 'preview' | 'restoring' | 'success' | 'error'>('idle');
   let restoreError      = $state('');
+  let currentNoteCount  = $state(0); // notes in the database, for the "backup has no notes" warning
 
   function parseBackupPreview(jsonText: string): RestorePreview | null {
     try {
@@ -171,6 +172,7 @@
         projects:     Array.isArray(data.projects)     ? data.projects.length     : 0,
         issues:       Array.isArray(data.issues)       ? data.issues.length       : 0,
         time_entries: Array.isArray(data.time_entries) ? data.time_entries.length : 0,
+        notes:        Array.isArray(data.notes)        ? data.notes.length        : 0,
       };
     } catch { return null; }
   }
@@ -304,6 +306,9 @@
         restoreParseError = 'Could not read backup file. Make sure it is a valid TimeTracker backup.';
         return;
       }
+      currentNoteCount = preview.notes === 0
+        ? await invoke<unknown[]>('list_notes').then((n) => n.length).catch(() => 0)
+        : 0;
       restoreFileName  = path.split('/').pop() ?? path;
       restoreJsonText  = json;
       restorePreview   = preview;
@@ -659,7 +664,7 @@
               {#if restorePreview}
                 <div class="panel-muted">
                   <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-neutral-400 mb-3">Backup Contents</p>
-                  <div class="grid grid-cols-4 gap-2 py-6 text-center">
+                  <div class="grid grid-cols-5 gap-2 py-6 text-center">
                     <div class="restore-stat">
                       <span class="restore-stat-number">{restorePreview.customers}</span>
                       <span class="restore-stat-label">Customers</span>
@@ -676,13 +681,23 @@
                       <span class="restore-stat-number">{restorePreview.time_entries}</span>
                       <span class="restore-stat-label">Time Entries</span>
                     </div>
+                    <div class="restore-stat">
+                      <span class="restore-stat-number">{restorePreview.notes}</span>
+                      <span class="restore-stat-label">Notes</span>
+                    </div>
                   </div>
                 </div>
               {/if}
 
               <div class="alert-panel alert-warning">
-                <p class="alert-warning-copy">⚠ This will permanently delete all current data — customers, projects, issues, time entries, todos, and travel — and replace it with the backup.</p>
+                <p class="alert-warning-copy">⚠ This will permanently delete all current data — customers, projects, issues, time entries, todos, travel, and notes — and replace it with the backup.</p>
               </div>
+
+              {#if restorePreview && restorePreview.notes === 0 && currentNoteCount > 0}
+                <div class="alert-panel alert-warning" role="alert">
+                  <p class="alert-warning-title">This backup has no notes; restoring deletes your {currentNoteCount} {currentNoteCount === 1 ? 'note' : 'notes'}.</p>
+                </div>
+              {/if}
 
               <button
                 class="btn-danger"

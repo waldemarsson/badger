@@ -10,8 +10,12 @@ TimeTracker stores its working data in a local SQLite database. The schema is in
 - `time_entries` — dated hour records linked to issues
 - `todos` — standalone kanban todos (`Status`: not started / in progress / done, ordered by `Position`) with an optional link to an issue
 - `travel` — standalone business trips: date, from/to place, and optional km and amount (kr), stored as NULL when not entered
+- `notes` — markdown notes: unique `Title` (case-insensitive, via a `COLLATE NOCASE` unique index), `Body`, `Pinned`, `CreatedAt`/`UpdatedAt`, and an optional `FolderId`
+- `folders` — nestable note folders (`ParentId`, `Name`, `Position`). The schema exists, but there are no folder commands or UI yet
 
-Deletes cascade downward from customers to projects, issues, and time entries, so the hierarchy stays consistent without manual cleanup across tables. Todos are never deleted by a cascade: deleting a linked issue only clears the todo's link.
+Deletes cascade downward from customers to projects, issues, and time entries, so the hierarchy stays consistent without manual cleanup across tables. Todos are never deleted by a cascade: deleting a linked issue only clears the todo's link. Likewise, deleting a folder never deletes notes: `ON DELETE SET NULL` clears the `FolderId` of its notes and the `ParentId` of its child folders, so they move to the root.
+
+Note titles are trimmed, 1–200 characters, unique ignoring case (compared in Rust with `to_lowercase()`, so `Åsa` equals `åsa`; no Unicode normalization, so NFC and NFD forms count as different), and may not contain `[`, `]`, `|` or `#`, which would break `[[wikilinks]]` later. Saving a note's title and body are separate commands (`rename_note`, `update_note_body`), so a title conflict never blocks saving the body. Saving an identical body is a no-op that leaves `UpdatedAt` alone, and pinning does not bump it.
 
 ## Database behavior
 
@@ -64,7 +68,7 @@ Startup backup creation, trimming, and listing are handled entirely in Rust and 
 
 ## Backup format
 
-Backup export writes a JSON document containing six arrays:
+Backup export writes a JSON document containing eight arrays:
 
 - `customers`
 - `projects`
@@ -72,6 +76,8 @@ Backup export writes a JSON document containing six arrays:
 - `time_entries`
 - `todos` (optional on import, so backups made before todos existed still restore)
 - `travel` (optional on import, so backups made before travel existed still restore)
+- `folders` (optional on import, so backups made before notes existed still restore)
+- `notes` (optional on import, same reason)
 
 The backup commands preserve record identifiers so a restore can rebuild the same relationships between records.
 
@@ -80,10 +86,12 @@ The backup commands preserve record identifiers so a restore can rebuild the sam
 Restore always overwrites. In one transaction it:
 
 - deletes all customers, which cascades to projects, issues, and time entries
-- clears todos and travel explicitly
-- re-inserts the full backup
+- clears todos, travel, notes and folders explicitly (the cascade does not reach them)
+- re-inserts the full backup, folders before notes
 
-Data not in the backup is lost. If the backup file is invalid, nothing is changed.
+Data not in the backup is lost, so restoring a backup made before notes existed leaves zero notes. If the backup file is invalid, nothing is changed.
+
+Folders and notes are inserted with `PRAGMA defer_foreign_keys = ON` inside the transaction, so a child folder may appear before its parent (a lower id) in the file. Foreign keys are checked at commit. A dangling folder reference (for example in a hand-edited file) fails with "Backup is invalid: a folder or note refers to a missing folder", and two notes whose titles differ only in case fail with "Backup is invalid: duplicate note title". Both roll back everything.
 
 There is no merge mode. It was removed because `INSERT OR REPLACE` deletes and re-inserts rows, which cascaded to local time entries and cleared todo links.
 
@@ -93,7 +101,8 @@ The active backup and restore workflow is currently exposed in the Settings page
 
 - opens a save dialog for export
 - opens a file picker for import
-- previews record counts before restore
+- previews record counts before restore, including notes
+- warns when the backup has no notes but the database does ("This backup has no notes; restoring deletes your N notes.")
 - warns that restore replaces all current data
 
 There is also a dedicated `/backup` route in the app, but it is still a placeholder and does not contain the live workflow yet.

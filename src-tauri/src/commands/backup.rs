@@ -70,6 +70,33 @@ pub struct BackupTravel {
     pub amount: Option<f64>,
 }
 
+/// A note folder as stored in a backup file.
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow, PartialEq)]
+pub struct BackupFolder {
+    pub id: i64,
+    pub parent_id: Option<i64>,
+    pub name: String,
+    pub position: i64,
+}
+
+/// A note as stored in a backup file.
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow, PartialEq)]
+pub struct BackupNote {
+    pub id: i64,
+    pub folder_id: Option<i64>,
+    pub title: String,
+    pub body: String,
+    pub pinned: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Shown when a restored folder or note points at a folder that is not in the backup.
+const INVALID_FOLDER_REF: &str = "Backup is invalid: a folder or note refers to a missing folder";
+
+/// Shown when two restored notes have titles that differ only in case.
+const DUPLICATE_NOTE_TITLE: &str = "Backup is invalid: duplicate note title";
+
 fn default_todo_status() -> String {
     "not_started".to_string()
 }
@@ -87,6 +114,12 @@ pub struct BackupData {
     /// Absent in backups made before travel existed.
     #[serde(default)]
     pub travel: Vec<BackupTravel>,
+    /// Absent in backups made before notes existed.
+    #[serde(default)]
+    pub folders: Vec<BackupFolder>,
+    /// Absent in backups made before notes existed.
+    #[serde(default)]
+    pub notes: Vec<BackupNote>,
 }
 
 /// Reads all data from the database and serialises it to a JSON string.
@@ -127,6 +160,18 @@ pub async fn inner_backup_data(pool: &Pool<Sqlite>) -> Result<String, AppError> 
     .fetch_all(pool)
     .await?;
 
+    let folders = sqlx::query_as::<_, BackupFolder>(
+        "SELECT id, ParentId as parent_id, Name as name, Position as position FROM folders ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let notes = sqlx::query_as::<_, BackupNote>(
+        "SELECT id, FolderId as folder_id, Title as title, Body as body, Pinned as pinned, CreatedAt as created_at, UpdatedAt as updated_at FROM notes ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await?;
+
     let backup = BackupData {
         customers,
         projects,
@@ -134,17 +179,20 @@ pub async fn inner_backup_data(pool: &Pool<Sqlite>) -> Result<String, AppError> 
         time_entries,
         todos,
         travel,
+        folders,
+        notes,
     };
     serde_json::to_string(&backup).map_err(|e| AppError::Custom(e.to_string()))
 }
 
 /// Replaces all data with the contents of a JSON backup.
 ///
-/// Deletes everything first (customers cascade via FK; todos and travel are
-/// cleared explicitly), then re-inserts the backup in one transaction.
+/// Deletes everything first (customers cascade via FK; todos, travel, notes and
+/// folders are cleared explicitly), then re-inserts the backup in one transaction.
 pub async fn inner_restore_data(json: &str, pool: &Pool<Sqlite>) -> Result<(), AppError> {
     let data: BackupData = serde_json::from_str(json)
         .map_err(|e| AppError::Custom(format!("Invalid backup JSON: {}", e)))?;
+    check_note_titles(&data.notes)?;
 
     let mut tx = pool.begin().await?;
 
@@ -155,6 +203,8 @@ pub async fn inner_restore_data(json: &str, pool: &Pool<Sqlite>) -> Result<(), A
     // Todos are not reached by the cascade (their issue link is SET NULL).
     sqlx::query("DELETE FROM todos").execute(&mut *tx).await?;
     sqlx::query("DELETE FROM travel").execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM notes").execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM folders").execute(&mut *tx).await?;
 
     for c in &data.customers {
         sqlx::query("INSERT INTO customers (id, Name, UseAsDefault) VALUES (?, ?, ?)")
@@ -197,8 +247,62 @@ pub async fn inner_restore_data(json: &str, pool: &Pool<Sqlite>) -> Result<(), A
     }
     insert_todos(&data.todos, &mut tx).await?;
     insert_travel(&data.travel, &mut tx).await?;
+    insert_folders_and_notes(&data.folders, &data.notes, &mut tx).await?;
 
-    tx.commit().await?;
+    tx.commit().await.map_err(|e| match &e {
+        sqlx::Error::Database(db) if db.is_foreign_key_violation() => {
+            AppError::Custom(INVALID_FOLDER_REF.to_string())
+        }
+        _ => AppError::Database(e),
+    })?;
+    Ok(())
+}
+
+/// Rejects case-insensitive duplicate note titles, folding like the notes commands do
+/// (`to_lowercase`, so non-ASCII too); the NOCASE unique index only folds ASCII.
+fn check_note_titles(notes: &[BackupNote]) -> Result<(), AppError> {
+    let mut seen = std::collections::HashSet::new();
+    if notes.iter().all(|n| seen.insert(n.title.to_lowercase())) {
+        Ok(())
+    } else {
+        Err(AppError::Custom(DUPLICATE_NOTE_TITLE.to_string()))
+    }
+}
+
+/// Inserts folders, then notes. Foreign keys are deferred to commit from here on, so a
+/// child folder may come before its parent; earlier tables keep immediate checks, which
+/// means a commit-time FK failure can only come from folders or notes.
+async fn insert_folders_and_notes(
+    folders: &[BackupFolder],
+    notes: &[BackupNote],
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+) -> Result<(), AppError> {
+    sqlx::query("PRAGMA defer_foreign_keys = ON")
+        .execute(&mut **tx)
+        .await?;
+    for f in folders {
+        sqlx::query("INSERT INTO folders (id, ParentId, Name, Position) VALUES (?, ?, ?, ?)")
+            .bind(f.id)
+            .bind(f.parent_id)
+            .bind(&f.name)
+            .bind(f.position)
+            .execute(&mut **tx)
+            .await?;
+    }
+    for n in notes {
+        sqlx::query(
+            "INSERT INTO notes (id, FolderId, Title, Body, Pinned, CreatedAt, UpdatedAt) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(n.id)
+        .bind(n.folder_id)
+        .bind(&n.title)
+        .bind(&n.body)
+        .bind(n.pinned)
+        .bind(&n.created_at)
+        .bind(&n.updated_at)
+        .execute(&mut **tx)
+        .await?;
+    }
     Ok(())
 }
 
@@ -402,6 +506,130 @@ mod tests {
         );
         assert_eq!((t.km, t.amount), (Some(500.0), Some(1300.0)));
         assert_eq!((result.travel[1].km, result.travel[1].amount), (None, None));
+    }
+
+    async fn seed_notes(pool: &Pool<Sqlite>) {
+        // Child folder 1 has a lower id than its parent 5; note 2 lives in the child.
+        sqlx::raw_sql(
+            "INSERT INTO folders (id, ParentId, Name, Position) VALUES (5, NULL, 'Work', 0);
+             INSERT INTO folders (id, ParentId, Name, Position) VALUES (1, 5, 'Archive 🗄', 3);
+             INSERT INTO notes (id, FolderId, Title, Body, Pinned, CreatedAt, UpdatedAt) VALUES
+               (1, NULL, 'Åsa', '# Hi\r\n\n| a | b |\n|---|---|\ntrailing  \n', 1,
+                '2024-01-01T00:00:00.000', '2024-01-02T00:00:00.000'),
+               (2, 1, 'Plan 🎉', '', 0, '2024-01-03T00:00:00.000', '2024-01-03T00:00:00.000');",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_backup_restore_roundtrips_folders_and_notes() {
+        let pool = crate::test_db().await;
+        seed_test_data(&pool).await;
+        seed_notes(&pool).await;
+        let json = inner_backup_data(&pool).await.expect("backup failed");
+        let original: BackupData = serde_json::from_str(&json).unwrap();
+        assert_eq!(original.folders.len(), 2);
+        assert_eq!(original.notes.len(), 2);
+        assert_eq!(
+            original.notes[0].body,
+            "# Hi\r\n\n| a | b |\n|---|---|\ntrailing  \n"
+        );
+
+        // Diverge, then restore into a fresh DB and over the modified one.
+        sqlx::raw_sql(
+            "DELETE FROM folders WHERE id = 5;
+             UPDATE notes SET Body = 'changed' WHERE id = 1;
+             INSERT INTO notes (Title, CreatedAt, UpdatedAt) VALUES ('Extra', 'x', 'x');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let fresh = crate::test_db().await;
+        for target in [&pool, &fresh] {
+            inner_restore_data(&json, target)
+                .await
+                .expect("restore failed");
+            let result: BackupData =
+                serde_json::from_str(&inner_backup_data(target).await.unwrap()).unwrap();
+            assert_eq!(result.folders, original.folders);
+            assert_eq!(result.notes, original.notes);
+            let exported = serde_json::to_string(&(&result.folders, &result.notes)).unwrap();
+            let expected = serde_json::to_string(&(&original.folders, &original.notes)).unwrap();
+            assert_eq!(exported, expected, "byte-for-byte");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_restore_dangling_folder_reference_is_rejected() {
+        let pool = crate::test_db().await;
+        seed_notes(&pool).await;
+        let dangling_parent = r#"{"customers":[],"projects":[],"issues":[],"time_entries":[],
+            "folders":[{"id":1,"parent_id":99,"name":"Orphan","position":0}],"notes":[]}"#;
+        let dangling_folder = r#"{"customers":[],"projects":[],"issues":[],"time_entries":[],
+            "folders":[],"notes":[{"id":1,"folder_id":7,"title":"N","body":"",
+            "pinned":false,"created_at":"x","updated_at":"x"}]}"#;
+
+        for json in [dangling_parent, dangling_folder] {
+            let err = inner_restore_data(json, &pool).await.unwrap_err();
+            assert_eq!(err.to_string(), INVALID_FOLDER_REF);
+        }
+
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM notes")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count.0, 2, "failed restore must roll back");
+        let fk: (i64,) = sqlx::query_as("PRAGMA defer_foreign_keys")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(fk.0, 0, "deferral must not leak past the transaction");
+    }
+
+    #[tokio::test]
+    async fn test_restore_case_duplicate_note_titles_is_rejected() {
+        let pool = crate::test_db().await;
+        seed_notes(&pool).await;
+        let backup = |a: &str, b: &str| {
+            format!(
+                r#"{{"customers":[],"projects":[],"issues":[],"time_entries":[],"folders":[],"notes":[
+                {{"id":1,"folder_id":null,"title":"{a}","body":"","pinned":false,"created_at":"x","updated_at":"x"}},
+                {{"id":2,"folder_id":null,"title":"{b}","body":"","pinned":false,"created_at":"x","updated_at":"x"}}]}}"#
+            )
+        };
+
+        // ASCII case (the unique index) and non-ASCII case (the app's Rust-side rule).
+        for (a, b) in [("Plan", "plan"), ("Åsa", "åsa")] {
+            let err = inner_restore_data(&backup(a, b), &pool).await.unwrap_err();
+            assert_eq!(err.to_string(), DUPLICATE_NOTE_TITLE, "{a} / {b}");
+        }
+
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM notes")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count.0, 2, "failed restore must roll back");
+    }
+
+    #[tokio::test]
+    async fn test_restore_without_notes_fields_clears_notes() {
+        let pool = crate::test_db().await;
+        seed_notes(&pool).await;
+        let legacy = r#"{"customers":[],"projects":[],"issues":[],"time_entries":[],"todos":[],"travel":[]}"#;
+
+        inner_restore_data(legacy, &pool)
+            .await
+            .expect("legacy backup must restore");
+
+        for table in ["notes", "folders"] {
+            let count: (i64,) = sqlx::query_as(&format!("SELECT COUNT(*) FROM {table}"))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(count.0, 0, "replace clears {table} not in the backup");
+        }
     }
 
     #[tokio::test]

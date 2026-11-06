@@ -2,6 +2,7 @@
 pub mod backup;
 pub mod customers;
 pub mod issues;
+pub mod notes;
 pub mod projects;
 pub mod reports;
 pub mod settings;

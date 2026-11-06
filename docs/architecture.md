@@ -20,6 +20,7 @@ The main user-facing areas are:
 - `/todos` — kanban board of standalone todos (drag cards between status columns), optionally linked to an issue
 - `/reports/weekly` — ISO-week report view
 - `/reports/monthly` — month report view with expandable grouping, the month's travel, and a copy-month text export
+- `/notes` — note list (pinned first, then most recently updated; client-side title/excerpt filter) on the left and a markdown live-preview editor on the right; the selected note lives in the URL (`?id=12`)
 - `/travel` — month-scoped list of business trips (date, from/to, optional km and kr) with inline add, edit, repeat, and delete
 - `/settings` — customer and project management (cards with inline add, rename, default, and delete), preferences (System/Light/Dark appearance), backup/restore, and dev-only seed tooling
 
@@ -38,10 +39,12 @@ The backend is organized around command modules:
 - `issues` and `time_entries` for core timesheet operations
 - `todos` for standalone todos and their optional issue link
 - `travel` for business trips, listed per month
+- `notes` for markdown notes (create, rename, body save, pin, delete) and the list excerpt, which is computed in Rust
 - `reports` for weekly and monthly rollups
 - `backup` for JSON export and import
 - `settings` for app preferences (theme, daily hours target, command palette shortcut and last-used project/issue) stored in `app_settings`
 - `startup_backup` for automatic daily backups on application startup
+- `flush_guard` for the quit/close guard (see Notes editor)
 - `dev_seed` for debug-only sample data
 
 ## Data flow
@@ -67,6 +70,22 @@ Dark mode uses Tailwind's `darkMode: "class"`: a `dark` class on `<html>` activa
 ### Today
 
 Today (`src/routes/+page.svelte`) aggregates in the frontend: it loads the current week's `list_time_entries`, `list_todos` and the daily target, and the pure selection, ordering and totals helpers live in `src/lib/today.ts` (tested in `tests/today.test.mjs`). There are no dedicated list/report commands. Needs attention is non-done todos due today or earlier; In progress is the remaining `in_progress` todos, so no todo appears twice. The week runs Monday–Sunday and the weekly target is 5 × the daily target. The daily target is stored in `app_settings` via `get_daily_target`/`set_daily_target` (default 8, range 0–24, 0 turns the progress UI off, an invalid stored value falls back to 8), edited in Settings › Preferences, and is not part of backups. The page reloads when the palette bumps `changes`.
+
+### Notes editor
+
+The editor is CodeMirror 6 (`@codemirror/*` packages only: no `codemirror` meta-package or basicSetup), hosted by `src/lib/components/NoteEditor.svelte`. The live preview is written in this repo under `src/lib/editor/` rather than taken from a library, because the existing ones are alpha or stale. It hides markdown markers except on the lines touched by the selection and renders GFM tables as a block widget (raw source shows while the cursor is inside the table). Links are styled but not clickable, and images stay as raw markdown. Editor colors are CSS variables in `src/app.css` for light and `.dark`, so a theme change needs no editor reconfigure. Each note keeps its own undo history while the page is open.
+
+Fenced code is highlighted per language via `@codemirror/language-data` (each language is a lazy chunk, loaded on first use; unknown languages stay plain), with code colors scoped to code so they never restyle markdown. Typing `/` at a line start or after whitespace (not in words, URLs or code) opens a snippet menu (`@codemirror/autocomplete`, its only completion source): table, code block, task list, callout and today's date; the pure rules are in `src/lib/slash-menu.ts`.
+
+The title is a separate field above the editor, not derived from a heading, because wikilinks need a stable, unique, user-controlled name. Rename commits on Enter or blur; Esc reverts.
+
+Autosave is a pure queue in `src/lib/note-save-queue.ts` (tested in `tests/note-save-queue.test.mjs`): 800 ms after the last edit, plus a flush on note switch, window blur, the tab becoming hidden and leaving `/notes`. One save per note is in flight at a time and the latest text wins. Unchanged text is never sent. A failed save keeps the note in a page-level dirty set and is retried on every edit and flush; navigating away from `/notes` is blocked until it succeeds. ⌘N on the page creates a note; the palette's "New note" navigates to `/notes?new=1`, which runs the same create path (title focused).
+
+#### Quit/close flush guard
+
+An edit within the debounce window must survive ⌘Q. `src-tauri/src/flush_guard.rs` holds window close and app exit (`WindowEvent::CloseRequested` and `RunEvent::ExitRequested`), emits the `app://flush-request` event, and waits up to 2 s for the frontend to call the `flush_done` command, then closes or exits for real. A flag lets the re-entrant close/exit that Rust triggers itself pass through, so it does not loop. On the frontend, the root layout always listens for the event and runs the handlers pages registered with `registerFlushHandler` (`src/lib/flush-guard.ts`; `/notes` registers one that flushes all dirty notes), then calls `flush_done`. With no handler it replies immediately. No capability change was needed.
+
+On macOS the native app-menu Quit item sends `terminate:`, which tao turns into an unpreventable exit that skips `ExitRequested`. At startup `install_quit_menu` therefore replaces it with a custom "Quit" item (id `app-quit`, accelerator `CmdOrCtrl+Q`) that calls `AppHandle::exit`, which does go through the guard. It only applies when the default menu's app submenu ends in a Quit item; otherwise it logs a warning and keeps the native menu. The guard is unit-tested for its state machine only; it has not been verified in the real Tauri shell.
 
 The frontend keeps TypeScript interfaces in `src/lib/types.ts` aligned with the Rust response shapes so route components can work with typed command results.
 
@@ -98,6 +117,8 @@ The schema is created on startup if it does not exist. The main tables are:
 - `time_entries`
 - `todos`
 - `travel`
+- `notes`
+- `folders` (schema only; no commands or UI yet)
 
 Foreign keys are enabled, and cascading deletes are used to keep related records consistent.
 

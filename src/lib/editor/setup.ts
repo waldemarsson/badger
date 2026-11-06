@@ -1,0 +1,40 @@
+// The note editor's extensions: markdown (GFM), history, keys, live preview, `/` menu and theme.
+// No basicSetup: only what a notes editor needs.
+import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
+import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
+import { languages } from '@codemirror/language-data';
+import { EditorState, type Extension } from '@codemirror/state';
+import { drawSelection, EditorView, keymap, placeholder } from '@codemirror/view';
+import { blockPreview } from '#lib/editor/blocks.js';
+import { focusTracking } from '#lib/editor/focus.js';
+import { livePreview } from '#lib/editor/live-preview.js';
+import { slashMenu } from '#lib/editor/slash.js';
+import { noteTheme } from '#lib/editor/theme.js';
+
+/** Extensions shared by every note's state; `onDocChange` gets the new body after each edit. */
+export function noteExtensions(onDocChange: (body: string) => void): Extension[] {
+	return [
+		history(),
+		drawSelection(),
+		EditorView.lineWrapping,
+		// markdown() also installs markdownKeymap: list continuation, empty item exits.
+		// Fenced code is parsed with its language, loaded on first use (one chunk each).
+		// No HTML tag completion: the `/` menu is the only completion source.
+		markdown({ base: markdownLanguage, codeLanguages: languages, completeHTMLTags: false }),
+		keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
+		EditorView.contentAttributes.of({ spellcheck: 'true', autocorrect: 'off', autocapitalize: 'off' }),
+		placeholder('Start writing…'),
+		focusTracking,
+		livePreview,
+		blockPreview,
+		slashMenu,
+		noteTheme,
+		EditorView.updateListener.of((update) => {
+			if (update.docChanged) onDocChange(update.state.doc.toString());
+		})
+	];
+}
+
+export function createNoteState(body: string, extensions: Extension[]): EditorState {
+	return EditorState.create({ doc: body, extensions });
+}

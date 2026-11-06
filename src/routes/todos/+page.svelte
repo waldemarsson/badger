@@ -225,9 +225,7 @@ void load();
 <div class="page-view">
 
 <section class="page-hero">
-<p class="page-hero-kicker">TimeTracker</p>
 <h1 class="page-hero-title">Todos</h1>
-<p class="page-hero-copy">Drag cards between columns to update their status. Click a card to edit it.</p>
 </section>
 
 {#if error}

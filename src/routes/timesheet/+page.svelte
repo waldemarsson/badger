@@ -314,12 +314,12 @@ dateFilter === 'single_day'
 
 <!-- Hero band -->
 <section class="page-hero">
-<p class="page-hero-kicker">TimeTracker</p>
 <h1 class="page-hero-title">Timesheet</h1>
-<p class="page-hero-copy">Track and review your time entries.</p>
-<div class="hero-stat mt-4">
+<div class="hero-stats">
+<div class="hero-stat">
 <span class="hero-stat-label">{totalLabel}</span>
-<div class="hero-stat-value">{formatHours(totalHours)} hrs</div>
+<span class="hero-stat-value">{formatHours(totalHours)} <span class="hero-stat-muted">h</span></span>
+</div>
 </div>
 </section>
 

@@ -356,7 +356,6 @@
   <div class="page-view">
 
     <section class="page-hero">
-      <p class="page-hero-kicker">TimeTracker</p>
       <h1 class="page-hero-title">Settings</h1>
     </section>
 

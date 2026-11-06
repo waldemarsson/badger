@@ -199,21 +199,19 @@
 <div class="page-shell">
 	<div class="page-view">
 		<section class="page-hero">
-			<p class="page-hero-kicker">TimeTracker</p>
 			<h1 class="page-hero-title">Travel</h1>
-			<p class="page-hero-copy">Log business trips by month.</p>
-			<div class="mt-4 flex flex-wrap gap-3">
+			<div class="hero-stats">
 				<div class="hero-stat">
 					<span class="hero-stat-label">Trips in {MONTH_NAMES[month - 1]}</span>
-					<div class="hero-stat-value">{trips.length}</div>
+					<span class="hero-stat-value">{trips.length}</span>
 				</div>
 				<div class="hero-stat">
 					<span class="hero-stat-label">Distance</span>
-					<div class="hero-stat-value">{formatNumber(totals.km)} km</div>
+					<span class="hero-stat-value">{formatNumber(totals.km)} <span class="hero-stat-muted">km</span></span>
 				</div>
 				<div class="hero-stat">
 					<span class="hero-stat-label">Amount</span>
-					<div class="hero-stat-value">{formatNumber(totals.amount)} kr</div>
+					<span class="hero-stat-value">{formatNumber(totals.amount)} <span class="hero-stat-muted">kr</span></span>
 				</div>
 			</div>
 		</section>

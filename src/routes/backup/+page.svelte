@@ -5,9 +5,7 @@
 <div class="page-shell">
   <div class="page-view">
     <section class="page-hero">
-      <p class="page-hero-kicker">TimeTracker</p>
       <h1 class="page-hero-title">Backup & Restore</h1>
-      <p class="page-hero-copy">Export and import your data</p>
     </section>
 
     <section class="panel-card">

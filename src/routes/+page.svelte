@@ -82,8 +82,6 @@
 	const active = $derived(inProgress(todos, todayIso));
 	const logged = $derived(todayEntries(entries, todayIso));
 	const loggedHours = $derived(sumHours(logged));
-	const overdueCount = $derived(attention.filter((t) => (t.due_date ?? '') < todayIso).length);
-	const dueTodayCount = $derived(attention.length - overdueCount);
 
 	const dateHeading = $derived.by(() => {
 		const [y, m, d] = todayIso.split('-').map(Number);
@@ -279,21 +277,7 @@
 <div class="page-shell">
 	<div class="page-view">
 		<section class="page-hero">
-			<p class="page-hero-kicker">TimeTracker</p>
-			<h1 class="page-hero-title">Today</h1>
-			<p class="page-hero-copy">
-				{dateHeading}
-				{#if loaded}
-					<span class="text-slate-500 dark:text-neutral-500">·</span>
-					{#if overdueCount === 0 && dueTodayCount === 0}
-						<span class="text-slate-400 dark:text-neutral-400">Nothing due</span>
-					{:else}
-						<span class={overdueCount ? 'font-medium text-red-300 dark:text-red-400' : 'text-slate-400 dark:text-neutral-400'}>{overdueCount} overdue</span>
-						<span class="text-slate-500 dark:text-neutral-500">·</span>
-						<span class={dueTodayCount ? 'font-medium text-amber-300 dark:text-amber-400' : 'text-slate-400 dark:text-neutral-400'}>{dueTodayCount} due today</span>
-					{/if}
-				{/if}
-			</p>
+			<h1 class="page-hero-title">Today <span class="page-hero-subtitle">{dateHeading}</span></h1>
 		</section>
 
 		{#if loadError}

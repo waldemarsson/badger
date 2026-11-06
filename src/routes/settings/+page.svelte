@@ -11,12 +11,15 @@
   import { save, open } from '@tauri-apps/plugin-dialog';
   import type { ThemeMode } from '#lib/theme.js';
   import { applyTheme, theme } from '#lib/theme-state.svelte.js';
+  import { DEFAULT_SHORTCUT, formatShortcut, shortcutFromEvent, validateShortcut } from '#lib/palette.js';
+  import { palette } from '#lib/palette-state.svelte.js';
 
   type Tab = 'customers' | 'preferences' | 'backup' | 'dev';
   let activeTab = $state<Tab>('customers');
 
   onMount(() => {
     void loadStartupBackupSettings();
+    return () => (palette.recording = false);
   });
 
   // ── Appearance ────────────────────────────────────────────────────────────────
@@ -39,6 +42,50 @@
       applyTheme(previous);
       themeError = String(e);
     }
+  }
+
+  // ── Command palette shortcut ──────────────────────────────────────────────────
+  let shortcutError = $state('');
+
+  // WebKit does not focus buttons on click, so focus explicitly to receive keydown.
+  function startRecording(e: MouseEvent & { currentTarget: HTMLButtonElement }) {
+    shortcutError = '';
+    palette.recording = true;
+    e.currentTarget.focus();
+  }
+
+  function stopRecording() {
+    palette.recording = false;
+  }
+
+  async function saveShortcut(shortcut: string) {
+    try {
+      palette.shortcut = await invoke<string>('set_palette_shortcut', { shortcut });
+      shortcutError = '';
+    } catch (e) {
+      shortcutError = String(e);
+    }
+  }
+
+  async function onRecorderKeydown(e: KeyboardEvent) {
+    if (!palette.recording) return;
+    if (e.key === 'Tab') return stopRecording();
+    e.preventDefault();
+    e.stopPropagation();
+    const noModifiers = !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey;
+    if (e.key === 'Escape' && noModifiers) {
+      shortcutError = '';
+      return stopRecording();
+    }
+    const shortcut = shortcutFromEvent(e);
+    if (!shortcut) return; // modifier still being held
+    const problem = validateShortcut(shortcut);
+    if (problem) {
+      shortcutError = problem;
+      return;
+    }
+    stopRecording();
+    await saveShortcut(shortcut);
   }
 
   // ── Backup state ──────────────────────────────────────────────────────────────
@@ -318,6 +365,39 @@
 
         {#if themeError}
           <p class="form-error">{themeError}</p>
+        {/if}
+      </section>
+
+      <section class="panel-card mt-4 space-y-4">
+        <div>
+          <h2 class="panel-title">Command palette</h2>
+          <p class="panel-copy">Opens quick add and navigation from anywhere in the app. Needs ⌘, ⌃ or ⌥.</p>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            class="inline-flex min-w-[9rem] items-center justify-center rounded-lg px-4 py-2 font-mono text-sm font-medium ring-1 transition {palette.recording
+              ? 'bg-sky-50 text-sky-700 ring-2 ring-sky-400 dark:bg-sky-500/10 dark:text-sky-300 dark:ring-sky-400'
+              : 'bg-white text-slate-800 ring-slate-200 hover:ring-slate-300 dark:bg-neutral-800 dark:text-neutral-100 dark:ring-neutral-700 dark:hover:ring-neutral-600'}"
+            aria-label="Command palette shortcut — click, then press the new combination"
+            onclick={startRecording}
+            onkeydown={onRecorderKeydown}
+            onblur={stopRecording}
+          >
+            {palette.recording ? 'Press shortcut…' : formatShortcut(palette.shortcut)}
+          </button>
+          {#if palette.recording}
+            <span class="text-xs text-slate-500 dark:text-neutral-400">Esc to cancel</span>
+          {:else if palette.shortcut !== DEFAULT_SHORTCUT}
+            <button type="button" class="btn-secondary-sm" onclick={() => saveShortcut(DEFAULT_SHORTCUT)}>
+              Reset to {formatShortcut(DEFAULT_SHORTCUT)}
+            </button>
+          {/if}
+        </div>
+
+        {#if shortcutError}
+          <p class="form-error">{shortcutError}</p>
         {/if}
       </section>
 

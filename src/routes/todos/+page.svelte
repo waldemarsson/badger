@@ -6,6 +6,7 @@ import { fade } from 'svelte/transition';
 import type { TodoRow, TodoStatus } from '#lib/types.js';
 import { COLUMNS, columnCards, dueState, formatDue } from '#lib/todos.js';
 import TodoModal from '#lib/components/TodoModal.svelte';
+import { changes } from '#lib/palette-state.svelte.js';
 import Plus from 'lucide-svelte/icons/plus';
 import X from 'lucide-svelte/icons/x';
 import CalendarDays from 'lucide-svelte/icons/calendar-days';
@@ -182,6 +183,14 @@ node.focus();
 onMount(() => {
 load();
 return cancelDrag;
+});
+
+// Reload when the command palette adds a todo.
+let seenTodoChanges = changes.todos;
+$effect(() => {
+if (changes.todos === seenTodoChanges) return;
+seenTodoChanges = changes.todos;
+void load();
 });
 </script>
 

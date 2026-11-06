@@ -98,3 +98,10 @@ export interface TravelRow {
 	km: number | null;
 	amount: number | null;
 }
+
+/** Command palette preferences (get_palette_settings). Ids may reference deleted rows. */
+export interface PaletteSettings {
+	shortcut: string; // e.g. "Meta+K" — see src/lib/palette.ts
+	last_project_id: number | null;
+	last_issue_id: number | null;
+}

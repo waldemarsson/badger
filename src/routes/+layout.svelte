@@ -1,11 +1,17 @@
 <script lang="ts">
   import "../app.css";
+  import { goto } from '$app/navigation';
   import { resolve } from '$app/paths';
   import { page } from '$app/state';
   import { invoke } from '@tauri-apps/api/core';
   import { onMount } from 'svelte';
   import { toThemeMode } from '#lib/theme.js';
   import { applyTheme, theme } from '#lib/theme-state.svelte.js';
+  import { normalizeShortcut } from '#lib/palette.js';
+  import { palette } from '#lib/palette-state.svelte.js';
+  import type { PaletteSettings } from '#lib/types.js';
+  import CommandPalette from '#lib/components/CommandPalette.svelte';
+  import Toast from '#lib/components/Toast.svelte';
 
   let { children } = $props();
 
@@ -24,7 +30,14 @@
     invoke<string>('get_theme')
       .then((mode) => applyTheme(toThemeMode(mode)))
       .catch(() => {});
+    invoke<PaletteSettings>('get_palette_settings')
+      .then((s) => (palette.shortcut = normalizeShortcut(s.shortcut)))
+      .catch(() => {});
   });
+
+  function navigate(href: (typeof navLinks)[number]['href']) {
+    void goto(resolve(href));
+  }
 </script>
 
 <nav class="border-b border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900">
@@ -43,3 +56,6 @@
 </nav>
 
 {@render children()}
+
+<CommandPalette pages={navLinks} {navigate} />
+<Toast />

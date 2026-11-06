@@ -9,7 +9,7 @@
   }
 
   body {
-    @apply m-0 min-h-screen bg-slate-50 font-sans text-slate-950 antialiased dark:bg-neutral-950 dark:text-neutral-100;
+    @apply m-0 min-h-screen bg-white font-sans text-slate-950 antialiased dark:bg-neutral-900 dark:text-neutral-100;
   }
 
   h1,
@@ -298,7 +298,7 @@
 
   /* Flat layout: content sits on the page, separated by dividers instead of card chrome. */
   .table-card {
-    @apply -mx-3 sm:-mx-4 lg:-mx-6;
+    @apply w-full;
   }
 
   .table-scroll-region {
@@ -312,7 +312,7 @@
   }
 
   .table-toolbar {
-    @apply border-b border-slate-200 px-3 pb-3 sm:px-4 lg:px-6 dark:border-neutral-800;
+    @apply border-b border-slate-200 px-3 pb-3 dark:border-neutral-800;
   }
 
   .table-title {
@@ -325,15 +325,6 @@
 
   .table-head {
     @apply border-b border-slate-200 dark:border-neutral-800;
-  }
-
-  /* Outer cells align with the page gutter now that the table spans the full width. */
-  .table-card .table-base tr > :first-child {
-    @apply sm:pl-4 lg:pl-6;
-  }
-
-  .table-card .table-base tr > :last-child {
-    @apply sm:pr-4 lg:pr-6;
   }
 
   .table-heading {
@@ -522,7 +513,7 @@
 
   /* Today page */
   .today-bar-track {
-    @apply h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-neutral-800;
+    @apply h-2 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-neutral-800;
   }
 
   .today-bar-fill {

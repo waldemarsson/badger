@@ -9,31 +9,31 @@ pub const RRF_K: f64 = 60.0;
 pub const DEPTH: usize = 50;
 /// The semantic leg needs a query (tags removed) at least this long.
 pub const MIN_SEMANTIC_CHARS: usize = 4;
-/// Per-query similarity cut for semantic hits, applied to each note's best chunk. e5 scores
-/// sit in a narrow band (about 0.74–0.85) that shifts with the query, so no single cosine
-/// value separates relevant notes from noise. Instead a note must beat the typical note
-/// for this query: score ≥ max(`ABSOLUTE_FLOOR`, median best-chunk score over all indexed
-/// notes + `MARGIN`). The median is taken before tag filtering and the depth cut. Calibrated
-/// with the real model in `real_model_tests` (synthetic Swedish/English notes chunked by the
-/// app's chunker plus off-topic queries; see the brief's Spike line).
+/// Per-query similarity cut for semantic hits, applied to each note's best chunk. Granite
+/// scores sit in a narrow band (about 0.72–0.91) that shifts with the query, so no single
+/// cosine value separates relevant notes from noise. Instead a note must beat the typical
+/// note for this query: score ≥ max(`ABSOLUTE_FLOOR`, median best-chunk score over all
+/// indexed notes + `MARGIN`). The median is taken before tag filtering and the depth cut.
+/// Calibrated with the real model in `real_model_tests` (synthetic Swedish/English notes
+/// chunked by the app's chunker plus off-topic queries).
 ///
-/// On 400 synthetic notes, 0.045 keeps a relevant note for 82.5% of topic queries (as many as
-/// the fixed 0.81) with precision 0.84 (0.68 fixed) and 0.49% of unrelated pairs (1.45%
-/// fixed), but 60% of off-topic queries still return a note (3.35 on average; 30% / 0.65
-/// fixed). e5 scores are compressed and no rule tried (fixed, median + margin, MAD, sd,
-/// percentile, top-N) separates cleanly; this one favours not missing real matches, which
-/// is the cheaper error here: semantic-only hits are labelled Related and fused by RRF with
-/// ties going to keyword hits.
-pub const MARGIN: f32 = 0.045;
+/// On 400 synthetic notes, 0.05 keeps a relevant note for 95% of topic queries with
+/// precision 0.77 and 1.5% of unrelated pairs, but 70% of off-topic queries still return a
+/// note (0.06: 90%, precision 0.89, 55% off-topic). On the dev seed's 16 sample notes
+/// relevant notes sit +0.052–0.14 above the median and off-topic noise at most +0.028, so
+/// 0.06 would drop real matches there. No rule separates cleanly; this one favours not
+/// missing real matches, which is the cheaper error here: semantic-only hits are labelled
+/// Related and fused by RRF with ties going to keyword hits.
+pub const MARGIN: f32 = 0.05;
 /// Safety floor under the relative rule: below this a note never counts as related, however
-/// low the median is for the query.
+/// low the median is for the query (per-query medians were 0.74–0.81, so it rarely binds).
 pub const ABSOLUTE_FLOOR: f32 = 0.76;
 /// With fewer indexed notes than this the median says little about the query, so
 /// `FIXED_FLOOR` applies instead of the relative rule.
 pub const MIN_NOTES_FOR_RELATIVE: usize = 8;
-/// Fixed cosine floor for small indexes (the earlier global floor: ~1.5% of unrelated notes
-/// passed on the synthetic corpus).
-pub const FIXED_FLOOR: f32 = 0.81;
+/// Fixed cosine floor for small indexes (~1.5% of unrelated notes passed on the synthetic
+/// corpus).
+pub const FIXED_FLOOR: f32 = 0.8375;
 
 /// The minimum best-chunk score for a semantic hit, given every indexed note's best-chunk
 /// score for the query (any order).

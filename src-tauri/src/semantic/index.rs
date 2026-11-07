@@ -15,7 +15,7 @@ use super::{CachedChunk, SemanticState};
 
 /// Chunks per inference call. One: the int8 model's vectors depend on their batch-mates
 /// (see `OrtEmbedder`), and the inference lock is released between calls, so a query
-/// waits for at most one chunk (~350 ms for e5-base int8 on a 2-vCPU x86 host).
+/// waits for at most one chunk (~350 ms for the int8 model on a 2-vCPU x86 host).
 pub const BATCH: usize = 1;
 /// Bump when chunking, prefixes or how inputs are run change: every note's hash changes,
 /// so all re-embed. 2: one input per inference run (vectors made in batches differ).
@@ -386,10 +386,7 @@ pub(crate) mod tests {
             rows(&pool).await,
             vec![(id, 0, "fake-1".into(), "Plan the budget for 2027.".into())]
         );
-        assert_eq!(
-            fake.embedded(),
-            vec!["passage: Budget\n\nPlan the budget for 2027."]
-        );
+        assert_eq!(fake.embedded(), vec!["Budget\n\nPlan the budget for 2027."]);
         assert_eq!(state.indexed_notes(), 1);
 
         // Unchanged: skipped.
@@ -412,10 +409,7 @@ pub(crate) mod tests {
             .unwrap();
         state.enqueue([id]);
         state.drain(&pool).await;
-        assert_eq!(
-            fake.embedded().last().unwrap(),
-            "passage: Budget 2027\n\nNew text"
-        );
+        assert_eq!(fake.embedded().last().unwrap(), "Budget 2027\n\nNew text");
         assert_eq!(state.progress(), (0, 0));
     }
 
@@ -524,10 +518,7 @@ pub(crate) mod tests {
         state.drain(&pool).await;
         assert_eq!(
             fake.embedded(),
-            vec![
-                "passage: Untitled",
-                "passage: Möte 🚀\n\nÅsa räknar på äpplen ✅"
-            ]
+            vec!["Untitled", "Möte 🚀\n\nÅsa räknar på äpplen ✅"]
         );
     }
 

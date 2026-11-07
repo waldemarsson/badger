@@ -80,7 +80,7 @@ The retention setting can be configured in the Settings > Backup & Restore tab. 
 `src-tauri/Cargo.toml` adds, for semantic search:
 
 - `ort` (pinned with `=`, default features off: `std`, `download-binaries`, `tls-rustls`, `api-22`) — ONNX Runtime bindings. **The `ort` build script downloads a prebuilt ONNX Runtime from `cdn.pyke.io` at build time**, so the first build, or any build with an empty `target/`, needs network access. The archive is checked against a SHA-256 shipped in `ort-sys` and unpacked to `~/Library/Caches/ort.pyke.io` (macOS) or `~/.cache/ort.pyke.io` (Linux); later builds reuse it, and release CI caches that directory. On the Linux dev host it is linked statically (no dylib to sign). On `aarch64-apple-darwin` (the release target) `ort` resolves its CoreML prebuilt (the session still runs on the CPU only); a local macOS build was checked by hand on 2026-11-07. That prebuilt targets macOS 13.4, so `tauri.conf.json` sets `minimumSystemVersion` to `13.4`, and its CoreML objects need `__isPlatformVersionAtLeast` from clang's runtime (`libclang_rt.osx.a`), which rustc does not link by default; `src-tauri/build.rs` links it on macOS targets (the release build failed without it once release LTO was on). The `=` pin is deliberate: `ort` 2.0 is still a release candidate, and Cargo's semver rules don't protect pre-releases, so `^2.0.0-rc.15` could pull a later rc with breaking API changes; bump it by hand
-- `tokenizers` (default features off, `fancy-regex`) — the e5 tokenizer, pure Rust
+- `tokenizers` (default features off, `fancy-regex`) — the model's tokenizer, pure Rust
 - `reqwest` (default features off, `rustls`) — the opt-in model download; GET only
 - `sha2` — verifies the downloaded files
 

@@ -1,4 +1,4 @@
-//! Text embedding: the `Embedder` trait, the e5 ONNX implementation (ONNX Runtime via
+//! Text embedding: the `Embedder` trait, the Granite ONNX implementation (ONNX Runtime via
 //! `ort`) and a deterministic fake for tests.
 //!
 //! Release builds use `panic = "abort"`, so nothing on the tokenizer or inference path
@@ -12,10 +12,8 @@ use ort::session::builder::{AutoDevicePolicy, GraphOptimizationLevel};
 use ort::session::{Session, SessionInputValue};
 use ort::value::Tensor;
 
-/// e5 models expect these prefixes; without them retrieval quality drops.
-pub const QUERY_PREFIX: &str = "query: ";
-pub const PASSAGE_PREFIX: &str = "passage: ";
-/// The model's position limit; longer inputs are truncated before inference.
+/// Inputs are truncated to this many tokens before inference. Granite accepts 32k, but
+/// chunks are ~200 tokens and a longer query only costs time.
 pub const MAX_TOKENS: usize = 512;
 /// Inference threads: enough to be quick, few enough to leave the app responsive.
 const MAX_THREADS: usize = 4;
@@ -24,19 +22,23 @@ const MAX_THREADS: usize = 4;
 pub trait Embedder: Send + Sync {
     /// Identifies the model (and format) that made a vector; stored with each row.
     fn model_id(&self) -> &str;
-    /// Embeds each text (already prefixed with `QUERY_PREFIX`/`PASSAGE_PREFIX`). A text's
+    /// Embeds each text (already passed through `query_text`/`passage_text`). A text's
     /// vector must not depend on the other texts in the call.
     fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, String>;
     /// Number of tokens `text` takes, without special tokens.
     fn count_tokens(&self, text: &str) -> usize;
 }
 
+/// The model input for a search query. Granite R2 is trained without query or passage
+/// prompts, so this (and `passage_text`) is the text itself; it is where a model's
+/// prompt would go.
 pub fn query_text(query: &str) -> String {
-    format!("{QUERY_PREFIX}{query}")
+    query.to_string()
 }
 
+/// The model input for a note chunk (see `query_text`).
 pub fn passage_text(passage: &str) -> String {
-    format!("{PASSAGE_PREFIX}{passage}")
+    passage.to_string()
 }
 
 /// Scales `v` to unit length (a zero vector stays zero).
@@ -51,23 +53,14 @@ pub fn dot(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
-/// Mean of the token vectors where `mask` is set, then L2-normalised. `hidden` is the
-/// flat `[batch, seq, dim]` output.
-fn mean_pool(hidden: &[f32], mask: &[i64], batch: usize, seq: usize, dim: usize) -> Vec<Vec<f32>> {
+/// The first (CLS) token's vector of each input, L2-normalised. `hidden` is the flat
+/// `[batch, seq, dim]` output.
+fn cls_pool(hidden: &[f32], batch: usize, seq: usize, dim: usize) -> Vec<Vec<f32>> {
     (0..batch)
         .map(|b| {
-            let mut sum = vec![0f32; dim];
-            let mut count = 0f32;
-            for s in (0..seq).filter(|s| mask[b * seq + s] != 0) {
-                count += 1.0;
-                let row = &hidden[(b * seq + s) * dim..(b * seq + s + 1) * dim];
-                sum.iter_mut().zip(row).for_each(|(acc, x)| *acc += x);
-            }
-            if count > 0.0 {
-                sum.iter_mut().for_each(|x| *x /= count);
-            }
-            l2_normalize(&mut sum);
-            sum
+            let mut v = hidden[b * seq * dim..(b * seq + 1) * dim].to_vec();
+            l2_normalize(&mut v);
+            v
         })
         .collect()
 }
@@ -87,8 +80,8 @@ fn environment() -> ort::Result<ort::environment::Environment> {
     Ok(env)
 }
 
-/// The e5 encoder in ONNX Runtime with its Hugging Face tokenizer: mean pooling over the
-/// attention mask, then L2 normalisation.
+/// The Granite (ModernBERT) encoder in ONNX Runtime with its Hugging Face tokenizer: CLS
+/// pooling, then L2 normalisation.
 ///
 /// Each text gets its own inference run, even when `embed` is given several. The int8
 /// export quantises activations dynamically (`DynamicQuantizeLinear`, one scale per run),
@@ -196,7 +189,7 @@ impl OrtEmbedder {
         {
             return Err(format!("unexpected output shape {dims:?}"));
         }
-        mean_pool(hidden, &mask, batch, seq, dims[2])
+        cls_pool(hidden, batch, seq, dims[2])
             .pop()
             .ok_or_else(|| "model returned no vector".to_string())
     }
@@ -250,10 +243,6 @@ impl FakeEmbedder {
     }
 
     pub fn vector(text: &str) -> Vec<f32> {
-        let text = text
-            .strip_prefix(QUERY_PREFIX)
-            .or_else(|| text.strip_prefix(PASSAGE_PREFIX))
-            .unwrap_or(text);
         let mut v = vec![0f32; Self::DIM];
         for word in text
             .split(|c: char| !c.is_alphanumeric())
@@ -315,19 +304,17 @@ mod tests {
     }
 
     #[test]
-    fn mean_pool_averages_masked_tokens_then_normalises() {
-        // batch 2, seq 2, dim 2; the second row's second token is padding.
-        let hidden = [1.0, 0.0, 0.0, 1.0, 3.0, 4.0, 100.0, 100.0];
-        let v = mean_pool(&hidden, &[1, 1, 1, 0], 2, 2, 2);
-        let h = std::f32::consts::FRAC_1_SQRT_2;
-        assert!((v[0][0] - h).abs() < 1e-6 && (v[0][1] - h).abs() < 1e-6);
-        assert!((v[1][0] - 0.6).abs() < 1e-6 && (v[1][1] - 0.8).abs() < 1e-6);
+    fn cls_pool_takes_each_first_token_then_normalises() {
+        // batch 2, seq 2, dim 2: only the first token of each input counts.
+        let hidden = [3.0, 4.0, 100.0, 0.0, 0.0, 2.0, 0.0, 100.0];
+        let v = cls_pool(&hidden, 2, 2, 2);
+        assert_eq!(v, vec![vec![0.6, 0.8], vec![0.0, 1.0]]);
     }
 
     #[test]
-    fn prefixes_follow_e5_convention() {
-        assert_eq!(query_text("hej"), "query: hej");
-        assert_eq!(passage_text("hej"), "passage: hej");
+    fn inputs_take_no_prompt() {
+        assert_eq!(query_text("hej"), "hej");
+        assert_eq!(passage_text("hej"), "hej");
     }
 
     #[test]

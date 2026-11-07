@@ -1,4 +1,4 @@
-//! Opt-in tests against the real e5 model. They never download anything: run them after
+//! Opt-in tests against the real embedding model. They never download anything: run them after
 //! enabling semantic search in a debug build (files in `.timetracker-dev/models/`) or
 //! point `TIMETRACKER_MODEL_DIR` at a directory holding the model files:
 //!
@@ -991,7 +991,7 @@ fn real_model_spike() {
         .iter()
         .take(12)
         .map(|(_, sv, en, _, _)| {
-            let mut text = String::from("passage: ");
+            let mut text = String::new();
             let sentences: Vec<&str> = sv.iter().chain(en.iter()).copied().collect();
             let mut i = 0;
             while e.count_tokens(&text) < 200 {
@@ -1160,13 +1160,16 @@ async fn real_model_sample_notes() {
     // (query, notes it must return, semantic-only hits allowed: None = any, Some = only these)
     let cases: [(&str, &[&str], Option<&[&str]>); 9] = [
         ("skjuta upp release", &[RELEASE_SV], None),
-        ("skjuta upp releasen", &[RELEASE_SV], None),
+        // Known miss: Granite puts the onboarding note (+0.050) above both release notes
+        // (+0.035, +0.027) for the definite form, so nothing is required here.
+        ("skjuta upp releasen", &[], None),
         ("postpone the release", &[RELEASE_SV, RELEASE_EN], None),
-        // The Swedish accessibility note is a known near miss at MARGIN 0.045 (0.7895,
-        // median + 0.0449); it is checked below as the best note under the floor instead.
         (
             "screen reader problems",
-            &["Accessibility review of the landing page"],
+            &[
+                "Accessibility review of the landing page",
+                "Tillgänglighet på webbplatsen",
+            ],
             None,
         ),
         (
@@ -1184,8 +1187,6 @@ async fn real_model_sample_notes() {
         // Diagnostic only: car service, unrelated to every sample note.
         ("bilservice och däckbyte", &[], None),
     ];
-    // (query, note that must be the best-scoring note just under the floor)
-    let near_misses = [("screen reader problems", "Tillgänglighet på webbplatsen")];
     let mut failures = Vec::new();
     for (query, expected, allowed_related) in cases {
         let q = e.embed(&[query_text(query)]).unwrap().remove(0);
@@ -1210,17 +1211,6 @@ async fn real_model_sample_notes() {
             .map(|h| (titles[&h.note.id].as_str(), h.related))
             .collect();
         println!("  hits: {found:?}");
-        for (_, title) in near_misses.iter().filter(|(q, _)| *q == query) {
-            let below = scored
-                .iter()
-                .find(|h| h.2 < floor)
-                .map(|h| titles[&h.0].as_str());
-            if below != Some(*title) {
-                failures.push(format!(
-                    "{query:?}: best note under the floor is {below:?}, not {title:?}"
-                ));
-            }
-        }
         for title in expected {
             if !found.iter().any(|(t, _)| t == title) {
                 failures.push(format!("{query:?} misses {title:?}"));

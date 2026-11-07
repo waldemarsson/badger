@@ -2366,7 +2366,7 @@ mod tests {
         for _ in 0..5 {
             concept_note(0, 1, &pool).await; // 0.0
         }
-        let a = concept_note(3, 2, &pool).await; // 0.832
+        let a = concept_note(2, 1, &pool).await; // 0.894
         let b = concept_note(4, 3, &pool).await; // 0.800
         let state = semantic_ready(&pool).await;
         assert_eq!(hybrid("kostnad", &state, &pool).await, vec![(a, true)]);
@@ -2387,12 +2387,12 @@ mod tests {
         for _ in 0..7 {
             concept_note(2, 1, &pool).await; // 0.894, untagged
         }
-        concept_note_with(3, 2, " #work", &pool).await; // 0.832, under median + margin
+        concept_note_with(5, 2, " #work", &pool).await; // 0.928, under median + margin
         let top = concept_note_with(1, 0, " #work", &pool).await; // 1.0
         let state = semantic_ready(&pool).await;
         // Over the two tagged notes alone the fixed floor would keep both; over all nine
         // the median is 0.894, so only the top note passes.
-        assert!(0.832 > FIXED_FLOOR && 0.8944 + MARGIN > 0.833);
+        assert!(0.928 > FIXED_FLOOR && 0.8944 + MARGIN > 0.929);
         assert_eq!(
             hybrid("#work kostnad", &state, &pool).await,
             vec![(top, true)]

@@ -48,11 +48,11 @@ Installed and other non-debug builds:
 
 ## Semantic search model files
 
-Enabling semantic search downloads the embedding model (about 300 MB) into a `models/<model-id>/` directory beside the database:
+Enabling semantic search downloads the embedding model (about 350 MB) into a `models/<model-id>/` directory beside the database:
 
 ```text
-.timetracker-dev/models/multilingual-e5-base-int8/    (debug builds)
-~/.timetracker/models/multilingual-e5-base-int8/      (non-debug builds)
+.timetracker-dev/models/granite-embedding-311m-multilingual-r2-int8/    (debug builds)
+~/.timetracker/models/granite-embedding-311m-multilingual-r2-int8/      (non-debug builds)
 ```
 
 The files are not part of backups. The `semantic_search_enabled` setting in `app_settings` is `true` only after the download is verified; like other settings it is not in backups either, so a restored database keeps this machine's value. Downloads stream to `<file>.part` and are renamed only after the SHA-256 matches; stale `.part` files are deleted at startup. Remove model deletes the files and all vectors and turns the setting off. If the setting is on but the files are gone, the Settings section shows an error with a Download button.

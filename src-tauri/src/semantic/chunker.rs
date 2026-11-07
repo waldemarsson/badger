@@ -17,7 +17,7 @@ const PATH_SEPARATOR: &str = " › ";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Chunk {
-    /// Model input (without the e5 `passage: ` prefix): title, heading path, body.
+    /// Model input (before `passage_text`): title, heading path, body.
     pub input: String,
     /// The body text alone: the semantic snippet. Empty for a title-only chunk.
     pub text: String,

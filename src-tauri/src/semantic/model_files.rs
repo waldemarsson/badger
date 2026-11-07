@@ -11,12 +11,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::io::AsyncWriteExt;
 
 /// Recorded with every vector; a change re-embeds all notes.
-pub const MODEL_ID: &str = "multilingual-e5-base-int8";
-pub const MODEL_NAME: &str = "multilingual-e5-base (int8)";
+pub const MODEL_ID: &str = "granite-embedding-311m-multilingual-r2-int8";
+pub const MODEL_NAME: &str = "granite-embedding-311m-multilingual-r2 (int8)";
 pub const MODEL_FILE: &str = "model_quantized.onnx";
 pub const TOKENIZER_FILE: &str = "tokenizer.json";
-const REPO: &str = "Xenova/multilingual-e5-base";
-const COMMIT: &str = "1ec9243030a27d1a115d5c340572074c125b58b2";
+const REPO: &str = "ibm-granite/granite-embedding-311m-multilingual-r2";
+const COMMIT: &str = "44399559930365213510b1ee2eb15ded83374f0e";
 const PART_SUFFIX: &str = ".part";
 /// How often a pending network read re-checks the cancel flag.
 const CANCEL_POLL: std::time::Duration = std::time::Duration::from_millis(100);
@@ -34,14 +34,16 @@ pub const FILES: [RemoteFile; 2] = [
     RemoteFile {
         local: TOKENIZER_FILE,
         remote: "tokenizer.json",
-        size: 17_082_660,
-        sha256: "62c24cdc13d4c9952d63718d6c9fa4c287974249e16b7ade6d5a85e7bbb75626",
+        size: 33_384_821,
+        sha256: "0087c868b33bad550a78a08d19798cfd7f713cde4f020803b8f51f405503e15f",
     },
     RemoteFile {
         local: MODEL_FILE,
-        remote: "onnx/model_quantized.onnx",
-        size: 278_647_662,
-        sha256: "df7a9a29309e3ad491e1783adf8baee710262cc06079c7cbab63c630277fac94",
+        // IBM's own int8 export. `avx2` names the quantiser preset (uint8), not a CPU
+        // requirement: ONNX Runtime has uint8 kernels for x86 and ARM.
+        remote: "onnx/model_quint8_avx2.onnx",
+        size: 313_421_909,
+        sha256: "f1fdd44e7e1ac51f12ab7957c7bd092e064d596c288513bf9d326842f669edee",
     },
 ];
 
@@ -444,7 +446,9 @@ pub(crate) mod tests {
     fn urls_pin_the_commit_and_files_are_https_hugging_face() {
         for f in &FILES {
             let u = url(f);
-            assert!(u.starts_with("https://huggingface.co/Xenova/multilingual-e5-base/resolve/"));
+            assert!(u.starts_with(
+                "https://huggingface.co/ibm-granite/granite-embedding-311m-multilingual-r2/resolve/"
+            ));
             assert!(u.contains(COMMIT));
             assert_eq!(f.sha256.len(), 64);
         }

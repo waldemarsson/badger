@@ -638,12 +638,13 @@
             </div>
           {/if}
 
-          {#if semanticStatus.state !== 'off' && semanticStatus.state !== 'downloading' && semanticStatus.model_bytes > 0}
-            <dl class="semantic-facts">
-              <div><dt>Model</dt><dd>{semanticStatus.model_name} · {formatBytes(semanticStatus.model_bytes)}</dd></div>
+          {@const installed = semanticStatus.state !== 'off' && semanticStatus.state !== 'downloading' && semanticStatus.model_bytes > 0}
+          <dl class="semantic-facts">
+            <div><dt>Model</dt><dd>{semanticStatus.model_name}{installed ? ` · ${formatBytes(semanticStatus.model_bytes)}` : ''}</dd></div>
+            {#if installed}
               <div><dt>Index</dt><dd>{semanticStatus.indexed_notes} of {semanticStatus.notes} {semanticStatus.notes === 1 ? 'note' : 'notes'} · {formatBytes(semanticStatus.index_bytes)}</dd></div>
-            </dl>
-          {/if}
+            {/if}
+          </dl>
 
           <div class="flex flex-wrap items-center gap-2">
             {#if semanticStatus.state === 'off'}

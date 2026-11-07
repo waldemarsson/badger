@@ -1,3 +1,4 @@
+use crate::note_links::{self, RefKind};
 use crate::AppError;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Pool, Sqlite, SqliteConnection};
@@ -8,8 +9,13 @@ pub const MAX_TITLE_CHARS: usize = 200;
 /// Maximum excerpt length in characters (not bytes).
 pub const MAX_EXCERPT_CHARS: usize = 120;
 /// Characters that would break `[[wikilinks]]` and `#tags`.
-const FORBIDDEN_TITLE_CHARS: [char; 4] = ['[', ']', '|', '#'];
+/// A backtick could pair with another and turn a rewritten `[[link]]` into code.
+const FORBIDDEN_TITLE_CHARS: [char; 5] = ['[', ']', '|', '#', '`'];
 const UNTITLED: &str = "Untitled";
+/// Version of the link extraction rules. Bump it when they change: the next start
+/// rebuilds `note_refs` (see `db::backfill_note_refs`).
+pub const NOTE_REFS_VERSION: &str = "1";
+pub const NOTE_REFS_VERSION_KEY: &str = "note_refs_version";
 
 /// A full note, including its body.
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq)]
@@ -92,7 +98,7 @@ fn clean_title(title: &str) -> Result<String, AppError> {
     }
     if t.contains(FORBIDDEN_TITLE_CHARS) {
         return Err(AppError::Custom(
-            "Title can't contain [ ] | or #".to_string(),
+            "Title can't contain [ ] | # or `".to_string(),
         ));
     }
     Ok(t.to_string())
@@ -226,9 +232,17 @@ pub fn excerpt(body: &str, title: &str) -> String {
     String::new()
 }
 
-/// Writes a title without the Rust-side duplicate check; the unique index is the backstop.
-async fn store_title(id: i64, title: &str, pool: &Pool<Sqlite>) -> Result<u64, AppError> {
+/// Writes a title and retargets `[[old title]]` links in all notes (this one included)
+/// at it, in one transaction. Skips the Rust-side duplicate check; the unique index is
+/// the backstop. Returns the ids of the notes whose bodies were rewritten.
+async fn store_title(
+    id: i64,
+    old_title: &str,
+    title: &str,
+    pool: &Pool<Sqlite>,
+) -> Result<Vec<i64>, AppError> {
     let mut tx = pool.begin().await?;
+    // The write comes first, so the transaction holds the write lock before it reads.
     let result =
         sqlx::query("UPDATE notes SET Title = ?, UpdatedAt = ? WHERE id = ? AND Title IS NOT ?")
             .bind(title)
@@ -238,11 +252,87 @@ async fn store_title(id: i64, title: &str, pool: &Pool<Sqlite>) -> Result<u64, A
             .execute(&mut *tx)
             .await
             .map_err(|e| map_unique(e, title))?;
+    let mut rewritten = Vec::new();
     if result.rows_affected() > 0 {
         index_note(id, &mut tx).await?;
+        rewritten = rewrite_link_refs(&old_title.to_lowercase(), title, &mut tx).await?;
     }
     tx.commit().await?;
-    Ok(result.rows_affected())
+    Ok(rewritten)
+}
+
+/// Stores a body rewritten by a rename (not a user edit, so `UpdatedAt` stays) and
+/// re-indexes it.
+async fn store_rewritten_body(
+    id: i64,
+    body: &str,
+    conn: &mut SqliteConnection,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE notes SET Body = ? WHERE id = ?")
+        .bind(body)
+        .bind(id)
+        .execute(&mut *conn)
+        .await?;
+    index_note(id, conn).await
+}
+
+/// Retargets wikilinks to `old_target` (lowercased title) at `new_title` in every note.
+/// Returns the ids of the rewritten notes.
+async fn rewrite_link_refs(
+    old_target: &str,
+    new_title: &str,
+    conn: &mut SqliteConnection,
+) -> Result<Vec<i64>, sqlx::Error> {
+    let ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT NoteId FROM note_refs WHERE Kind = 'link' AND Target = ? ORDER BY NoteId",
+    )
+    .bind(old_target)
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut rewritten = Vec::new();
+    for id in ids {
+        let body: String = sqlx::query_scalar("SELECT Body FROM notes WHERE id = ?")
+            .bind(id)
+            .fetch_one(&mut *conn)
+            .await?;
+        if let Some(body) = note_links::rewrite_links(&body, old_target, new_title) {
+            store_rewritten_body(id, &body, conn).await?;
+            rewritten.push(id);
+        }
+    }
+    Ok(rewritten)
+}
+
+/// Rewrites tags at or below `old_path` (e.g. `acme` or `acme/web`) in every note so the
+/// path's last segment becomes `new_segment`. For customer/project renames; the caller
+/// owns the transaction and has already written the rename. Returns the rewritten ids.
+pub(crate) async fn rewrite_tag_refs(
+    old_path: &str,
+    new_segment: &str,
+    conn: &mut SqliteConnection,
+) -> Result<Vec<i64>, sqlx::Error> {
+    let len = i64::try_from(old_path.chars().count()).unwrap_or(i64::MAX - 1);
+    let ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT DISTINCT NoteId FROM note_refs WHERE Kind = 'tag' \
+         AND (Target = ? OR substr(Target, 1, ?) = ? || '/') ORDER BY NoteId",
+    )
+    .bind(old_path)
+    .bind(len + 1)
+    .bind(old_path)
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut rewritten = Vec::new();
+    for id in ids {
+        let body: String = sqlx::query_scalar("SELECT Body FROM notes WHERE id = ?")
+            .bind(id)
+            .fetch_one(&mut *conn)
+            .await?;
+        if let Some(body) = note_links::rewrite_tags(&body, old_path, new_segment) {
+            store_rewritten_body(id, &body, conn).await?;
+            rewritten.push(id);
+        }
+    }
+    Ok(rewritten)
 }
 
 /// Inserts a note without the Rust-side duplicate check; the unique index is the backstop.
@@ -293,23 +383,48 @@ pub async fn inner_create_note(pool: &Pool<Sqlite>) -> Result<Note, AppError> {
     inner_get_note(id, pool).await
 }
 
-/// Renames a note. Titles are unique case-insensitively (including non-ASCII).
-/// An unchanged title is a no-op that keeps `UpdatedAt`.
+/// Creates an empty note with `title` (following an unresolved `[[wikilink]]`).
+pub async fn inner_create_note_titled(title: &str, pool: &Pool<Sqlite>) -> Result<Note, AppError> {
+    let title = clean_title(title)?;
+    if lowercase_titles(None, pool)
+        .await?
+        .contains(&title.to_lowercase())
+    {
+        return Err(duplicate(&title));
+    }
+    let id = insert_note(&title, pool).await?;
+    inner_get_note(id, pool).await
+}
+
+/// `rename_note` result: the renamed note and the notes whose `[[links]]` to the old
+/// title were rewritten (the renamed note itself included when it links to itself).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RenamedNote {
+    pub note: NoteSummary,
+    pub rewritten_ids: Vec<i64>,
+}
+
+/// Renames a note and retargets wikilinks to its old title, keeping aliases. Titles are
+/// unique case-insensitively (including non-ASCII). An unchanged title is a no-op that
+/// keeps `UpdatedAt`.
 pub async fn inner_rename_note(
     id: i64,
     title: &str,
     pool: &Pool<Sqlite>,
-) -> Result<NoteSummary, AppError> {
+) -> Result<RenamedNote, AppError> {
     let title = clean_title(title)?;
-    inner_get_note(id, pool).await?;
+    let old = inner_get_note(id, pool).await?;
     if lowercase_titles(Some(id), pool)
         .await?
         .contains(&title.to_lowercase())
     {
         return Err(duplicate(&title));
     }
-    store_title(id, &title, pool).await?;
-    get_summary(id, pool).await
+    let rewritten_ids = store_title(id, &old.title, &title, pool).await?;
+    Ok(RenamedNote {
+        note: get_summary(id, pool).await?,
+        rewritten_ids,
+    })
 }
 
 /// Replaces the body. An identical body is a no-op that keeps `UpdatedAt`.
@@ -415,7 +530,51 @@ async fn index_note(id: i64, conn: &mut SqliteConnection) -> Result<(), sqlx::Er
             .await?;
     if let Some((title, body)) = row {
         insert_index_row(id, &title, &body, conn).await?;
+        index_refs(id, &body, conn).await?;
     }
+    Ok(())
+}
+
+/// Replaces one note's rows in `note_refs` with the tags and links in `body`.
+async fn index_refs(id: i64, body: &str, conn: &mut SqliteConnection) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM note_refs WHERE NoteId = ?")
+        .bind(id)
+        .execute(&mut *conn)
+        .await?;
+    let mut seen = std::collections::HashSet::new();
+    for r in note_links::extract(body) {
+        if !seen.insert((r.kind, r.target.clone())) {
+            continue;
+        }
+        sqlx::query("INSERT INTO note_refs (NoteId, Kind, Target) VALUES (?, ?, ?)")
+            .bind(id)
+            .bind(r.kind.as_str())
+            .bind(&r.target)
+            .execute(&mut *conn)
+            .await?;
+    }
+    Ok(())
+}
+
+/// Replaces the whole link index with rows built from `notes` and records its version.
+pub(crate) async fn rebuild_refs(conn: &mut SqliteConnection) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM note_refs")
+        .execute(&mut *conn)
+        .await?;
+    let notes: Vec<(i64, String)> = sqlx::query_as("SELECT id, Body FROM notes")
+        .fetch_all(&mut *conn)
+        .await?;
+    for (id, body) in notes {
+        index_refs(id, &body, conn).await?;
+    }
+    sqlx::query(
+        "INSERT INTO app_settings (Key, Value) VALUES (?, ?)
+         ON CONFLICT(Key) DO UPDATE SET Value = excluded.Value",
+    )
+    .bind(NOTE_REFS_VERSION_KEY)
+    .bind(NOTE_REFS_VERSION)
+    .execute(&mut *conn)
+    .await?;
     Ok(())
 }
 
@@ -434,8 +593,8 @@ async fn insert_index_row(
     Ok(())
 }
 
-/// Replaces the whole index with rows built from `notes`. Callers own the transaction,
-/// so restore and seeding rebuild atomically with their writes.
+/// Replaces both derived indexes (search and links) with rows built from `notes`.
+/// Callers own the transaction, so restore and seeding rebuild atomically with their writes.
 pub(crate) async fn rebuild_index(conn: &mut SqliteConnection) -> Result<(), sqlx::Error> {
     sqlx::query("DELETE FROM notes_fts")
         .execute(&mut *conn)
@@ -446,7 +605,7 @@ pub(crate) async fn rebuild_index(conn: &mut SqliteConnection) -> Result<(), sql
     for (id, title, body) in notes {
         insert_index_row(id, &title, &body, conn).await?;
     }
-    Ok(())
+    rebuild_refs(conn).await
 }
 
 /// Quotes a term as an FTS5 string so operators and punctuation are literal.
@@ -464,22 +623,27 @@ struct HitRow {
     snippet: String,
 }
 
-/// Full-text search over titles and plain-text bodies. Every whitespace-separated term
-/// must occur as a case-insensitive substring. Terms of 3+ chars use the trigram index
-/// (ranked, highlighted); shorter terms filter the rows in Rust. Only short terms:
-/// no ranking or highlights, title matches first, then most recently updated.
+/// Search over titles and plain-text bodies. A `#tag` term filters by tag (itself or
+/// nested below it); every other whitespace-separated term must occur as a
+/// case-insensitive substring. All filters must match. Terms of 3+ chars use the trigram
+/// index (ranked, highlighted); shorter terms filter the rows in Rust. Without a 3+ char
+/// term: no ranking or highlights, title matches first, then most recently updated.
 /// A blank query returns nothing; `limit` caps the result count.
 pub async fn inner_search_notes(
     query: &str,
     limit: Option<i64>,
     pool: &Pool<Sqlite>,
 ) -> Result<Vec<NoteHit>, AppError> {
-    let terms: Vec<String> = query
-        .split_whitespace()
-        .map(strip_hit_markers)
-        .filter(|t| !t.is_empty())
-        .collect();
-    if terms.is_empty() {
+    let mut tags: Vec<String> = Vec::new();
+    let mut terms: Vec<String> = Vec::new();
+    for term in query.split_whitespace() {
+        match note_links::tag_term(term) {
+            Some(tag) => tags.push(tag),
+            None => terms.push(strip_hit_markers(term)),
+        }
+    }
+    terms.retain(|t| !t.is_empty());
+    if terms.is_empty() && tags.is_empty() {
         return Ok(Vec::new());
     }
     let (long, short): (Vec<&String>, Vec<&String>) = terms
@@ -500,11 +664,24 @@ pub async fn inner_search_notes(
         ));
     }
     sql.push_str(" FROM notes_fts JOIN notes n ON n.id = notes_fts.rowid");
+    let mut filters: Vec<&str> = Vec::new();
+    if !long.is_empty() {
+        filters.push("notes_fts MATCH ?");
+    }
+    // Nested match without LIKE wildcards: the tag itself or `tag/…`.
+    filters.extend(tags.iter().map(|_| {
+        "n.id IN (SELECT NoteId FROM note_refs WHERE Kind = 'tag' \
+         AND (Target = ? OR substr(Target, 1, ?) = ? || '/'))"
+    }));
+    if !filters.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&filters.join(" AND "));
+    }
     if long.is_empty() {
         sql.push_str(" ORDER BY n.UpdatedAt DESC, n.id");
     } else {
         sql.push_str(&format!(
-            " WHERE notes_fts MATCH ? ORDER BY bm25(notes_fts, {TITLE_WEIGHT}, 1.0), n.UpdatedAt DESC, n.id"
+            " ORDER BY bm25(notes_fts, {TITLE_WEIGHT}, 1.0), n.UpdatedAt DESC, n.id"
         ));
     }
     // Short terms filter in Rust (Unicode case folding; SQLite's LIKE folds ASCII only),
@@ -516,6 +693,10 @@ pub async fn inner_search_notes(
     if !long.is_empty() {
         let phrases: Vec<String> = long.iter().map(|t| fts_phrase(t)).collect();
         q = q.bind(phrases.join(" "));
+    }
+    for tag in &tags {
+        let len = i64::try_from(tag.chars().count()).unwrap_or(i64::MAX - 1);
+        q = q.bind(tag).bind(len + 1).bind(tag);
     }
     q = q.bind(sql_limit.unwrap_or(-1));
     let rows = q.fetch_all(pool).await?;
@@ -532,9 +713,9 @@ pub async fn inner_search_notes(
             short.iter().all(|t| title.contains(t) || body.contains(t))
         })
         .collect();
-    if long.is_empty() {
+    if let (true, Some(first)) = (long.is_empty(), short.first()) {
         // No ranking without MATCH: title matches first (stable, so most recent next).
-        rows.sort_by_key(|(_, title)| !title.contains(&short[0]));
+        rows.sort_by_key(|(_, title)| !title.contains(first));
     }
     let cap = limit
         .and_then(|l| usize::try_from(l).ok())
@@ -573,6 +754,275 @@ pub async fn inner_rebuild_search_index(pool: &Pool<Sqlite>) -> Result<SearchInd
     inner_search_index_stats(pool).await
 }
 
+// ── Links ─────────────────────────────────────────────────────────────────────
+
+/// A `#` autocomplete entry. `tag` is what follows the `#` when inserted.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TagSuggestion {
+    /// `tag` (in use in some note), `customer`, `project`, `issue` or `todo`.
+    pub kind: String,
+    pub tag: String,
+    /// Display text: the tag, the customer or project name, the issue as
+    /// "title — customer / project", or the todo title.
+    pub label: String,
+    /// Projects: the customer name.
+    pub detail: Option<String>,
+    /// Todos: `not_started` or `in_progress`.
+    pub status: Option<String>,
+}
+
+/// A note that links to another, with the line that links.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Backlink {
+    pub id: i64,
+    pub title: String,
+    pub snippet: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, FromRow)]
+pub struct NoteTarget {
+    pub id: i64,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, FromRow)]
+pub struct IssueTarget {
+    pub id: i64,
+    pub title: String,
+    /// "Customer / Project".
+    pub context: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, FromRow)]
+pub struct TodoTarget {
+    pub id: i64,
+    pub title: String,
+    pub status: String,
+}
+
+/// What wikilinks and `#issue/<id>` / `#todo/<id>` chips resolve to (editor live preview).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LinkTargets {
+    pub notes: Vec<NoteTarget>,
+    pub issues: Vec<IssueTarget>,
+    pub todos: Vec<TodoTarget>,
+}
+
+/// Customer and project tags by slug path. A clashing slug belongs to the lowest id;
+/// a project has a tag only when its customer owns the customer slug.
+#[derive(Debug, Default)]
+pub(crate) struct EntityTags {
+    /// `cslug` → (customer id, name).
+    pub customers: std::collections::HashMap<String, (i64, String)>,
+    /// `cslug/pslug` → (project id, customer name, project name).
+    pub projects: std::collections::HashMap<String, (i64, String, String)>,
+}
+
+pub(crate) async fn load_entity_tags(
+    conn: &mut SqliteConnection,
+) -> Result<EntityTags, sqlx::Error> {
+    let mut tags = EntityTags::default();
+    let customers: Vec<(i64, String)> =
+        sqlx::query_as("SELECT id, Name FROM customers ORDER BY id")
+            .fetch_all(&mut *conn)
+            .await?;
+    let mut customer_slugs = std::collections::HashMap::new();
+    for (id, name) in customers {
+        if let Some(s) = note_links::customer_slug(&name) {
+            if let std::collections::hash_map::Entry::Vacant(e) = tags.customers.entry(s.clone()) {
+                customer_slugs.insert(id, (s, name.clone()));
+                e.insert((id, name));
+            }
+        }
+    }
+    let projects: Vec<(i64, i64, String)> =
+        sqlx::query_as("SELECT id, CustomerId, Name FROM projects ORDER BY id")
+            .fetch_all(&mut *conn)
+            .await?;
+    for (id, customer_id, name) in projects {
+        let (Some((cslug, cname)), Some(pslug)) =
+            (customer_slugs.get(&customer_id), note_links::slug(&name))
+        else {
+            continue;
+        };
+        tags.projects
+            .entry(format!("{cslug}/{pslug}"))
+            .or_insert((id, cname.clone(), name));
+    }
+    Ok(tags)
+}
+
+/// Everything `#` autocomplete offers: tags in use (not already an entity's tag),
+/// customers, projects, all issues and the todos that aren't done.
+pub async fn inner_list_tag_suggestions(
+    pool: &Pool<Sqlite>,
+) -> Result<Vec<TagSuggestion>, AppError> {
+    let mut conn = pool.acquire().await?;
+    let entities = load_entity_tags(&mut conn).await?;
+    let suggestion = |kind: &str, tag: String, label: String| TagSuggestion {
+        kind: kind.to_string(),
+        tag,
+        label,
+        detail: None,
+        status: None,
+    };
+
+    let mut customers: Vec<TagSuggestion> = entities
+        .customers
+        .iter()
+        .map(|(tag, (_, name))| suggestion("customer", tag.clone(), name.clone()))
+        .collect();
+    customers.sort_by_key(|s| s.label.to_lowercase());
+    let mut projects: Vec<TagSuggestion> = entities
+        .projects
+        .iter()
+        .map(|(tag, (_, customer, name))| TagSuggestion {
+            detail: Some(customer.clone()),
+            ..suggestion("project", tag.clone(), name.clone())
+        })
+        .collect();
+    projects.sort_by_key(|s| {
+        (
+            s.detail.clone().unwrap_or_default().to_lowercase(),
+            s.label.to_lowercase(),
+        )
+    });
+
+    let issues: Vec<(i64, String, String, String)> = sqlx::query_as(
+        "SELECT i.id, i.Title, c.Name, p.Name FROM issues i
+         JOIN projects p ON p.id = i.ProjectId
+         JOIN customers c ON c.id = p.CustomerId
+         ORDER BY c.Name, p.Name, i.Title, i.id",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let issues = issues.into_iter().map(|(id, title, customer, project)| {
+        suggestion(
+            "issue",
+            format!("issue/{id}"),
+            format!("{title} — {customer} / {project}"),
+        )
+    });
+    let todos: Vec<(i64, String, String)> = sqlx::query_as(
+        "SELECT id, Title, Status FROM todos WHERE Status != 'done' ORDER BY Status DESC, Position, id",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let todos = todos.into_iter().map(|(id, title, status)| TagSuggestion {
+        status: Some(status),
+        ..suggestion("todo", format!("todo/{id}"), title)
+    });
+
+    let in_use: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT Target FROM note_refs WHERE Kind = 'tag' ORDER BY Target",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let in_use = in_use
+        .into_iter()
+        .filter(|t| {
+            !entities.customers.contains_key(t)
+                && !entities.projects.contains_key(t)
+                && note_links::entity_tag(t).is_none()
+        })
+        .map(|t| suggestion("tag", t.clone(), t));
+
+    Ok(in_use
+        .chain(customers)
+        .chain(projects)
+        .chain(issues)
+        .chain(todos)
+        .collect())
+}
+
+/// Note titles, issues and todos for resolving wikilinks and chips in the editor.
+pub async fn inner_get_link_targets(pool: &Pool<Sqlite>) -> Result<LinkTargets, AppError> {
+    let notes = sqlx::query_as::<_, NoteTarget>("SELECT id, Title AS title FROM notes ORDER BY id")
+        .fetch_all(pool)
+        .await?;
+    let issues = sqlx::query_as::<_, IssueTarget>(
+        "SELECT i.id, i.Title AS title, c.Name || ' / ' || p.Name AS context FROM issues i
+         JOIN projects p ON p.id = i.ProjectId
+         JOIN customers c ON c.id = p.CustomerId
+         ORDER BY i.id",
+    )
+    .fetch_all(pool)
+    .await?;
+    let todos = sqlx::query_as::<_, TodoTarget>(
+        "SELECT id, Title AS title, Status AS status FROM todos ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(LinkTargets {
+        notes,
+        issues,
+        todos,
+    })
+}
+
+/// The line of `body` around its first wikilink to `target`: markers stripped, at most
+/// `MAX_EXCERPT_CHARS` characters, starting a little before the link when cut.
+fn backlink_snippet(body: &str, target: &str) -> String {
+    let Some(at) = note_links::extract(body)
+        .into_iter()
+        .find(|r| r.kind == RefKind::Link && r.target == target)
+        .map(|r| r.range.start)
+    else {
+        return String::new();
+    };
+    let line_start = body[..at].rfind('\n').map_or(0, |p| p + 1);
+    let line_end = body[at..].find('\n').map_or(body.len(), |p| at + p);
+    let mut text = body[line_start..line_end].trim();
+    while let Some(rest) = strip_marker(text) {
+        text = rest.trim_start();
+    }
+    let text = text.strip_suffix('|').unwrap_or(text).trim();
+    if text.chars().count() <= MAX_EXCERPT_CHARS {
+        return text.to_string();
+    }
+    // `text` is a subslice of `body`: start up to 40 chars before the link.
+    let text_start = text.as_ptr() as usize - body.as_ptr() as usize;
+    let link_char = text[..at.saturating_sub(text_start).min(text.len())]
+        .chars()
+        .count();
+    let skip = link_char.saturating_sub(40);
+    let window: String = text.chars().skip(skip).take(MAX_EXCERPT_CHARS).collect();
+    let mut out = String::new();
+    if skip > 0 {
+        out.push('…');
+    }
+    out.push_str(window.trim());
+    if skip + MAX_EXCERPT_CHARS < text.chars().count() {
+        out.push('…');
+    }
+    out
+}
+
+/// Notes that link to note `id` (title matched case-insensitively), excluding itself,
+/// most recently updated first.
+pub async fn inner_list_backlinks(id: i64, pool: &Pool<Sqlite>) -> Result<Vec<Backlink>, AppError> {
+    let note = inner_get_note(id, pool).await?;
+    let target = note.title.to_lowercase();
+    let rows: Vec<(i64, String, String)> = sqlx::query_as(
+        "SELECT n.id, n.Title, n.Body FROM notes n
+         JOIN note_refs r ON r.NoteId = n.id
+         WHERE r.Kind = 'link' AND r.Target = ? AND n.id != ?
+         ORDER BY n.UpdatedAt DESC, n.id",
+    )
+    .bind(&target)
+    .bind(id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, title, body)| Backlink {
+            id,
+            title,
+            snippet: backlink_snippet(&body, &target),
+        })
+        .collect())
+}
+
 // ── Tauri command wrappers ────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -591,11 +1041,19 @@ pub async fn create_note(pool: State<'_, Pool<Sqlite>>) -> Result<Note, AppError
 }
 
 #[tauri::command]
+pub async fn create_note_titled(
+    title: String,
+    pool: State<'_, Pool<Sqlite>>,
+) -> Result<Note, AppError> {
+    inner_create_note_titled(&title, pool.inner()).await
+}
+
+#[tauri::command]
 pub async fn rename_note(
     id: i64,
     title: String,
     pool: State<'_, Pool<Sqlite>>,
-) -> Result<NoteSummary, AppError> {
+) -> Result<RenamedNote, AppError> {
     inner_rename_note(id, &title, pool.inner()).await
 }
 
@@ -643,6 +1101,26 @@ pub async fn rebuild_search_index(
     pool: State<'_, Pool<Sqlite>>,
 ) -> Result<SearchIndexStats, AppError> {
     inner_rebuild_search_index(pool.inner()).await
+}
+
+#[tauri::command]
+pub async fn list_tag_suggestions(
+    pool: State<'_, Pool<Sqlite>>,
+) -> Result<Vec<TagSuggestion>, AppError> {
+    inner_list_tag_suggestions(pool.inner()).await
+}
+
+#[tauri::command]
+pub async fn get_link_targets(pool: State<'_, Pool<Sqlite>>) -> Result<LinkTargets, AppError> {
+    inner_get_link_targets(pool.inner()).await
+}
+
+#[tauri::command]
+pub async fn list_backlinks(
+    id: i64,
+    pool: State<'_, Pool<Sqlite>>,
+) -> Result<Vec<Backlink>, AppError> {
+    inner_list_backlinks(id, pool.inner()).await
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
@@ -722,15 +1200,15 @@ mod tests {
         assert_eq!(err_msg(rename("x".repeat(201)).await), "Title is too long");
         // 200 multi-byte chars are fine (limit counts chars, not bytes)
         let long = "å".repeat(200);
-        assert_eq!(rename(long.clone()).await.unwrap().title, long);
-        for bad in ["a[b", "a]b", "a|b", "#tag"] {
+        assert_eq!(rename(long.clone()).await.unwrap().note.title, long);
+        for bad in ["a[b", "a]b", "a|b", "#tag", "a`b"] {
             assert_eq!(
                 err_msg(rename(bad.into()).await),
-                "Title can't contain [ ] | or #",
+                "Title can't contain [ ] | # or `",
                 "{bad}"
             );
         }
-        let ok = rename("  Meeting notes 🎉  ".into()).await.unwrap();
+        let ok = rename("  Meeting notes 🎉  ".into()).await.unwrap().note;
         assert_eq!(ok.title, "Meeting notes 🎉");
     }
 
@@ -758,10 +1236,10 @@ mod tests {
         let n = note_titled("åsa", &pool).await;
         set_updated_at(n.id, OLD, &pool).await;
 
-        let same = inner_rename_note(n.id, "åsa", &pool).await.unwrap();
+        let same = inner_rename_note(n.id, "åsa", &pool).await.unwrap().note;
         assert_eq!(same.updated_at, OLD, "unchanged title must not bump");
 
-        let renamed = inner_rename_note(n.id, "Åsa", &pool).await.unwrap();
+        let renamed = inner_rename_note(n.id, "Åsa", &pool).await.unwrap().note;
         assert_eq!(renamed.title, "Åsa");
         assert_ne!(renamed.updated_at, OLD, "title change bumps UpdatedAt");
     }
@@ -774,7 +1252,7 @@ mod tests {
 
         // Skip the Rust-side check, as a concurrent writer would: the index catches it.
         assert_eq!(
-            err_msg(store_title(b.id, "plan", &pool).await),
+            err_msg(store_title(b.id, &b.title, "plan", &pool).await),
             "A note named \"plan\" already exists"
         );
         assert_eq!(
@@ -1105,6 +1583,325 @@ mod tests {
         assert_eq!(hits[0].note.id, id);
         assert_eq!(hits[0].snippet.matches(HIT_START).count(), 1);
         assert!(hits[0].snippet.contains("fake mark \u{2}text\u{3}"));
+    }
+
+    // ── Link index ────────────────────────────────────────────────────────────
+
+    async fn refs_of(id: i64, pool: &Pool<Sqlite>) -> Vec<(String, String)> {
+        sqlx::query_as("SELECT Kind, Target FROM note_refs WHERE NoteId = ? ORDER BY Kind, Target")
+            .bind(id)
+            .fetch_all(pool)
+            .await
+            .unwrap()
+    }
+
+    fn rows(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(k, t)| (k.to_string(), t.to_string()))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn saving_a_body_updates_its_refs_and_delete_cascades() {
+        let pool = crate::test_db().await;
+        let id = note_with(
+            "Refs",
+            "#Acme #acme/web [[Plan]] [[plan|again]] `#code` #acme",
+            &pool,
+        )
+        .await;
+        assert_eq!(
+            refs_of(id, &pool).await,
+            rows(&[("link", "plan"), ("tag", "acme"), ("tag", "acme/web")])
+        );
+
+        inner_update_note_body(id, "only #other", &pool)
+            .await
+            .unwrap();
+        assert_eq!(refs_of(id, &pool).await, rows(&[("tag", "other")]));
+        inner_rename_note(id, "Renamed", &pool).await.unwrap();
+        assert_eq!(refs_of(id, &pool).await, rows(&[("tag", "other")]));
+
+        inner_delete_note(id, &pool).await.unwrap();
+        let (left,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM note_refs")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(left, 0, "refs cascade with the note");
+    }
+
+    #[tokio::test]
+    async fn rebuild_restores_both_indexes() {
+        let pool = crate::test_db().await;
+        let id = note_with("Kept", "searchable #tag [[Other]]", &pool).await;
+        sqlx::raw_sql("DELETE FROM notes_fts; DELETE FROM note_refs;")
+            .execute(&pool)
+            .await
+            .unwrap();
+        inner_rebuild_search_index(&pool).await.unwrap();
+        assert_eq!(hit_ids("searchable", &pool).await, vec![id]);
+        assert_eq!(
+            refs_of(id, &pool).await,
+            rows(&[("link", "other"), ("tag", "tag")])
+        );
+        let version: String = sqlx::query_scalar("SELECT Value FROM app_settings WHERE Key = ?")
+            .bind(NOTE_REFS_VERSION_KEY)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(version, NOTE_REFS_VERSION);
+    }
+
+    // ── Rename rewriting ──────────────────────────────────────────────────────
+
+    async fn body_of(id: i64, pool: &Pool<Sqlite>) -> String {
+        inner_get_note(id, pool).await.unwrap().body
+    }
+
+    #[tokio::test]
+    async fn rename_rewrites_links_in_all_notes_but_not_in_code() {
+        let pool = crate::test_db().await;
+        let target = note_with("Old plan", "self [[old plan]]", &pool).await;
+        let a = note_with(
+            "A",
+            "[[Old plan]] and [[old PLAN|the plan]] `[[Old plan]]`\n\n```\n[[Old plan]]\n```\n[[Old planning]]",
+            &pool,
+        )
+        .await;
+        let b = note_with("B", "[[Other]]", &pool).await;
+        for id in [target, a, b] {
+            set_updated_at(id, OLD, &pool).await;
+        }
+
+        let renamed = inner_rename_note(target, "New plan", &pool).await.unwrap();
+        assert_eq!(renamed.note.title, "New plan");
+        assert_eq!(renamed.rewritten_ids, vec![target, a]);
+        assert_eq!(
+            body_of(a, &pool).await,
+            "[[New plan]] and [[New plan|the plan]] `[[Old plan]]`\n\n```\n[[Old plan]]\n```\n[[Old planning]]"
+        );
+        assert_eq!(body_of(target, &pool).await, "self [[New plan]]");
+        assert_eq!(body_of(b, &pool).await, "[[Other]]");
+        let a_note = inner_get_note(a, &pool).await.unwrap();
+        assert_eq!(a_note.updated_at, OLD, "a rewrite is not a user edit");
+        // refs and search follow the rewrite
+        assert_eq!(
+            refs_of(a, &pool).await,
+            rows(&[("link", "new plan"), ("link", "old planning")])
+        );
+        let backlinks = inner_list_backlinks(target, &pool).await.unwrap();
+        assert_eq!(backlinks.iter().map(|l| l.id).collect::<Vec<_>>(), vec![a]);
+        assert_eq!(hit_ids("the plan", &pool).await, vec![a]);
+
+        // A case-only rename still rewrites; an unchanged title rewrites nothing.
+        let recased = inner_rename_note(target, "new Plan", &pool).await.unwrap();
+        assert_eq!(recased.rewritten_ids, vec![target, a]);
+        assert!(body_of(a, &pool)
+            .await
+            .starts_with("[[new Plan]] and [[new Plan|the plan]]"));
+        let same = inner_rename_note(target, "new Plan", &pool).await.unwrap();
+        assert!(same.rewritten_ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_rename_rewrites_nothing() {
+        let pool = crate::test_db().await;
+        let target = note_with("Old", "", &pool).await;
+        let a = note_with("A", "[[Old]]", &pool).await;
+        let b = note_titled("Taken", &pool).await;
+        // Past the Rust-side check, the unique index rejects the title: nothing is written.
+        assert!(store_title(target, "Old", "taken", &pool).await.is_err());
+        assert_eq!(body_of(a, &pool).await, "[[Old]]");
+        assert_eq!(inner_get_note(b.id, &pool).await.unwrap().title, "Taken");
+    }
+
+    // ── Link commands ─────────────────────────────────────────────────────────
+
+    /// Customers 1 Acme, 2 "ACME!" (slug clash: 1 owns `acme`), 3 "123" (no slug);
+    /// projects 1 Acme/Web App, 2 Acme/web-app (clash), 3 ACME!/Other (customer has no
+    /// tag); issue 7 in project 1; todos 4 (in progress), 5 (done).
+    async fn seed_entities(pool: &Pool<Sqlite>) {
+        sqlx::raw_sql(
+            "INSERT INTO customers (id, Name) VALUES (1, 'Acme'), (2, 'ACME!'), (3, '123');
+             INSERT INTO projects (id, CustomerId, Name) VALUES
+                 (1, 1, 'Web App'), (2, 1, 'web-app'), (3, 2, 'Other');
+             INSERT INTO issues (id, ProjectId, Title) VALUES (7, 1, 'Login bug');
+             INSERT INTO todos (id, Title, Status, CreatedAt) VALUES
+                 (4, 'Call Åsa', 'in_progress', 'x'), (5, 'Finished', 'done', 'x');",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn tag_suggestions_cover_tags_in_use_and_entities() {
+        let pool = crate::test_db().await;
+        seed_entities(&pool).await;
+        note_with(
+            "Tagged",
+            "#Meeting #acme #acme/web-app #issue/7 #todo/5 #issue/999",
+            &pool,
+        )
+        .await;
+        type Row = (String, String, String, Option<String>, Option<String>);
+        let got: Vec<Row> = inner_list_tag_suggestions(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| (s.kind, s.tag, s.label, s.detail, s.status))
+            .collect();
+        let row = |k: &str, t: &str, l: &str, d: Option<&str>, st: Option<&str>| {
+            (
+                k.to_string(),
+                t.to_string(),
+                l.to_string(),
+                d.map(String::from),
+                st.map(String::from),
+            )
+        };
+        assert_eq!(
+            got,
+            vec![
+                // in use, minus entity tags and `issue/<id>`/`todo/<id>` shapes
+                row("tag", "meeting", "meeting", None, None),
+                row("customer", "acme", "Acme", None, None),
+                row("project", "acme/web-app", "Web App", Some("Acme"), None),
+                row("issue", "issue/7", "Login bug — Acme / Web App", None, None),
+                row("todo", "todo/4", "Call Åsa", None, Some("in_progress")),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn tag_suggestions_skip_reserved_customer_slugs() {
+        let pool = crate::test_db().await;
+        sqlx::raw_sql(
+            "INSERT INTO customers (id, Name) VALUES (1, 'Issue'), (2, 'todo'), (3, 'Acme');
+             INSERT INTO projects (id, CustomerId, Name) VALUES (1, 1, 'Web'), (2, 2, 'API');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let got: Vec<(String, String)> = inner_list_tag_suggestions(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| (s.kind, s.tag))
+            .collect();
+        assert_eq!(got, vec![("customer".to_string(), "acme".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn link_targets_list_notes_issues_and_all_todos() {
+        let pool = crate::test_db().await;
+        seed_entities(&pool).await;
+        let n = note_titled("Plan", &pool).await;
+        let t = inner_get_link_targets(&pool).await.unwrap();
+        assert_eq!(
+            t.notes,
+            vec![NoteTarget {
+                id: n.id,
+                title: "Plan".into()
+            }]
+        );
+        assert_eq!(
+            t.issues,
+            vec![IssueTarget {
+                id: 7,
+                title: "Login bug".into(),
+                context: "Acme / Web App".into()
+            }]
+        );
+        let todos: Vec<(i64, &str)> = t.todos.iter().map(|t| (t.id, t.status.as_str())).collect();
+        assert_eq!(todos, vec![(4, "in_progress"), (5, "done")]);
+    }
+
+    #[tokio::test]
+    async fn create_note_titled_validates_and_rejects_duplicates() {
+        let pool = crate::test_db().await;
+        note_titled("Åsa", &pool).await;
+        let n = inner_create_note_titled("  New idea ", &pool)
+            .await
+            .unwrap();
+        assert_eq!((n.title.as_str(), n.body.as_str()), ("New idea", ""));
+        assert_eq!(hit_ids("idea", &pool).await, vec![n.id]);
+        assert_eq!(
+            err_msg(inner_create_note_titled("åsa", &pool).await),
+            "A note named \"åsa\" already exists"
+        );
+        assert_eq!(
+            err_msg(inner_create_note_titled("a|b", &pool).await),
+            "Title can't contain [ ] | # or `"
+        );
+        assert_eq!(
+            err_msg(inner_create_note_titled(" ", &pool).await),
+            "Title is required"
+        );
+    }
+
+    #[tokio::test]
+    async fn backlinks_match_titles_case_insensitively_and_exclude_self() {
+        let pool = crate::test_db().await;
+        let target = note_with("Åsa plan", "self link [[åsa plan]]", &pool).await;
+        let a = note_with(
+            "A",
+            "intro\n- see [[ÅSA PLAN|the plan]] today\nmore [[Åsa plan]]",
+            &pool,
+        )
+        .await;
+        let b = note_with("B", "`[[Åsa plan]]` in code only", &pool).await;
+        let c = note_with("C", "[[Åsa plan]]", &pool).await;
+        set_updated_at(a.max(c), "2030-01-01T00:00:00.000", &pool).await;
+        let links = inner_list_backlinks(target, &pool).await.unwrap();
+        let got: Vec<(i64, &str)> = links.iter().map(|l| (l.id, l.snippet.as_str())).collect();
+        assert_eq!(
+            got,
+            vec![(c, "[[Åsa plan]]"), (a, "see [[ÅSA PLAN|the plan]] today")]
+        );
+        assert!(!got.iter().any(|(id, _)| *id == b));
+        assert_eq!(
+            err_msg(inner_list_backlinks(999, &pool).await),
+            "Note not found"
+        );
+    }
+
+    #[test]
+    fn backlink_snippet_windows_long_lines_around_the_link() {
+        let body = format!("{} [[Target]] {}", "a".repeat(150), "b".repeat(150));
+        let s = backlink_snippet(&body, "target");
+        assert!(s.starts_with('…') && s.ends_with('…'), "{s}");
+        assert!(s.contains("[[Target]]"), "{s}");
+        assert_eq!(backlink_snippet("no link", "target"), "");
+    }
+
+    #[tokio::test]
+    async fn hash_terms_filter_by_tag_including_nested() {
+        let pool = crate::test_db().await;
+        let acme = note_with("Acme notes", "budget #Acme", &pool).await;
+        let web = note_with("Web", "budget #acme/web", &pool).await;
+        let co = note_with("Acmeco", "budget #acmeco", &pool).await;
+        let code = note_with("Code", "budget `#acme`", &pool).await;
+        let mut ids = hit_ids("#acme", &pool).await;
+        ids.sort();
+        assert_eq!(ids, vec![acme, web], "nested, not partial or in code");
+        assert_eq!(hit_ids("#ACME/web", &pool).await, vec![web]);
+        assert_eq!(hit_ids("#acmeco", &pool).await, vec![co]);
+        // AND with text terms (long via FTS, short in Rust) and other tags
+        assert_eq!(hit_ids("#acme/web budget", &pool).await, vec![web]);
+        assert_eq!(hit_ids("notes #acme", &pool).await, vec![acme]);
+        assert_eq!(hit_ids("#acme we", &pool).await, vec![web]);
+        assert!(hit_ids("#acme #acmeco", &pool).await.is_empty());
+        assert!(hit_ids("#missing", &pool).await.is_empty());
+        // `#` alone or digits only is text, not a tag
+        assert!(hit_ids("#123", &pool).await.is_empty());
+        let mut all_budget = hit_ids("budget", &pool).await;
+        all_budget.sort();
+        assert_eq!(all_budget, vec![acme, web, co, code]);
+        let limited = inner_search_notes("#acme", Some(1), &pool).await.unwrap();
+        assert_eq!(limited.len(), 1);
+        assert!(limited[0].snippet.is_empty());
     }
 
     #[tokio::test]

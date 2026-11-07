@@ -1,7 +1,8 @@
 // src-tauri/src/commands/customers.rs
+use crate::note_links::customer_slug;
 use crate::AppError;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Pool, Sqlite};
+use sqlx::{FromRow, Pool, Sqlite, SqliteConnection};
 use tauri::State;
 
 /// A customer row returned to the frontend.
@@ -45,6 +46,49 @@ async fn ensure_unique(name: &str, exclude_id: i64, pool: &Pool<Sqlite>) -> Resu
     Ok(())
 }
 
+/// The error for a name whose tag slug is taken (`#acme` for both "Acme" and "ACME!").
+pub(crate) fn tag_clash(tag: &str, other: &str) -> AppError {
+    AppError::Custom(format!("Name clashes with tag #{tag} ({other})"))
+}
+
+/// Fails if another customer (other than `exclude_id`) has the same tag slug.
+async fn ensure_no_tag_clash(
+    name: &str,
+    exclude_id: i64,
+    pool: &Pool<Sqlite>,
+) -> Result<(), AppError> {
+    let Some(tag) = customer_slug(name) else {
+        return Ok(());
+    };
+    let others: Vec<String> =
+        sqlx::query_scalar("SELECT Name FROM customers WHERE id != ? ORDER BY id")
+            .bind(exclude_id)
+            .fetch_all(pool)
+            .await?;
+    match others
+        .iter()
+        .find(|n| customer_slug(n).as_deref() == Some(&tag))
+    {
+        Some(other) => Err(tag_clash(&tag, other)),
+        None => Ok(()),
+    }
+}
+
+/// Does customer `id` own the tag `cslug`, i.e. no customer with a lower id has it too?
+pub(crate) async fn owns_tag(
+    id: i64,
+    cslug: &str,
+    conn: &mut SqliteConnection,
+) -> Result<bool, sqlx::Error> {
+    let lower: Vec<String> = sqlx::query_scalar("SELECT Name FROM customers WHERE id < ?")
+        .bind(id)
+        .fetch_all(conn)
+        .await?;
+    Ok(!lower
+        .iter()
+        .any(|n| customer_slug(n).as_deref() == Some(cslug)))
+}
+
 // ── Inner functions (testable without a Tauri app) ────────────────────────────
 
 pub async fn inner_list_customers(pool: &Pool<Sqlite>) -> Result<Vec<Customer>, AppError> {
@@ -61,6 +105,7 @@ pub async fn inner_list_customers(pool: &Pool<Sqlite>) -> Result<Vec<Customer>, 
 pub async fn inner_create_customer(name: &str, pool: &Pool<Sqlite>) -> Result<Customer, AppError> {
     let name = clean_name(name)?;
     ensure_unique(&name, 0, pool).await?;
+    ensure_no_tag_clash(&name, 0, pool).await?;
     let row = sqlx::query_as::<_, Customer>(
         "INSERT INTO customers (Name, UseAsDefault) VALUES (?, 0) \
          RETURNING id, Name as name, UseAsDefault as use_as_default",
@@ -71,29 +116,42 @@ pub async fn inner_create_customer(name: &str, pool: &Pool<Sqlite>) -> Result<Cu
     Ok(row)
 }
 
+/// Renames a customer. When it owns its tag (`#acme`, see `owns_tag`), tags in notes
+/// follow the rename (`#acme`, `#acme/web` → `#globex`, `#globex/web`) in the same
+/// transaction.
 pub async fn inner_update_customer(
     id: i64,
     name: &str,
     pool: &Pool<Sqlite>,
 ) -> Result<Customer, AppError> {
     let name = clean_name(name)?;
-    let exists: Option<i64> = sqlx::query_scalar("SELECT id FROM customers WHERE id = ?")
+    let old: Option<String> = sqlx::query_scalar("SELECT Name FROM customers WHERE id = ?")
         .bind(id)
         .fetch_optional(pool)
         .await?;
-    if exists.is_none() {
+    let Some(old) = old else {
         return Err(AppError::Custom("Customer not found".to_string()));
-    }
+    };
     ensure_unique(&name, id, pool).await?;
-    sqlx::query_as::<_, Customer>(
+    ensure_no_tag_clash(&name, id, pool).await?;
+    let mut tx = pool.begin().await?;
+    // The write comes first, so the transaction holds the write lock before it reads.
+    let row = sqlx::query_as::<_, Customer>(
         "UPDATE customers SET Name = ? WHERE id = ? \
          RETURNING id, Name as name, UseAsDefault as use_as_default",
     )
-    .bind(name)
+    .bind(&name)
     .bind(id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await?
-    .ok_or_else(|| AppError::Custom("Customer not found".to_string()))
+    .ok_or_else(|| AppError::Custom("Customer not found".to_string()))?;
+    if let (Some(old_tag), Some(new_tag)) = (customer_slug(&old), customer_slug(&name)) {
+        if old_tag != new_tag && owns_tag(id, &old_tag, &mut tx).await? {
+            crate::commands::notes::rewrite_tag_refs(&old_tag, &new_tag, &mut tx).await?;
+        }
+    }
+    tx.commit().await?;
+    Ok(row)
 }
 
 pub async fn inner_delete_customer(id: i64, pool: &Pool<Sqlite>) -> Result<(), AppError> {
@@ -170,7 +228,7 @@ pub async fn set_default_customer(id: i64, pool: State<'_, Pool<Sqlite>>) -> Res
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[tokio::test]
@@ -278,5 +336,137 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.to_string(), "Customer not found");
+    }
+
+    // ── Tags ──────────────────────────────────────────────────────────────────
+
+    const OLD: &str = "2000-01-01T00:00:00.000";
+
+    /// A note with `body` and an old `UpdatedAt`, so rewrites can be shown not to bump it.
+    pub(crate) async fn tagged_note(title: &str, body: &str, pool: &Pool<Sqlite>) -> i64 {
+        use crate::commands::notes::{inner_create_note_titled, inner_update_note_body};
+        let id = inner_create_note_titled(title, pool).await.unwrap().id;
+        inner_update_note_body(id, body, pool).await.unwrap();
+        sqlx::query("UPDATE notes SET UpdatedAt = ? WHERE id = ?")
+            .bind(OLD)
+            .bind(id)
+            .execute(pool)
+            .await
+            .unwrap();
+        id
+    }
+
+    pub(crate) async fn note_body(id: i64, pool: &Pool<Sqlite>) -> (String, String) {
+        let n = crate::commands::notes::inner_get_note(id, pool)
+            .await
+            .unwrap();
+        (n.body, n.updated_at)
+    }
+
+    #[tokio::test]
+    async fn test_customer_tag_clash_blocks_create_and_rename() {
+        let pool = crate::test_db().await;
+        let acme = inner_create_customer("Acme", &pool).await.unwrap();
+        let beta = inner_create_customer("Beta", &pool).await.unwrap();
+        for name in ["ACME!", "acme."] {
+            let err = inner_create_customer(name, &pool).await.unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                "Name clashes with tag #acme (Acme)",
+                "{name}"
+            );
+        }
+        let err = inner_update_customer(beta.id, "Acme Inc.", &pool).await;
+        assert!(err.is_ok(), "different slug is fine");
+        let err = inner_update_customer(beta.id, " acme ", &pool)
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "A customer named acme already exists");
+        let err = inner_update_customer(beta.id, "(Acme)", &pool)
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "Name clashes with tag #acme (Acme)");
+        // Renaming to a name with the same slug as itself is fine; untaggable names too.
+        inner_update_customer(acme.id, "ACME", &pool).await.unwrap();
+        inner_create_customer("123", &pool).await.unwrap();
+        inner_create_customer("!!!", &pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_customer_rename_rewrites_its_tags_in_notes() {
+        let pool = crate::test_db().await;
+        let acme = inner_create_customer("Acme", &pool).await.unwrap();
+        let body = "#acme #Acme/web #acme/web/x #acmeco #acme-x `#acme` [#acme](https://a.se/#acme)\n\n```\n#acme\n```";
+        let n = tagged_note("Tagged", body, &pool).await;
+        let other = tagged_note("Other", "#acmeco only", &pool).await;
+
+        inner_update_customer(acme.id, "Globex Inc", &pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            note_body(n, &pool).await,
+            (
+                "#globex-inc #globex-inc/web #globex-inc/web/x #acmeco #acme-x `#acme` [#acme](https://a.se/#acme)\n\n```\n#acme\n```".to_string(),
+                OLD.to_string()
+            )
+        );
+        assert_eq!(note_body(other, &pool).await.0, "#acmeco only");
+        let hits = crate::commands::notes::inner_search_notes("#globex-inc/web", None, &pool)
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 1, "refs re-indexed");
+        assert!(
+            crate::commands::notes::inner_search_notes("#acme", None, &pool)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_customer_rename_skips_tags_it_does_not_own_or_cannot_have() {
+        let pool = crate::test_db().await;
+        // Existing data that already collides: the lowest id owns `#acme`.
+        sqlx::raw_sql("INSERT INTO customers (id, Name) VALUES (1, 'Acme'), (2, 'ACME!');")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let n = tagged_note("Tagged", "#acme #acme/web", &pool).await;
+        inner_update_customer(2, "Beta", &pool).await.unwrap();
+        assert_eq!(note_body(n, &pool).await.0, "#acme #acme/web", "not owned");
+        inner_update_customer(1, "2024", &pool).await.unwrap();
+        assert_eq!(note_body(n, &pool).await.0, "#acme #acme/web", "no new tag");
+        inner_update_customer(1, "Acme", &pool).await.unwrap();
+        inner_update_customer(1, "ACME", &pool).await.unwrap();
+        assert_eq!(note_body(n, &pool).await.0, "#acme #acme/web", "same slug");
+    }
+
+    #[tokio::test]
+    async fn test_reserved_customer_slugs_get_no_tag() {
+        let pool = crate::test_db().await;
+        // `issue` / `todo` are chip namespaces: such customers are allowed but untagged,
+        // so they never clash with each other.
+        let issue = inner_create_customer("Issue", &pool).await.unwrap();
+        inner_create_customer("ISSUE!", &pool).await.unwrap();
+        let acme = inner_create_customer("Acme", &pool).await.unwrap();
+        let n = tagged_note("Tagged", "#issue/12 #issue #acme #acme/web #todo/3", &pool).await;
+        inner_update_customer(issue.id, "X", &pool).await.unwrap();
+        assert_eq!(
+            note_body(n, &pool).await.0,
+            "#issue/12 #issue #acme #acme/web #todo/3",
+            "renaming from a reserved slug rewrites nothing"
+        );
+        inner_update_customer(acme.id, "Todo", &pool).await.unwrap();
+        assert_eq!(
+            note_body(n, &pool).await.0,
+            "#issue/12 #issue #acme #acme/web #todo/3",
+            "renaming to a reserved slug rewrites nothing"
+        );
+        inner_update_customer(acme.id, "Acme", &pool).await.unwrap();
+        assert_eq!(
+            note_body(n, &pool).await.0,
+            "#issue/12 #issue #acme #acme/web #todo/3",
+            "Todo had no tag to rename from"
+        );
     }
 }

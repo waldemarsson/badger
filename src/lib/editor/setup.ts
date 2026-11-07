@@ -1,4 +1,5 @@
-// The note editor's extensions: markdown (GFM), history, keys, live preview, `/` menu and theme.
+// The note editor's extensions: markdown (GFM), history, keys, live preview, tags and
+// wikilinks, the `/`, `#` and `[[` menus, and theme.
 // No basicSetup: only what a notes editor needs.
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
@@ -7,25 +8,31 @@ import { EditorState, type Extension } from '@codemirror/state';
 import { drawSelection, EditorView, keymap, placeholder } from '@codemirror/view';
 import { blockPreview } from '#lib/editor/blocks.js';
 import { focusTracking } from '#lib/editor/focus.js';
+import { noteLinks } from '#lib/editor/links.js';
 import { livePreview } from '#lib/editor/live-preview.js';
 import { slashMenu } from '#lib/editor/slash.js';
 import { noteTheme } from '#lib/editor/theme.js';
+import type { LinkFollow } from '#lib/note-links.js';
 
-/** Extensions shared by every note's state; `onDocChange` gets the new body after each edit. */
-export function noteExtensions(onDocChange: (body: string) => void): Extension[] {
+/**
+ * Extensions shared by every note's state; `onDocChange` gets the new body after each edit,
+ * `onFollow` a ⌘-clicked tag, chip or wikilink.
+ */
+export function noteExtensions(onDocChange: (body: string) => void, onFollow: (link: LinkFollow) => void): Extension[] {
 	return [
 		history(),
 		drawSelection(),
 		EditorView.lineWrapping,
 		// markdown() also installs markdownKeymap: list continuation, empty item exits.
 		// Fenced code is parsed with its language, loaded on first use (one chunk each).
-		// No HTML tag completion: the `/` menu is the only completion source.
+		// No HTML tag completion: the `/`, `#` and `[[` menus are the only completion sources.
 		markdown({ base: markdownLanguage, codeLanguages: languages, completeHTMLTags: false }),
 		keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
 		EditorView.contentAttributes.of({ spellcheck: 'true', autocorrect: 'off', autocapitalize: 'off' }),
 		placeholder('Start writing…'),
 		focusTracking,
 		livePreview,
+		noteLinks(onFollow),
 		blockPreview,
 		slashMenu,
 		noteTheme,

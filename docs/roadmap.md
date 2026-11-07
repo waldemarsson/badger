@@ -9,7 +9,7 @@ Markdown notes stored in SQLite, written in Obsidian-compatible markdown so note
 1. **Notes core** — done, see Done below
 2. **Read view and copy as HTML** — done, see Done below
 3. **Search** — done, see Done below
-4. **Linking** — `#tags` with `#` autocomplete that also suggests customers (`#acme`), projects (`#acme/website`), issues (`#issue/123`) and todos (`#todo/42`, shown as chips); `[[wikilinks]]` between notes with backlinks; renaming a customer, project or note rewrites matching tags and links; deleting an item leaves its tag as a plain tag
+4. **Linking** — done, see Done below
 5. **Folders** — folder tree, move, drag and drop; deleting a folder moves its contents to the parent
 6. **Semantic search** — embedding model embedded in the app (downloaded on first use, configured in Settings), hybrid keyword and semantic results
 7. **Chat that edits notes** — deferred; local model with tool calls proposing diffs to accept or reject
@@ -20,6 +20,7 @@ Markdown notes stored in SQLite, written in Obsidian-compatible markdown so note
 
 ## Done
 
+- Notes linking — Obsidian-style `#tags` and `[[wikilinks]]` (`[[Title]]`, `[[Title|alias]]`) with `#` and `[[` autocomplete; `#acme`, `#acme/website`, `#issue/<id>` and `#todo/<id>` link to customers, projects, issues and todos, the last two shown as chips with the live title (todo chips coloured by status); ⌘-click in the editor or a plain click in the read view follows a link, a tag filters the note list, and following an unresolved wikilink creates the note; `#term` in the note search or ⌘K filters by tag (nested: `#acme` also matches `#acme/website`); a "Linked mentions" strip lists backlinks; renaming a note, customer or project rewrites matching links and tags in all notes, and deleting leaves a plain tag or an unresolved link
 - Notes search — SQLite FTS5 (`trigram`: case-insensitive substrings, so `rapport` finds `tidrapport`; å/ä/ö stay distinct) over titles and plain-text bodies; the note list ranks by relevance (title hits first) with highlighted titles and snippets, ⌘K lists the top 5 notes (from 3 typed characters), and Settings › Preferences shows the index size with a Rebuild button
 - Notes read view — ⌘E toggles a read view rendered in Rust (`pulldown-cmark`; raw HTML escaped, only http/https/mailto links, images never load) with highlighted code and links that open in the browser; "Copy as HTML" puts rendered HTML and the markdown source on the clipboard
 - Notes core — `/notes` page with a filtered note list and a CodeMirror 6 editor with Obsidian-style live preview (headings, emphasis, code, quotes, lists, task checkboxes, tables), autosave, pinning, ⌘N and a palette "New note" action; `notes` and nestable `folders` tables (no folder UI yet) included in backup/restore; a quit/close guard flushes unsaved edits

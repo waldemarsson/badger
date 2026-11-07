@@ -2,8 +2,21 @@
 //!
 //! The WebView has no CSP, so the output is locked down here: raw HTML is shown as
 //! text, only `http`, `https` and `mailto` links survive, and images never load.
+//!
+//! `#tags` and `[[wikilinks]]` (see `note_links`) become `<a href="#">` with data
+//! attributes in the read view, which the reader dispatches on: `data-tag` (normalized
+//! tag) for tags and chips, `data-note` (title as written) plus `data-note-id` or
+//! `data-unresolved` for wikilinks. `#issue/<id>` and `#todo/<id>` render as chips with
+//! the entity's title (`note-chip-todo` also carries `data-status`); unknown ids stay
+//! plain tags. Copy mode writes all of them as plain text.
 
+use crate::note_links::{self, EntityKind, Ref, RefKind};
+use crate::AppError;
 use pulldown_cmark::{html, CowStr, Event, LinkType, Options, Parser, Tag, TagEnd};
+use serde::Deserialize;
+use sqlx::{Pool, Sqlite};
+use std::collections::{BTreeSet, HashMap};
+use tauri::State;
 
 const ALLOWED_SCHEMES: [&str; 3] = ["http", "https", "mailto"];
 
@@ -35,10 +48,158 @@ enum Open {
     ImageText,
 }
 
-/// Renders note markdown (tables, strikethrough, task lists) to safe HTML.
-pub fn to_html(markdown: &str) -> String {
+/// `render_markdown` mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RenderMode {
+    /// The read view: tags, chips and wikilinks are clickable anchors.
+    Read,
+    /// "Copy as HTML": tags as `#tag`, wikilinks as alias or title, chips as the title.
+    Copy,
+}
+
+/// What a note's wikilinks and chips resolve to.
+#[derive(Debug, Default)]
+pub struct Resolver {
+    /// Lowercased title → (id, title).
+    pub notes: HashMap<String, (i64, String)>,
+    /// Issue id → title.
+    pub issues: HashMap<i64, String>,
+    /// Todo id → (title, status).
+    pub todos: HashMap<i64, (String, String)>,
+}
+
+impl Resolver {
+    /// Loads what `refs` need: note titles when there are wikilinks, and the issues and
+    /// todos that chips reference.
+    pub async fn load(refs: &[Ref], pool: &Pool<Sqlite>) -> Result<Self, AppError> {
+        let mut resolver = Resolver::default();
+        if refs.iter().any(|r| r.kind == RefKind::Link) {
+            let notes: Vec<(i64, String)> = sqlx::query_as("SELECT id, Title FROM notes")
+                .fetch_all(pool)
+                .await?;
+            for (id, title) in notes {
+                resolver
+                    .notes
+                    .entry(title.to_lowercase())
+                    .or_insert((id, title));
+            }
+        }
+        let mut issues = BTreeSet::new();
+        let mut todos = BTreeSet::new();
+        for r in refs.iter().filter(|r| r.kind == RefKind::Tag) {
+            match note_links::entity_tag(&r.target) {
+                Some((EntityKind::Issue, id)) => issues.insert(id),
+                Some((EntityKind::Todo, id)) => todos.insert(id),
+                None => false,
+            };
+        }
+        for id in issues {
+            let title: Option<String> = sqlx::query_scalar("SELECT Title FROM issues WHERE id = ?")
+                .bind(id)
+                .fetch_optional(pool)
+                .await?;
+            if let Some(title) = title {
+                resolver.issues.insert(id, title);
+            }
+        }
+        for id in todos {
+            let todo: Option<(String, String)> =
+                sqlx::query_as("SELECT Title, Status FROM todos WHERE id = ?")
+                    .bind(id)
+                    .fetch_optional(pool)
+                    .await?;
+            if let Some(todo) = todo {
+                resolver.todos.insert(id, todo);
+            }
+        }
+        Ok(resolver)
+    }
+}
+
+/// Escapes text for an HTML attribute value or element content.
+fn escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// The events standing in for one tag or wikilink.
+fn ref_event(markdown: &str, r: &Ref, mode: RenderMode, resolver: &Resolver) -> Event<'static> {
+    let written = &markdown[r.range.clone()];
+    let target_text = &markdown[r.target_range.clone()];
+    match r.kind {
+        RefKind::Tag => {
+            let chip = match note_links::entity_tag(&r.target) {
+                Some((EntityKind::Issue, id)) => resolver
+                    .issues
+                    .get(&id)
+                    .map(|title| (title.as_str(), "note-chip note-chip-issue", None)),
+                Some((EntityKind::Todo, id)) => resolver.todos.get(&id).map(|(title, status)| {
+                    (
+                        title.as_str(),
+                        "note-chip note-chip-todo",
+                        Some(status.as_str()),
+                    )
+                }),
+                None => None,
+            };
+            match (mode, chip) {
+                (RenderMode::Copy, Some((title, _, _))) => {
+                    Event::Text(CowStr::from(title.to_string()))
+                }
+                (RenderMode::Copy, None) => Event::Text(CowStr::from(written.to_string())),
+                (RenderMode::Read, Some((title, class, status))) => {
+                    let status = status
+                        .map(|s| format!(" data-status=\"{}\"", escape(s)))
+                        .unwrap_or_default();
+                    Event::InlineHtml(CowStr::from(format!(
+                        "<a href=\"#\" class=\"{class}\" data-tag=\"{}\"{status}>{}</a>",
+                        escape(&r.target),
+                        escape(title)
+                    )))
+                }
+                (RenderMode::Read, None) => Event::InlineHtml(CowStr::from(format!(
+                    "<a href=\"#\" class=\"note-tag\" data-tag=\"{}\">{}</a>",
+                    escape(&r.target),
+                    escape(written)
+                ))),
+            }
+        }
+        RefKind::Link => {
+            let text = r.alias.as_deref().unwrap_or(target_text);
+            if mode == RenderMode::Copy {
+                return Event::Text(CowStr::from(text.to_string()));
+            }
+            let resolved = match resolver.notes.get(&r.target) {
+                Some((id, _)) => format!(" data-note-id=\"{id}\""),
+                None => " data-unresolved=\"\"".to_string(),
+            };
+            Event::InlineHtml(CowStr::from(format!(
+                "<a href=\"#\" class=\"note-wikilink\" data-note=\"{}\"{resolved}>{}</a>",
+                escape(target_text),
+                escape(text)
+            )))
+        }
+    }
+}
+
+/// Renders note markdown (tables, strikethrough, task lists) to safe HTML; `refs` (from
+/// `note_links::extract(markdown)`) are rendered per `mode` and resolved by `resolver`.
+pub fn render(markdown: &str, refs: &[Ref], mode: RenderMode, resolver: &Resolver) -> String {
     let options =
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+    // Refs not yet passed (both in source order).
+    let mut next_ref = 0;
     let mut open: Vec<Open> = Vec::new();
     let mut events: Vec<Event> = Vec::new();
     // Number of `<a>` currently open; a nested anchor would be invalid HTML.
@@ -48,8 +209,56 @@ pub fn to_html(markdown: &str) -> String {
             .count()
     };
 
-    for event in Parser::new_ext(markdown, options) {
+    for (event, range) in Parser::new_ext(markdown, options).into_offset_iter() {
         match event {
+            // Text in a tag or wikilink: pulldown-cmark may split one ref over several
+            // text events (`[`, `[`, `Foo`, `]`, `]`); the ref is emitted where it starts.
+            Event::Text(text) => {
+                while refs
+                    .get(next_ref)
+                    .is_some_and(|r| r.range.end <= range.start)
+                {
+                    next_ref += 1;
+                }
+                if !refs
+                    .get(next_ref)
+                    .is_some_and(|r| r.range.start < range.end)
+                {
+                    if let Some(Open::ImageAnchor { has_text, .. }) = open.last_mut() {
+                        *has_text = true;
+                    }
+                    events.push(Event::Text(text));
+                    continue;
+                }
+                let overlapping = refs[next_ref..]
+                    .iter()
+                    .take_while(|r| r.range.start < range.end);
+                if text.as_ref() != &markdown[range.clone()] {
+                    // An entity or escape: it is all inside a ref or all outside one.
+                    if !overlapping
+                        .clone()
+                        .any(|r| r.range.start <= range.start && range.end <= r.range.end)
+                    {
+                        events.push(Event::Text(text));
+                    }
+                    continue;
+                }
+                let mut pos = range.start;
+                for r in overlapping {
+                    if r.range.start > pos {
+                        let before = markdown[pos..r.range.start].to_string();
+                        events.push(Event::Text(CowStr::from(before)));
+                    }
+                    if r.range.start >= range.start {
+                        events.push(ref_event(markdown, r, mode, resolver));
+                    }
+                    pos = pos.max(r.range.end.min(range.end));
+                }
+                if pos < range.end {
+                    let after = markdown[pos..range.end].to_string();
+                    events.push(Event::Text(CowStr::from(after)));
+                }
+            }
             Event::Start(Tag::Link {
                 link_type,
                 dest_url,
@@ -170,16 +379,36 @@ pub fn to_plain_text(markdown: &str) -> String {
     out.trim_end().to_string()
 }
 
-/// Renders markdown for the read view and "Copy as HTML". Async so a long note
-/// doesn't render on the main thread.
+/// Renders markdown for the read view (`Read`) or "Copy as HTML" (`Copy`), resolving
+/// wikilinks and chips against the database.
+pub async fn inner_render_markdown(
+    markdown: &str,
+    mode: RenderMode,
+    pool: &Pool<Sqlite>,
+) -> Result<String, AppError> {
+    let refs = note_links::extract(markdown);
+    let resolver = Resolver::load(&refs, pool).await?;
+    Ok(render(markdown, &refs, mode, &resolver))
+}
+
+/// Async so a long note doesn't render on the main thread.
 #[tauri::command]
-pub async fn render_markdown(markdown: String) -> String {
-    to_html(&markdown)
+pub async fn render_markdown(
+    markdown: String,
+    mode: RenderMode,
+    pool: State<'_, Pool<Sqlite>>,
+) -> Result<String, AppError> {
+    inner_render_markdown(&markdown, mode, pool.inner()).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Rendering without tags and wikilinks (plain markdown).
+    fn to_html(markdown: &str) -> String {
+        render(markdown, &[], RenderMode::Read, &Resolver::default())
+    }
 
     #[test]
     fn renders_basic_elements() {
@@ -355,5 +584,128 @@ mod tests {
     #[test]
     fn plain_text_of_empty_input_is_empty() {
         assert_eq!(to_plain_text(""), "");
+    }
+
+    // ── Tags and wikilinks ────────────────────────────────────────────────────
+
+    fn resolver() -> Resolver {
+        let mut r = Resolver::default();
+        r.notes.insert("plan".into(), (3, "Plan".into()));
+        r.notes
+            .insert("a \"q\" & <co".into(), (4, "A \"q\" & <co".into()));
+        r.issues.insert(12, "Login <bug>".into());
+        r.todos.insert(5, ("Call Åsa".into(), "in_progress".into()));
+        r
+    }
+
+    fn render_with(markdown: &str, mode: RenderMode) -> String {
+        render(markdown, &note_links::extract(markdown), mode, &resolver())
+    }
+
+    #[test]
+    fn read_mode_renders_tags_and_wikilinks_as_data_anchors() {
+        let html = render_with(
+            "See #Acme/Web, [[plan]] and [[Plan|the plan]] or [[Missing]].",
+            RenderMode::Read,
+        );
+        assert_eq!(
+            html,
+            "<p>See <a href=\"#\" class=\"note-tag\" data-tag=\"acme/web\">#Acme/Web</a>, \
+             <a href=\"#\" class=\"note-wikilink\" data-note=\"plan\" data-note-id=\"3\">plan</a> and \
+             <a href=\"#\" class=\"note-wikilink\" data-note=\"Plan\" data-note-id=\"3\">the plan</a> or \
+             <a href=\"#\" class=\"note-wikilink\" data-note=\"Missing\" data-unresolved=\"\">Missing</a>.</p>\n"
+        );
+    }
+
+    #[test]
+    fn read_mode_renders_chips_and_unknown_ids_as_plain_tags() {
+        let html = render_with("#issue/12 #todo/5 #todo/99 #issue/7", RenderMode::Read);
+        assert_eq!(
+            html,
+            "<p><a href=\"#\" class=\"note-chip note-chip-issue\" data-tag=\"issue/12\">Login &lt;bug&gt;</a> \
+             <a href=\"#\" class=\"note-chip note-chip-todo\" data-tag=\"todo/5\" data-status=\"in_progress\">Call Åsa</a> \
+             <a href=\"#\" class=\"note-tag\" data-tag=\"todo/99\">#todo/99</a> \
+             <a href=\"#\" class=\"note-tag\" data-tag=\"issue/7\">#issue/7</a></p>\n"
+        );
+    }
+
+    #[test]
+    fn read_mode_escapes_titles_and_keeps_raw_html_escaped() {
+        let html = render_with(
+            "[[A \"q\" & <co]] <b onclick=x>#t</b> `#code` &amp; #x",
+            RenderMode::Read,
+        );
+        assert!(html.contains(
+            "<a href=\"#\" class=\"note-wikilink\" data-note=\"A &quot;q&quot; &amp; &lt;co\" data-note-id=\"4\">A &quot;q&quot; &amp; &lt;co</a>"
+        ), "{html}");
+        assert!(html.contains("&lt;b onclick=x&gt;<a href=\"#\" class=\"note-tag\" data-tag=\"t\">#t</a>&lt;/b&gt;"), "{html}");
+        assert!(html.contains("<code>#code</code> &amp; <a"), "{html}");
+        assert!(!html.contains("<b"), "{html}");
+    }
+
+    #[test]
+    fn read_mode_handles_tables_headings_and_formatting() {
+        let html = render_with(
+            "# Title #tag\n\n| a |\n|---|\n| [[Plan\\|alias]] x |\n\n*[[plan]]* [ok](https://a.se/#x)",
+            RenderMode::Read,
+        );
+        assert!(
+            html.contains(
+                "<h1>Title <a href=\"#\" class=\"note-tag\" data-tag=\"tag\">#tag</a></h1>"
+            ),
+            "{html}"
+        );
+        assert!(html.contains("<td><a href=\"#\" class=\"note-wikilink\" data-note=\"Plan\" data-note-id=\"3\">alias</a> x</td>"), "{html}");
+        assert!(
+            html.contains("<em><a href=\"#\" class=\"note-wikilink\" data-note=\"plan\""),
+            "{html}"
+        );
+        assert!(
+            html.contains("<a href=\"https://a.se/#x\">ok</a>"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn copy_mode_writes_tags_links_and_chips_as_plain_text() {
+        let html = render_with(
+            "#Acme [[Plan|the plan]] [[Missing]] #issue/12 #todo/5 #todo/99 <i>",
+            RenderMode::Copy,
+        );
+        assert_eq!(
+            html,
+            "<p>#Acme the plan Missing Login &lt;bug&gt; Call Åsa #todo/99 &lt;i&gt;</p>\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn inner_render_resolves_against_the_database() {
+        let pool = crate::test_db().await;
+        sqlx::raw_sql(
+            "INSERT INTO customers (id, Name) VALUES (1, 'Acme');
+             INSERT INTO projects (id, CustomerId, Name) VALUES (1, 1, 'Web');
+             INSERT INTO issues (id, ProjectId, Title) VALUES (12, 1, 'Login bug');
+             INSERT INTO todos (id, Title, Status, CreatedAt) VALUES (5, 'Ship', 'done', 'x');
+             INSERT INTO notes (id, Title, CreatedAt, UpdatedAt) VALUES (3, 'Åsa', 'x', 'x');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let html = inner_render_markdown("[[ÅSA]] #issue/12 #todo/5", RenderMode::Read, &pool)
+            .await
+            .unwrap();
+        assert!(
+            html.contains("data-note=\"ÅSA\" data-note-id=\"3\">ÅSA</a>"),
+            "{html}"
+        );
+        assert!(
+            html.contains("data-tag=\"issue/12\">Login bug</a>"),
+            "{html}"
+        );
+        assert!(html.contains("data-status=\"done\">Ship</a>"), "{html}");
+        let copy = inner_render_markdown("[[ÅSA]] #todo/5", RenderMode::Copy, &pool)
+            .await
+            .unwrap();
+        assert_eq!(copy, "<p>ÅSA Ship</p>\n");
     }
 }

@@ -89,6 +89,16 @@ CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(ParentId);
 -- Derived search index (rowid = notes.id, Body = plain text). Rust keeps it in sync;
 -- not part of backups: restore rebuilds it.
 CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(Title, Body, tokenize = 'trigram');
+
+-- Derived link index: each note's #tags and [[wikilink]] targets, lowercased. Rust keeps
+-- it in sync with bodies; not part of backups: restore rebuilds it.
+CREATE TABLE IF NOT EXISTS note_refs (
+    NoteId    INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    Kind      TEXT    NOT NULL CHECK (Kind IN ('tag', 'link')),
+    Target    TEXT    NOT NULL,
+    PRIMARY KEY (NoteId, Kind, Target)
+);
+CREATE INDEX IF NOT EXISTS idx_note_refs_target ON note_refs(Kind, Target);
 ";
 
 /// Opens (or creates) the SQLite database at `db_path` with WAL mode and FK enforcement,
@@ -115,6 +125,7 @@ pub async fn init_db(db_path: &Path) -> Result<Pool<Sqlite>, sqlx::Error> {
     migrate_todos_status(&pool).await?;
     migrate_issues_drop_external_id(&pool).await?;
     backfill_notes_fts(&pool).await?;
+    backfill_note_refs(&pool).await?;
 
     Ok(pool)
 }
@@ -176,6 +187,22 @@ pub async fn backfill_notes_fts(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> 
     Ok(())
 }
 
+/// Rebuilds the link index when its stored version differs from the code's: the first
+/// start after it was added, or after the extraction rules changed. Idempotent.
+pub async fn backfill_note_refs(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
+    let stored: Option<String> = sqlx::query_scalar("SELECT Value FROM app_settings WHERE Key = ?")
+        .bind(crate::commands::notes::NOTE_REFS_VERSION_KEY)
+        .fetch_optional(pool)
+        .await?;
+    if stored.as_deref() == Some(crate::commands::notes::NOTE_REFS_VERSION) {
+        return Ok(());
+    }
+    let mut tx = pool.begin().await?;
+    crate::commands::notes::rebuild_refs(&mut tx).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #[tokio::test]
@@ -204,6 +231,7 @@ mod tests {
         );
         assert!(names.contains(&"folders"), "folders table missing");
         assert!(names.contains(&"notes"), "notes table missing");
+        assert!(names.contains(&"note_refs"), "note_refs table missing");
     }
 
     async fn object_names(pool: &sqlx::SqlitePool, kind: &str) -> Vec<String> {
@@ -365,6 +393,82 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(hits.len(), 1);
+        pool.close().await;
+    }
+
+    async fn ref_rows(pool: &sqlx::SqlitePool) -> Vec<(String, String)> {
+        sqlx::query_as("SELECT Kind, Target FROM note_refs ORDER BY Kind, Target")
+            .fetch_all(pool)
+            .await
+            .unwrap()
+    }
+
+    async fn refs_version(pool: &sqlx::SqlitePool) -> Option<String> {
+        sqlx::query_scalar("SELECT Value FROM app_settings WHERE Key = 'note_refs_version'")
+            .fetch_optional(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_init_db_builds_link_index_only_when_its_version_changes() {
+        let db = TempDb::new("pre-refs");
+        {
+            use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+            let opts = SqliteConnectOptions::new()
+                .filename(&db.0)
+                .create_if_missing(true);
+            let pool = SqlitePoolOptions::new().connect_with(opts).await.unwrap();
+            // Pre-links shape: everything in SCHEMA_SQL before `note_refs`; the search
+            // index is complete, so only the version can trigger the build.
+            let old_schema = super::SCHEMA_SQL
+                .split("-- Derived link index")
+                .next()
+                .unwrap();
+            sqlx::raw_sql(old_schema).execute(&pool).await.unwrap();
+            sqlx::query(
+                "INSERT INTO notes (Title, Body, CreatedAt, UpdatedAt) \
+                 VALUES ('Old note', 'see #Acme and [[Plan]] `#code`', 'x', 'x')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            let mut conn = pool.acquire().await.unwrap();
+            sqlx::query("INSERT INTO notes_fts (rowid, Title, Body) VALUES (1, 'Old note', 'x')")
+                .execute(&mut *conn)
+                .await
+                .unwrap();
+            drop(conn);
+            pool.close().await;
+        }
+
+        let pool = super::init_db(&db.0).await.unwrap();
+        let expected = vec![
+            ("link".to_string(), "plan".to_string()),
+            ("tag".to_string(), "acme".to_string()),
+        ];
+        assert_eq!(ref_rows(&pool).await, expected);
+        assert_eq!(
+            refs_version(&pool).await.as_deref(),
+            Some(crate::commands::notes::NOTE_REFS_VERSION)
+        );
+        // Same version: a drifted index is left alone (Settings › Rebuild repairs it).
+        sqlx::query("DELETE FROM note_refs")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        let pool = super::init_db(&db.0).await.unwrap();
+        assert!(ref_rows(&pool).await.is_empty());
+
+        // An old version rebuilds it.
+        sqlx::query("UPDATE app_settings SET Value = '0' WHERE Key = 'note_refs_version'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        let pool = super::init_db(&db.0).await.unwrap();
+        assert_eq!(ref_rows(&pool).await, expected);
         pool.close().await;
     }
 

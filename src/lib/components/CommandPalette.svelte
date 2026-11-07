@@ -25,6 +25,7 @@
 	} from '#lib/palette.js';
 	import { changes, logTimeRequest, palette, showToast, type LogTimePrefill } from '#lib/palette-state.svelte.js';
 	import { splitHighlights } from '#lib/notes.js';
+	import { tagTerm } from '#lib/note-links.js';
 	import type { Customer, Issue, NoteHit, PaletteSettings, Project, TimeEntryRow } from '#lib/types.js';
 
 	let {
@@ -87,13 +88,16 @@
 
 	// Notes matching the root query, from the search index; listed after the commands.
 	const NOTE_HIT_LIMIT = 5;
-	// Shorter queries are for commands ("ne" → New note), and would scan every note.
+	// Shorter queries are for commands ("ne" → New note), and would scan every note. A `#tag`
+	// term (search_notes filters by tag) searches at any length: commands never start with `#`.
 	const MIN_NOTE_QUERY_CHARS = 3;
 	let noteResults = $state<{ term: string; hits: NoteHit[] }>({ term: '', hits: [] });
 	let noteSeq = 0;
 	const noteTerm = $derived.by(() => {
 		const term = open && step === 'root' ? texts.root.trim() : '';
-		return [...term].length >= MIN_NOTE_QUERY_CHARS ? term : '';
+		return [...term].length >= MIN_NOTE_QUERY_CHARS || term.split(/\s+/).some((t) => tagTerm(t) !== null)
+			? term
+			: '';
 	});
 	// Only hits for the current text: stale ones could be picked with Enter.
 	const noteHits = $derived(noteResults.term === noteTerm ? noteResults.hits : []);

@@ -9,11 +9,14 @@
 	import type { Segment } from '#lib/notes.js';
 	import { NoteSaveQueue } from '#lib/note-save-queue.js';
 	import { registerFlushHandler } from '#lib/flush-guard.js';
-	import type { Note, NoteHit, NoteSummary } from '#lib/types.js';
+	import { splitSearchQuery, type LinkFollow } from '#lib/note-links.js';
+	import { linkData } from '#lib/editor/links.js';
+	import type { Backlink, LinkTargets, Note, NoteHit, NoteSummary, RenamedNote, RenderMode, TagSuggestion } from '#lib/types.js';
 	import NoteEditor from '#lib/components/NoteEditor.svelte';
 	import NoteReader from '#lib/components/NoteReader.svelte';
 	import BookOpen from 'lucide-svelte/icons/book-open';
 	import Check from 'lucide-svelte/icons/check';
+	import ChevronRight from 'lucide-svelte/icons/chevron-right';
 	import CircleAlert from 'lucide-svelte/icons/circle-alert';
 	import Copy from 'lucide-svelte/icons/copy';
 	import NotebookPen from 'lucide-svelte/icons/notebook-pen';
@@ -103,7 +106,10 @@
 		const id = current.id;
 		renderError = '';
 		try {
-			const html = await invoke<string>('render_markdown', { markdown: editor?.text() ?? '' });
+			const html = await invoke<string>('render_markdown', {
+				markdown: editor?.text() ?? '',
+				mode: 'read' satisfies RenderMode
+			});
 			if (seq !== renderSeq) return; // switched notes or toggled meanwhile
 			rendered = { id, html };
 		} catch (e) {
@@ -133,7 +139,7 @@
 		if (!current) return;
 		viewError = '';
 		const markdown = editor?.text() ?? '';
-		const html = invoke<string>('render_markdown', { markdown });
+		const html = invoke<string>('render_markdown', { markdown, mode: 'copy' satisfies RenderMode });
 		html.catch(() => {}); // a failure surfaces through clipboard.write below
 		try {
 			// Promise-valued items keep WebKit's user-gesture check satisfied across the invoke.
@@ -150,6 +156,102 @@
 		copied = true;
 		clearTimeout(copiedTimer);
 		copiedTimer = setTimeout(() => (copied = false), 2000);
+	}
+
+	// ── Links: tags, wikilinks, backlinks ─────────────────────────────────────────
+
+	let linksSeq = 0;
+
+	/** Refetches what wikilinks/chips resolve to and the `#` suggestions (redraws the editor). */
+	async function refreshLinks(): Promise<void> {
+		const seq = ++linksSeq;
+		try {
+			const [targets, suggestions] = await Promise.all([
+				invoke<LinkTargets>('get_link_targets'),
+				invoke<TagSuggestion[]>('list_tag_suggestions')
+			]);
+			if (seq === linksSeq) editor?.setLinks(linkData(targets, suggestions));
+		} catch {
+			// Links keep their last resolution; the next note switch retries.
+		}
+	}
+
+	let backlinks = $state<{ id: number; items: Backlink[] } | null>(null);
+	let backlinksOpen = $state(false); // survives note switches, not page loads
+	let backlinksError = $state('');
+	let backlinksSeq = 0;
+
+	async function loadBacklinks(id: number): Promise<void> {
+		const seq = ++backlinksSeq;
+		try {
+			const items = await invoke<Backlink[]>('list_backlinks', { id });
+			if (seq !== backlinksSeq) return;
+			backlinks = { id, items };
+			backlinksError = '';
+		} catch (e) {
+			if (seq !== backlinksSeq) return;
+			backlinks = { id, items: [] };
+			backlinksError = String(e);
+		}
+	}
+
+	const currentBacklinks = $derived(backlinks && backlinks.id === current?.id ? backlinks.items : null);
+
+	/** ⌘-click in the editor, click in the read view. */
+	function follow(link: LinkFollow): void {
+		if (link.kind === 'tag') {
+			query = `#${link.tag}`;
+			listEl?.scrollTo({ top: 0 });
+			return;
+		}
+		const wanted = link.title.trim().toLowerCase();
+		const id = notes.find((n) => n.title.toLowerCase() === wanted)?.id ?? link.id;
+		if (id !== null) void select(id);
+		else createChain = createChain.then(() => createTitled(link.title.trim()));
+	}
+
+	/** An unresolved wikilink was followed: create the note with that title and open it. */
+	async function createTitled(title: string): Promise<void> {
+		actionError = '';
+		try {
+			const seq = ++selectSeq;
+			await commitTitle(true);
+			await queue.flush();
+			const note = await invoke<Note>('create_note_titled', { title });
+			notes = upsertNote(notes, summaryOf(note));
+			if (seq !== selectSeq) return;
+			reading = false; // a new note is for writing
+			show(note);
+			await tick();
+			editor?.focus();
+		} catch (e) {
+			actionError = String(e);
+		}
+	}
+
+	/**
+	 * After a rename rewrote `[[Old]]` in these notes: drop their cached editor state and
+	 * queue entries, so nothing restores the old text, and reload the open one if affected.
+	 * The queue was flushed before the rename, so nothing unsaved is dropped.
+	 */
+	async function reloadRewritten(ids: number[]): Promise<void> {
+		const openId = current && ids.includes(current.id) ? current.id : null;
+		let fresh: Note | null = null;
+		if (openId !== null) {
+			try {
+				fresh = await invoke<Note>('get_note', { id: openId });
+			} catch (e) {
+				actionError = `Couldn't reload this note after the rename: ${String(e)}`;
+			}
+		}
+		for (const id of ids) {
+			queue.forget(id);
+			editor?.forget(id);
+		}
+		void load(); // their excerpts changed
+		if (openId === null || current?.id !== openId) return;
+		if (fresh) show(fresh);
+		else showNothing();
 	}
 
 	// ── List ──────────────────────────────────────────────────────────────────────
@@ -184,6 +286,8 @@
 	});
 
 	const visible = $derived(searchTerm ? searchRows(notes, hits) : plainRows(notes));
+	/** The `#tag` terms of the search, shown above the results. */
+	const tagFilter = $derived(splitSearchQuery(searchTerm));
 	const searching = $derived(searchTerm !== '' && hitsFor !== searchTerm && !searchError);
 
 	async function load(): Promise<void> {
@@ -239,6 +343,8 @@
 		editor?.open(note.id, note.body);
 		setUrl(note.id);
 		if (reading) void renderCurrent();
+		void loadBacklinks(note.id);
+		void refreshLinks(); // other notes' tags and titles may have changed since
 	}
 
 	function showNothing(): void {
@@ -251,6 +357,8 @@
 		renderSeq++;
 		rendered = null;
 		renderError = '';
+		backlinksSeq++;
+		backlinks = null;
 		editor?.close();
 		setUrl(null);
 	}
@@ -400,17 +508,22 @@
 
 	async function rename(id: number, title: string): Promise<boolean> {
 		try {
-			const summary = await invoke<NoteSummary>('rename_note', { id, title });
+			// The rename rewrites [[links]] in stored bodies: store every edit first.
+			if (!(await queue.flush())) throw new Error("Your notes couldn't be saved, so the title wasn't changed");
+			const { note: summary, rewritten_ids } = await invoke<RenamedNote>('rename_note', { id, title });
 			applySummary(summary);
 			if (current?.id === id) {
 				titleDraft = summary.title;
 				titleError = '';
 				lastFailedTitle = null;
 			}
+			if (rewritten_ids.length) await reloadRewritten(rewritten_ids);
+			void refreshLinks();
+			if (current) void loadBacklinks(current.id);
 			return true;
 		} catch (e) {
 			if (current?.id === id) {
-				titleError = String(e);
+				titleError = e instanceof Error ? e.message : String(e);
 				lastFailedTitle = title;
 			}
 			return false;
@@ -461,6 +574,7 @@
 		queue.forget(id); // a late save response is ignored
 		editor?.forget(id);
 		notes = notes.filter((n) => n.id !== id);
+		void refreshLinks(); // links to it are unresolved now
 		selectedId = null;
 		current = null;
 		if (next === null) showNothing();
@@ -522,6 +636,7 @@
 
 	onMount(() => {
 		void load();
+		void refreshLinks();
 		// Title and body are written concurrently so a slow rename can't eat the quit budget.
 		const unregister = registerFlushHandler(async () => {
 			const [, saved] = await Promise.all([commitTitle(true), queue.flush()]);
@@ -633,8 +748,18 @@
 						<div class="notes-empty" in:fade={{ duration: 150 }}>
 							<Search size={20} class="text-slate-300 dark:text-neutral-600" />
 							<p class="font-medium text-slate-600 dark:text-neutral-300">No matches</p>
-							<p class="text-xs">Nothing matches “{searchTerm}”.</p>
+							{#if tagFilter.tags.length && !tagFilter.text}
+								<p class="text-xs">No notes are tagged {tagFilter.tags.map((t) => `#${t}`).join(' and ')}.</p>
+							{:else}
+								<p class="text-xs">Nothing matches “{searchTerm}”.</p>
+							{/if}
 						</div>
+					{:else if tagFilter.tags.length && visible.length}
+						<p class="notes-filter-hint" in:fade={{ duration: 150 }}>
+							<span>{visible.length} {visible.length === 1 ? 'note' : 'notes'} tagged</span>
+							{#each tagFilter.tags as tag (tag)}<span class="note-tag">#{tag}</span>{/each}
+							{#if tagFilter.text}<span>with “{tagFilter.text}”</span>{/if}
+						</p>
 					{/if}
 					{#each visible as { note: n, title, snippet } (n.id)}
 						<div
@@ -803,11 +928,51 @@
 					{#if renderError}
 						<div class="px-6 pt-4">{@render dismissible(`Couldn't show the read view: ${renderError}`, () => void toggleReading())}</div>
 					{:else if rendered?.id === current.id}
-						<NoteReader bind:this={reader} html={rendered.html} onerror={(m) => (viewError = m)} class="min-h-0 flex-1" />
+						<NoteReader bind:this={reader} html={rendered.html} onerror={(m) => (viewError = m)} onfollow={follow} class="min-h-0 flex-1" />
 					{/if}
 				{/if}
 				<!-- Hidden, not unmounted, while reading: it keeps each note's state and mounts the code colors. -->
-				<NoteEditor bind:this={editor} onchange={onBodyChange} class={current && !reading ? 'min-h-0 flex-1' : 'hidden'} />
+				<NoteEditor bind:this={editor} onchange={onBodyChange} onfollow={follow} class={current && !reading ? 'min-h-0 flex-1' : 'hidden'} />
+				{#if current}
+					<!-- Notes linking here ([[this title]]); collapsed to a one-line bar by default. -->
+					<div class="notes-backlinks">
+						<button
+							type="button"
+							class="notes-backlinks-toggle"
+							aria-expanded={backlinksOpen}
+							aria-controls="notes-backlinks-list"
+							onclick={() => (backlinksOpen = !backlinksOpen)}
+						>
+							<ChevronRight size={14} class="shrink-0 transition-transform duration-150 {backlinksOpen ? 'rotate-90' : ''}" />
+							Linked mentions
+							{#if currentBacklinks}
+								<span class="notes-backlinks-count" in:fade={{ duration: 150 }}>{currentBacklinks.length}</span>
+							{/if}
+						</button>
+						{#if backlinksOpen}
+							<div id="notes-backlinks-list" class="notes-backlinks-list" transition:fade={{ duration: 150 }}>
+								{#if backlinksError}
+									<p class="form-error px-2 pb-2">Couldn't load linked mentions: {backlinksError}</p>
+								{:else if currentBacklinks?.length === 0}
+									<p class="notes-backlinks-empty">No notes link to “{current.title}” yet. Link one with [[{current.title}]].</p>
+								{:else if currentBacklinks}
+									<ul>
+										{#each currentBacklinks as link (link.id)}
+											<li>
+												<button type="button" class="notes-backlink" onclick={() => void select(link.id)}>
+													<span class="notes-backlink-title">{link.title}</span>
+													{#if link.snippet.trim()}
+														<span class="notes-backlink-snippet">{link.snippet.trim()}</span>
+													{/if}
+												</button>
+											</li>
+										{/each}
+									</ul>
+								{/if}
+							</div>
+						{/if}
+					</div>
+				{/if}
 			</section>
 		</div>
 	</div>

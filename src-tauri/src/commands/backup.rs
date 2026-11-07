@@ -248,7 +248,8 @@ pub async fn inner_restore_data(json: &str, pool: &Pool<Sqlite>) -> Result<(), A
     insert_todos(&data.todos, &mut tx).await?;
     insert_travel(&data.travel, &mut tx).await?;
     insert_folders_and_notes(&data.folders, &data.notes, &mut tx).await?;
-    // The search index is derived and not in the backup: rebuild it in the same transaction.
+    // The search and link indexes are derived and not in the backup: rebuild them in the
+    // same transaction.
     crate::commands::notes::rebuild_index(&mut tx).await?;
 
     tx.commit().await.map_err(|e| match &e {
@@ -591,6 +592,39 @@ mod tests {
         );
         assert_eq!(ids("plan", pool.clone()).await, vec![2]);
         assert_eq!(ids("åsa", pool.clone()).await, vec![1]);
+    }
+
+    #[tokio::test]
+    async fn test_restore_rebuilds_link_index() {
+        let pool = crate::test_db().await;
+        sqlx::raw_sql(
+            "INSERT INTO notes (id, Title, Body, CreatedAt, UpdatedAt) VALUES
+               (1, 'Linker', 'see [[Target]] and #Acme/Web', 'x', 'x'),
+               (2, 'Target', '', 'x', 'x');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap(); // raw SQL: no refs yet
+        let json = inner_backup_data(&pool).await.unwrap();
+        assert!(!json.contains("note_refs"), "derived, not backed up");
+        sqlx::query("INSERT INTO note_refs (NoteId, Kind, Target) VALUES (2, 'tag', 'stale')")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        inner_restore_data(&json, &pool).await.unwrap();
+        let refs: Vec<(i64, String, String)> =
+            sqlx::query_as("SELECT NoteId, Kind, Target FROM note_refs ORDER BY NoteId, Kind")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            refs,
+            vec![
+                (1, "link".into(), "target".into()),
+                (1, "tag".into(), "acme/web".into())
+            ]
+        );
     }
 
     #[tokio::test]

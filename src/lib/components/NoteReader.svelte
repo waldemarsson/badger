@@ -1,20 +1,25 @@
 <script lang="ts">
 	// Read view for the Notes page: HTML rendered (and locked down) by Rust's
 	// render_markdown, code blocks highlighted with the editor's colors, and links
-	// opened in the default browser instead of navigating the WebView.
+	// opened in the default browser instead of navigating the WebView. Tags, chips and
+	// wikilinks (data-tag / data-note, see markdown.rs) are followed in the app.
 	import { openUrl } from '@tauri-apps/plugin-opener';
 	import { highlightCodeBlocks } from '#lib/editor/highlight-code.js';
 	import { isOpenableUrl } from '#lib/links.js';
+	import type { LinkFollow } from '#lib/note-links.js';
 
 	let {
 		html,
 		onerror,
+		onfollow,
 		class: className = ''
 	}: {
 		/** Output of render_markdown; empty for an empty note. */
 		html: string;
 		/** A link could not be opened. */
 		onerror: (message: string) => void;
+		/** A tag, chip or wikilink was clicked. */
+		onfollow: (link: LinkFollow) => void;
 		class?: string;
 	} = $props();
 
@@ -33,6 +38,13 @@
 		const link = e.target instanceof Element ? e.target.closest('a') : null;
 		if (!link) return;
 		e.preventDefault(); // the WebView never navigates away from the app
+		const tag = link.getAttribute('data-tag');
+		if (tag) return onfollow({ kind: 'tag', tag });
+		const title = link.getAttribute('data-note');
+		if (title !== null) {
+			const id = Number(link.getAttribute('data-note-id'));
+			return onfollow({ kind: 'note', title, id: Number.isInteger(id) && id > 0 ? id : null });
+		}
 		const href = link.getAttribute('href') ?? '';
 		if (!isOpenableUrl(href)) return;
 		openUrl(href).catch(() => onerror(`Couldn't open ${href}`));

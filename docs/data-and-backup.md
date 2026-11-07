@@ -12,11 +12,12 @@ TimeTracker stores its working data in a local SQLite database. The schema is in
 - `travel` — standalone business trips: date, from/to place, and optional km and amount (kr), stored as NULL when not entered
 - `notes` — markdown notes: unique `Title` (case-insensitive, via a `COLLATE NOCASE` unique index), `Body`, `Pinned`, `CreatedAt`/`UpdatedAt`, and an optional `FolderId`
 - `folders` — nestable note folders (`ParentId`, `Name`, `Position`). The schema exists, but there are no folder commands or UI yet
+- `note_refs` — link index: one row per note and distinct `#tag` or `[[wikilink]]` target (`Kind` `tag`/`link`, `Target` lowercased, tags without the `#`); `NoteId` cascades on note delete. Derived data like `notes_fts`: Rust writes it in the same transaction as every body write, it is not in backups, and it is rebuilt by restore, by the same Settings › Preferences › Search index › Rebuild button (which rebuilds both indexes), and at startup when the `note_refs_version` value in `app_settings` differs from the code's `NOTE_REFS_VERSION` (first start after upgrade, or after the extraction rules change; bump the constant when they do). The startup rebuild is version-only, so a drifted index is repaired by Rebuild, not at startup. Entities are resolved at read time, so deleting a customer, project, todo or note needs no index cleanup
 - `notes_fts` — FTS5 search index (`trigram` tokenizer) over note titles and plain-text bodies; rowid = note id. Derived data: Rust writes it in the same transaction as every note write, it is not in backups, and it is rebuilt by restore, by Settings › Preferences › Search index › Rebuild, and at startup when its row count differs from `notes` (`backfill_notes_fts`: the first start after an upgrade, or notes written by an older build)
 
 Deletes cascade downward from customers to projects, issues, and time entries, so the hierarchy stays consistent without manual cleanup across tables. Todos are never deleted by a cascade: deleting a linked issue only clears the todo's link. Likewise, deleting a folder never deletes notes: `ON DELETE SET NULL` clears the `FolderId` of its notes and the `ParentId` of its child folders, so they move to the root.
 
-Note titles are trimmed, 1–200 characters, unique ignoring case (compared in Rust with `to_lowercase()`, so `Åsa` equals `åsa`; no Unicode normalization, so NFC and NFD forms count as different), and may not contain `[`, `]`, `|` or `#`, which would break `[[wikilinks]]` later. Saving a note's title and body are separate commands (`rename_note`, `update_note_body`), so a title conflict never blocks saving the body. Saving an identical body is a no-op that leaves `UpdatedAt` alone, and pinning does not bump it.
+Note titles are trimmed, 1–200 characters, unique ignoring case (compared in Rust with `to_lowercase()`, so `Åsa` equals `åsa`; no Unicode normalization, so NFC and NFD forms count as different), and may not contain `[`, `]`, `|`, `#` or `` ` ``, which would break `[[wikilinks]]` (a backtick could turn a rewritten link into code). Saving a note's title and body are separate commands (`rename_note`, `update_note_body`), so a title conflict never blocks saving the body. Saving an identical body is a no-op that leaves `UpdatedAt` alone, and pinning does not bump it.
 
 ## Database behavior
 
@@ -89,7 +90,7 @@ Restore always overwrites. In one transaction it:
 - deletes all customers, which cascades to projects, issues, and time entries
 - clears todos, travel, notes and folders explicitly (the cascade does not reach them)
 - re-inserts the full backup, folders before notes
-- rebuilds the notes search index from the restored notes, in the same transaction
+- rebuilds the notes search and link indexes (`notes_fts`, `note_refs`) from the restored notes, in the same transaction
 
 Data not in the backup is lost, so restoring a backup made before notes existed leaves zero notes. If the backup file is invalid, nothing is changed.
 

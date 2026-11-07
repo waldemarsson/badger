@@ -1,0 +1,170 @@
+{
+	"extract": [
+		{
+			"name": "plain and nested tags, case kept in text, target lowercased",
+			"md": "Meet #acme and #Acme/Web today",
+			"refs": [
+				{ "kind": "tag", "target": "acme", "text": "#acme" },
+				{ "kind": "tag", "target": "acme/web", "text": "#Acme/Web" }
+			]
+		},
+		{
+			"name": "unicode letters, digits, underscore and dash",
+			"md": "#åsa #Möte_2 #ärende-1",
+			"refs": [
+				{ "kind": "tag", "target": "åsa", "text": "#åsa" },
+				{ "kind": "tag", "target": "möte_2", "text": "#Möte_2" },
+				{ "kind": "tag", "target": "ärende-1", "text": "#ärende-1" }
+			]
+		},
+		{
+			"name": "headings are not tags, tags inside headings are",
+			"md": "# Heading\n\n## Sub #real\n\n#",
+			"refs": [{ "kind": "tag", "target": "real", "text": "#real" }]
+		},
+		{
+			"name": "tag needs start, whitespace or ( before the #",
+			"md": "##tag a#b x/#a x#y #z#w",
+			"refs": [{ "kind": "tag", "target": "z", "text": "#z" }]
+		},
+		{
+			"name": "digit-only tags are not tags",
+			"md": "#123 #2024/ #1-2 #v2 #2024/q1",
+			"refs": [
+				{ "kind": "tag", "target": "1-2", "text": "#1-2" },
+				{ "kind": "tag", "target": "v2", "text": "#v2" },
+				{ "kind": "tag", "target": "2024/q1", "text": "#2024/q1" }
+			]
+		},
+		{
+			"name": "trailing punctuation and slash are excluded",
+			"md": "(#acme), #acme. #acme/ #a-b_c! #Acme,",
+			"refs": [
+				{ "kind": "tag", "target": "acme", "text": "#acme" },
+				{ "kind": "tag", "target": "acme", "text": "#acme" },
+				{ "kind": "tag", "target": "acme", "text": "#acme" },
+				{ "kind": "tag", "target": "a-b_c", "text": "#a-b_c" },
+				{ "kind": "tag", "target": "acme", "text": "#Acme" }
+			]
+		},
+		{
+			"name": "code spans, fenced and indented code are skipped",
+			"md": "`#code [[Code]]` and\n\n```\n#block [[Link]]\n```\n\n    #indented\n\nafter #ok",
+			"refs": [{ "kind": "tag", "target": "ok", "text": "#ok" }]
+		},
+		{
+			"name": "link text, link URLs, autolinks and bare URLs are skipped",
+			"md": "[#text **#b**](https://x.se/#frag) [x [y]](https://a.se) <https://a.se/#b> https://x.se/(#c) http://x.se/[[a]] see https://x.se/a#b (#ok)",
+			"refs": [{ "kind": "tag", "target": "ok", "text": "#ok" }]
+		},
+		{
+			"name": "escaped # and brackets are not tags or links",
+			"md": "\\#notatag \\[\\[NotLink\\]\\] [\\[Nope]] \\[[Esc]]",
+			"refs": []
+		},
+		{
+			"name": "wikilinks with alias, inner whitespace and unicode",
+			"md": "See [[Foo]], [[ Bar baz ]] and [[Foo|the foo]] and [[Åsa]]",
+			"refs": [
+				{ "kind": "link", "target": "foo", "text": "[[Foo]]", "title": "Foo" },
+				{ "kind": "link", "target": "bar baz", "text": "[[ Bar baz ]]", "title": "Bar baz" },
+				{ "kind": "link", "target": "foo", "text": "[[Foo|the foo]]", "title": "Foo", "alias": "the foo" },
+				{ "kind": "link", "target": "åsa", "text": "[[Åsa]]", "title": "Åsa" }
+			]
+		},
+		{
+			"name": "invalid wikilinks: empty, extra pipe, #, brackets, embeds, line breaks",
+			"md": "[[]] [[ ]] [[a|b|c]] [[a#b]] [[a[b]] ![[Embed]] [[|x]] [[x\ny]]",
+			"refs": []
+		},
+		{
+			"name": "extra brackets around a wikilink and an empty alias",
+			"md": "[[[Foo]]] [[Bar| ]]",
+			"refs": [
+				{ "kind": "link", "target": "foo", "text": "[[Foo]]", "title": "Foo" },
+				{ "kind": "link", "target": "bar", "text": "[[Bar| ]]", "title": "Bar" }
+			]
+		},
+		{
+			"name": "wikilinks and tags inside tables (escaped pipe for the alias)",
+			"md": "| a | b |\n|---|---|\n| [[Foo\\|alias]] | #t |\n| [[Bar]] | x |",
+			"refs": [
+				{ "kind": "link", "target": "foo", "text": "[[Foo\\|alias]]", "title": "Foo", "alias": "alias" },
+				{ "kind": "tag", "target": "t", "text": "#t" },
+				{ "kind": "link", "target": "bar", "text": "[[Bar]]", "title": "Bar" }
+			]
+		},
+		{
+			"name": "emphasis and strikethrough around tags and links",
+			"md": "*#tag* **[[Bold]]** ~~#gone~~",
+			"refs": [
+				{ "kind": "tag", "target": "tag", "text": "#tag" },
+				{ "kind": "link", "target": "bold", "text": "[[Bold]]", "title": "Bold" },
+				{ "kind": "tag", "target": "gone", "text": "#gone" }
+			]
+		},
+		{
+			"name": "lists, quotes and tasks",
+			"md": "- #one\n\n> #two\n\n- [ ] #three [[Task]]\n\n1. #four",
+			"refs": [
+				{ "kind": "tag", "target": "one", "text": "#one" },
+				{ "kind": "tag", "target": "two", "text": "#two" },
+				{ "kind": "tag", "target": "three", "text": "#three" },
+				{ "kind": "link", "target": "task", "text": "[[Task]]", "title": "Task" },
+				{ "kind": "tag", "target": "four", "text": "#four" }
+			]
+		},
+		{
+			"name": "raw HTML is skipped, text between inline tags is not",
+			"md": "<span>#inhtml</span> <!-- #comment -->\n\n<div>\n#block\n</div>",
+			"refs": [{ "kind": "tag", "target": "inhtml", "text": "#inhtml" }]
+		},
+		{
+			"name": "a tag right before a wikilink",
+			"md": "#a[[B]]",
+			"refs": [
+				{ "kind": "tag", "target": "a", "text": "#a" },
+				{ "kind": "link", "target": "b", "text": "[[B]]", "title": "B" }
+			]
+		},
+		{
+			"name": "a defined reference label turns [Foo] into a real link",
+			"md": "[Foo]: https://a.se\n\n[[Foo]] and [[Bar]]",
+			"refs": [{ "kind": "link", "target": "bar", "text": "[[Bar]]", "title": "Bar" }]
+		},
+		{
+			"name": "entity tags",
+			"md": "#issue/12 #todo/3 #acme/web-app",
+			"refs": [
+				{ "kind": "tag", "target": "issue/12", "text": "#issue/12" },
+				{ "kind": "tag", "target": "todo/3", "text": "#todo/3" },
+				{ "kind": "tag", "target": "acme/web-app", "text": "#acme/web-app" }
+			]
+		},
+		{
+			"name": "tags on continuation lines",
+			"md": "line one\n  #two and\n#three",
+			"refs": [
+				{ "kind": "tag", "target": "two", "text": "#two" },
+				{ "kind": "tag", "target": "three", "text": "#three" }
+			]
+		}
+	],
+	"slug": [
+		["Acme Corp", "acme-corp"],
+		["  Region Skåne ", "region-skåne"],
+		["Web/App", "web-app"],
+		["A & B", "a-b"],
+		["Acme - Corp", "acme-corp"],
+		["a--b", "a-b"],
+		["Ärende-nr 5", "ärende-nr-5"],
+		["--x--", "x"],
+		["Snake_case", "snake_case"],
+		["Ärende #5", "ärende-5"],
+		["2024 Q1", "2024-q1"],
+		["123", null],
+		["1 2", "1-2"],
+		["", null],
+		["!!!", null]
+	]
+}

@@ -5,6 +5,7 @@ pub mod db;
 pub mod error;
 pub mod flush_guard;
 pub mod logger;
+pub mod note_links;
 pub mod runtime_paths;
 pub mod startup_backup;
 
@@ -188,6 +189,10 @@ pub fn run() {
                     commands::notes::search_notes,
                     commands::notes::search_index_stats,
                     commands::notes::rebuild_search_index,
+                    commands::notes::create_note_titled,
+                    commands::notes::list_tag_suggestions,
+                    commands::notes::get_link_targets,
+                    commands::notes::list_backlinks,
                     commands::markdown::render_markdown,
                     // Backup (BE-07)
                     commands::backup::backup_data_to_file,
@@ -262,6 +267,10 @@ pub fn run() {
                     commands::notes::search_notes,
                     commands::notes::search_index_stats,
                     commands::notes::rebuild_search_index,
+                    commands::notes::create_note_titled,
+                    commands::notes::list_tag_suggestions,
+                    commands::notes::get_link_targets,
+                    commands::notes::list_backlinks,
                     commands::markdown::render_markdown,
                     // Backup (BE-07)
                     commands::backup::backup_data_to_file,

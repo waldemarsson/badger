@@ -618,6 +618,141 @@
     @apply min-h-0 flex-1;
   }
 
+  /* Tags, #issue/#todo chips and [[wikilinks]]: read view links (<a>, which `.note-prose a`
+     would otherwise style) and editor live preview (<span>). */
+  .note-tag,
+  .note-prose a.note-tag {
+    @apply rounded-md bg-sky-50 px-1 py-px text-[0.92em] font-medium text-sky-700 no-underline transition-colors dark:bg-sky-500/10 dark:text-sky-300;
+  }
+
+  .note-prose a.note-tag:hover {
+    @apply bg-sky-100 dark:bg-sky-500/20;
+  }
+
+  .note-chip,
+  .note-prose a.note-chip {
+    @apply inline-flex items-baseline gap-1.5 whitespace-nowrap rounded-md bg-slate-100 px-1.5 py-px text-[0.88em] font-medium leading-snug text-slate-700 no-underline ring-1 ring-inset ring-slate-200 transition-colors dark:bg-neutral-800 dark:text-neutral-300 dark:ring-neutral-700;
+  }
+
+  /* Marker: a square for issues; for todos a circle that fills with progress. */
+  .note-chip::before {
+    content: '';
+    @apply h-2 w-2 shrink-0 translate-y-[-0.05em] self-center rounded-full border-[1.5px] border-current opacity-80;
+  }
+
+  .note-chip-issue,
+  .note-prose a.note-chip-issue {
+    @apply bg-violet-50 text-violet-700 ring-violet-200 dark:bg-violet-500/10 dark:text-violet-300 dark:ring-violet-500/30;
+  }
+
+  .note-chip-issue::before {
+    @apply rounded-[2px] bg-current;
+  }
+
+  .note-chip-todo[data-status='in_progress'],
+  .note-prose a.note-chip-todo[data-status='in_progress'] {
+    @apply bg-sky-50 text-sky-700 ring-sky-200 dark:bg-sky-500/10 dark:text-sky-300 dark:ring-sky-500/30;
+  }
+
+  .note-chip-todo[data-status='in_progress']::before {
+    background: linear-gradient(90deg, currentColor 50%, transparent 50%);
+  }
+
+  .note-chip-todo[data-status='done'],
+  .note-prose a.note-chip-todo[data-status='done'] {
+    @apply bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-300 dark:ring-emerald-500/30;
+  }
+
+  .note-chip-todo[data-status='done']::before {
+    @apply bg-current;
+  }
+
+  .note-prose a.note-chip:hover {
+    @apply ring-current;
+  }
+
+  .note-wikilink,
+  .note-prose a.note-wikilink {
+    @apply font-medium underline decoration-1 underline-offset-[3px];
+    color: var(--note-link);
+    text-decoration-color: var(--note-link-underline);
+  }
+
+  /* No note with this title yet: following it creates one. */
+  .note-wikilink-unresolved,
+  .note-prose a.note-wikilink[data-unresolved] {
+    @apply decoration-dashed opacity-60;
+  }
+
+  .note-prose a.note-wikilink:hover {
+    @apply opacity-100;
+    text-decoration-color: currentColor;
+  }
+
+  /* Editor: ⌘ held over the text (links.ts) makes tags, chips and wikilinks clickable. */
+  .cm-link-armed :is([data-link-tag], [data-link-note]) {
+    @apply cursor-pointer;
+  }
+
+  .cm-link-armed :is([data-link-tag], [data-link-note]):hover {
+    @apply opacity-100;
+    text-decoration-color: currentColor;
+  }
+
+  /* Kind badge in the `#` and `[[` autocomplete rows. */
+  .cm-link-kind {
+    @apply mr-2.5 inline-block min-w-[4.25rem] shrink-0 rounded px-1.5 py-px text-center text-[10px] font-semibold uppercase leading-4 tracking-wide;
+    @apply bg-slate-100 text-slate-500 dark:bg-neutral-800 dark:text-neutral-400;
+  }
+
+  .cm-link-kind-tag,
+  .cm-link-kind-new,
+  .cm-link-kind-todo-in_progress {
+    @apply bg-sky-50 text-sky-700 dark:bg-sky-500/10 dark:text-sky-300;
+  }
+
+  .cm-link-kind-issue {
+    @apply bg-violet-50 text-violet-700 dark:bg-violet-500/10 dark:text-violet-300;
+  }
+
+  /* Linked mentions (backlinks) below the editor / read view. */
+  .notes-backlinks {
+    @apply shrink-0 border-t border-slate-100 dark:border-neutral-800;
+  }
+
+  .notes-backlinks-toggle {
+    @apply flex w-full items-center gap-1.5 px-6 py-2.5 text-xs font-semibold uppercase tracking-wider text-slate-500 transition-colors hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-400 dark:text-neutral-400 dark:hover:text-neutral-100;
+  }
+
+  .notes-backlinks-count {
+    @apply rounded-full bg-slate-100 px-1.5 text-[10px] font-medium leading-4 tracking-normal text-slate-500 ring-1 ring-slate-200 dark:bg-neutral-800 dark:text-neutral-400 dark:ring-neutral-700;
+  }
+
+  .notes-backlinks-list {
+    @apply max-h-56 overflow-y-auto pb-3 pl-7 pr-4;
+  }
+
+  .notes-backlink {
+    @apply block w-full rounded-lg px-2 py-1.5 text-left transition duration-150 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-400 dark:hover:bg-neutral-800/60;
+  }
+
+  .notes-backlink-title {
+    @apply block truncate text-sm font-medium text-slate-800 dark:text-neutral-200;
+  }
+
+  .notes-backlink-snippet {
+    @apply mt-0.5 block truncate text-xs text-slate-500 dark:text-neutral-400;
+  }
+
+  .notes-backlinks-empty {
+    @apply px-2 pb-1 text-sm text-slate-400 dark:text-neutral-500;
+  }
+
+  /* "3 notes tagged #acme" above a tag-filtered list. */
+  .notes-filter-hint {
+    @apply flex flex-wrap items-center gap-1.5 px-3 pb-2 pt-1 text-xs text-slate-500 dark:text-neutral-400;
+  }
+
   /* Read view (⌘E): colors come from the --note-* variables, so light and dark both apply. */
   .note-reader {
     @apply overflow-y-auto px-8 pb-[40vh] pt-4 focus:outline-none;

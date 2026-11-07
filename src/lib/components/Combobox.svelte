@@ -9,6 +9,8 @@
 		placeholder = 'Select...',
 		allowNew = false,
 		disabled = false,
+		picker = false,
+		inline = false,
 		onchange
 	}: {
 		items: Item[];
@@ -16,12 +18,21 @@
 		placeholder?: string;
 		allowNew?: boolean;
 		disabled?: boolean;
+		/**
+		 * Keyboard picker (outside forms): ↑/↓ and hover highlight an item, typing highlights
+		 * the first match, Enter picks the highlighted one, and every match is listed.
+		 */
+		picker?: boolean;
+		/** The list sits in the flow below the input (its container grows) instead of floating. */
+		inline?: boolean;
 		onchange?: (v: string) => void;
 	} = $props();
 
 	let open = $state(false);
 	let inputText = $state('');
 	let containerEl: HTMLElement;
+	let listEl = $state<HTMLUListElement>();
+	let active = $state(-1); // picker: highlighted item (↑/↓, hover); Enter picks it
 
 	// When value changes externally, sync the display text
 	$effect(() => {
@@ -33,6 +44,12 @@
 		items.filter((i) => i.label.toLowerCase().includes(inputText.toLowerCase()))
 	);
 
+	const shown = $derived(picker ? filtered : filtered.slice(0, 10));
+
+	$effect(() => {
+		if (open && active >= 0) listEl?.children[active]?.scrollIntoView({ block: 'nearest' });
+	});
+
 	const isNew = $derived(
 		allowNew &&
 			inputText.trim().length > 0 &&
@@ -43,11 +60,13 @@
 		value = String(item.value);
 		inputText = item.label;
 		open = false;
+		active = -1;
 		onchange?.(String(item.value));
 	}
 
 	function handleInput() {
 		open = true;
+		active = picker ? 0 : -1;
 		if (allowNew) {
 			value = inputText;
 			onchange?.(inputText);
@@ -58,6 +77,7 @@
 		// Close only if focus moves outside the container
 		if (!containerEl?.contains(e.relatedTarget as Node)) {
 			open = false;
+			active = -1;
 			// If not allowNew, reset to last valid value
 			if (!allowNew) {
 				const match = items.find((i) => String(i.value) === String(value));
@@ -69,8 +89,19 @@
 	function handleKeydown(e: KeyboardEvent) {
 		if (e.key === 'Escape') {
 			open = false;
+			active = -1;
 		} else if (e.key === 'ArrowDown' && filtered.length > 0) {
 			open = true;
+			if (picker) {
+				e.preventDefault();
+				active = Math.min(active + 1, shown.length - 1);
+			}
+		} else if (picker && e.key === 'ArrowUp' && open && shown.length > 0) {
+			e.preventDefault();
+			active = Math.max(active - 1, 0);
+		} else if (picker && e.key === 'Enter' && open && shown[active]) {
+			e.preventDefault();
+			select(shown[active]);
 		}
 	}
 </script>
@@ -89,7 +120,10 @@
 			{disabled}
 			bind:value={inputText}
 			oninput={handleInput}
-			onfocus={() => (open = true)}
+			onfocus={() => {
+				open = true;
+				active = -1;
+			}}
 			onkeydown={handleKeydown}
 			autocomplete="off"
 		/>
@@ -106,14 +140,22 @@
 
 	{#if open && (filtered.length > 0 || isNew)}
 		<ul
-			class="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-xl border border-slate-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 shadow-lg dark:shadow-black/40"
+			bind:this={listEl}
+			class={cn(
+				'mt-1 max-h-60 w-full overflow-auto rounded-xl border border-slate-200 dark:border-neutral-700 bg-white dark:bg-neutral-800',
+				inline ? 'shadow-sm dark:shadow-black/20' : 'absolute z-50 shadow-lg dark:shadow-black/40'
+			)}
 		>
-			{#each filtered.slice(0, 10) as item (item.value)}
+			{#each shown as item, i (item.value)}
 				<li>
 					<button
 						type="button"
-						class="w-full px-3 py-2 text-left text-sm text-slate-700 dark:text-neutral-300 hover:bg-slate-50 dark:hover:bg-neutral-700 focus:bg-slate-50 dark:focus:bg-neutral-700 focus:outline-none"
+						class={cn(
+							'w-full px-3 py-2 text-left text-sm text-slate-700 dark:text-neutral-300 hover:bg-slate-50 dark:hover:bg-neutral-700 focus:bg-slate-50 dark:focus:bg-neutral-700 focus:outline-none',
+							picker && i === active && 'bg-slate-50 dark:bg-neutral-700'
+						)}
 						onmousedown={() => select(item)}
+						onmouseenter={picker ? () => (active = i) : undefined}
 					>
 						{item.label}
 					</button>
@@ -136,5 +178,7 @@
 				</li>
 			{/if}
 		</ul>
+	{:else if open && inline}
+		<p class="mt-1 rounded-xl border border-dashed border-slate-200 px-3 py-2 text-sm text-slate-400 dark:border-neutral-700 dark:text-neutral-500">No matches</p>
 	{/if}
 </div>

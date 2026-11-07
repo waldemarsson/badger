@@ -89,12 +89,38 @@ pub async fn set_daily_target(target: f64, pool: State<'_, Pool<Sqlite>>) -> Res
     inner_set_daily_target(target, &pool).await
 }
 
+/// Reads the expanded notes-tree folder ids (stale ids skipped).
+pub async fn inner_get_expanded_folders(pool: &Pool<Sqlite>) -> Result<Vec<i64>, AppError> {
+    crate::app_settings::get_expanded_folders(pool).await
+}
+
+/// Stores the expanded notes-tree folder ids; returns what was stored.
+pub async fn inner_set_expanded_folders(
+    ids: Vec<i64>,
+    pool: &Pool<Sqlite>,
+) -> Result<Vec<i64>, AppError> {
+    crate::app_settings::set_expanded_folders(pool, ids).await
+}
+
+#[tauri::command]
+pub async fn get_expanded_folders(pool: State<'_, Pool<Sqlite>>) -> Result<Vec<i64>, AppError> {
+    inner_get_expanded_folders(&pool).await
+}
+
+#[tauri::command]
+pub async fn set_expanded_folders(
+    ids: Vec<i64>,
+    pool: State<'_, Pool<Sqlite>>,
+) -> Result<Vec<i64>, AppError> {
+    inner_set_expanded_folders(ids, &pool).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        inner_get_daily_target, inner_get_palette_settings, inner_get_theme,
-        inner_set_daily_target, inner_set_palette_last_used, inner_set_palette_shortcut,
-        inner_set_theme,
+        inner_get_daily_target, inner_get_expanded_folders, inner_get_palette_settings,
+        inner_get_theme, inner_set_daily_target, inner_set_expanded_folders,
+        inner_set_palette_last_used, inner_set_palette_shortcut, inner_set_theme,
     };
 
     #[tokio::test]
@@ -144,5 +170,21 @@ mod tests {
             inner_get_theme(&pool).await.expect("theme should load"),
             "light"
         );
+    }
+
+    #[tokio::test]
+    async fn expanded_folders_commands_round_trip() {
+        let pool = crate::test_db().await;
+        let f = crate::commands::folders::inner_create_folder(Some("F"), None, &pool)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            inner_set_expanded_folders(vec![f.id, 404], &pool)
+                .await
+                .unwrap(),
+            vec![f.id]
+        );
+        assert_eq!(inner_get_expanded_folders(&pool).await.unwrap(), vec![f.id]);
     }
 }

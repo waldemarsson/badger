@@ -106,7 +106,14 @@ export interface PaletteSettings {
 	last_issue_id: number | null;
 }
 
-/** Note list row (list_notes, update_note_body, set_note_pinned). */
+/** Note folder (list_folders, create_folder, rename_folder, move_folder). Root = null parent. */
+export interface Folder {
+	id: number;
+	parent_id: number | null;
+	name: string; // unique among siblings, case-insensitively
+}
+
+/** Note list row (list_notes, update_note_body, set_note_pinned, move_note). */
 export interface NoteSummary {
 	id: number;
 	folder_id: number | null;

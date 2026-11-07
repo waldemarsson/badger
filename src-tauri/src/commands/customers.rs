@@ -345,7 +345,10 @@ pub(crate) mod tests {
     /// A note with `body` and an old `UpdatedAt`, so rewrites can be shown not to bump it.
     pub(crate) async fn tagged_note(title: &str, body: &str, pool: &Pool<Sqlite>) -> i64 {
         use crate::commands::notes::{inner_create_note_titled, inner_update_note_body};
-        let id = inner_create_note_titled(title, pool).await.unwrap().id;
+        let id = inner_create_note_titled(title, None, pool)
+            .await
+            .unwrap()
+            .id;
         inner_update_note_body(id, body, pool).await.unwrap();
         sqlx::query("UPDATE notes SET UpdatedAt = ? WHERE id = ?")
             .bind(OLD)

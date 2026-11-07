@@ -4,8 +4,8 @@
 	import { cubicOut } from 'svelte/easing';
 	import { targetFolderId, type MoveTarget } from '#lib/folders.js';
 	import Combobox from '#lib/components/Combobox.svelte';
-	import FolderInput from 'lucide-svelte/icons/folder-input';
-	import X from 'lucide-svelte/icons/x';
+	import FolderInput from '@lucide/svelte/icons/folder-input';
+	import X from '@lucide/svelte/icons/x';
 
 	// "Move to…" for a note or folder: the keyboard alternative to drag and drop.
 	let {

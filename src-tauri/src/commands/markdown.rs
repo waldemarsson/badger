@@ -1,7 +1,8 @@
 //! Markdown → HTML for the notes read view and "Copy as HTML".
 //!
-//! The WebView has no CSP, so the output is locked down here: raw HTML is shown as
-//! text, only `http`, `https` and `mailto` links survive, and images never load.
+//! Copy mode output leaves the app, and the read view must not lean on the CSP alone, so
+//! the output is locked down here: raw HTML is shown as text, only `http`, `https` and
+//! `mailto` links survive, and images never load.
 //!
 //! `#tags` and `[[wikilinks]]` (see `note_links`) become `<a href="#">` with data
 //! attributes in the read view, which the reader dispatches on: `data-tag` (normalized

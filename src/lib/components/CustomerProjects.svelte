@@ -6,10 +6,10 @@
 	import type { Customer, Project } from '#lib/types.js';
 	import NameInput from '#lib/components/NameInput.svelte';
 	import { byName, plural } from '#lib/names.js';
-	import Star from 'lucide-svelte/icons/star';
-	import Pencil from 'lucide-svelte/icons/pencil';
-	import Trash2 from 'lucide-svelte/icons/trash-2';
-	import Plus from 'lucide-svelte/icons/plus';
+	import Star from '@lucide/svelte/icons/star';
+	import Pencil from '@lucide/svelte/icons/pencil';
+	import Trash2 from '@lucide/svelte/icons/trash';
+	import Plus from '@lucide/svelte/icons/plus';
 
 	let customers = $state<Customer[]>([]);
 	let projects = $state<Record<number, Project[]>>({});

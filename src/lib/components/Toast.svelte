@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { fly } from 'svelte/transition';
-	import CircleCheck from 'lucide-svelte/icons/circle-check';
+	import CircleCheck from '@lucide/svelte/icons/circle-check';
 	import { toast } from '#lib/palette-state.svelte.js';
 
 	const DURATION_MS = 2500;

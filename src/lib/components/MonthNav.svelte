@@ -1,6 +1,6 @@
 <script lang="ts">
-	import ChevronLeft from 'lucide-svelte/icons/chevron-left';
-	import ChevronRight from 'lucide-svelte/icons/chevron-right';
+	import ChevronLeft from '@lucide/svelte/icons/chevron-left';
+	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import { MONTH_NAMES } from '#lib/travel.js';
 
 	// Month navigator: prev/next buttons plus a jump selector (current year ± 3).

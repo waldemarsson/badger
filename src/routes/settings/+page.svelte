@@ -3,12 +3,12 @@
   import { fade } from 'svelte/transition';
   import { invoke } from '@tauri-apps/api/core';
   import CustomerProjects from '#lib/components/CustomerProjects.svelte';
-  import X      from 'lucide-svelte/icons/x';
-  import Download   from 'lucide-svelte/icons/download';
-  import FolderOpen from 'lucide-svelte/icons/folder-open';
-  import Monitor from 'lucide-svelte/icons/monitor';
-  import Sun     from 'lucide-svelte/icons/sun';
-  import Moon    from 'lucide-svelte/icons/moon';
+  import X      from '@lucide/svelte/icons/x';
+  import Download   from '@lucide/svelte/icons/download';
+  import FolderOpen from '@lucide/svelte/icons/folder-open';
+  import Monitor from '@lucide/svelte/icons/monitor';
+  import Sun     from '@lucide/svelte/icons/sun';
+  import Moon    from '@lucide/svelte/icons/moon';
   import { save, open } from '@tauri-apps/plugin-dialog';
   import type { ThemeMode } from '#lib/theme.js';
   import { applyTheme, theme } from '#lib/theme-state.svelte.js';
@@ -18,7 +18,7 @@
   import { formatBytes } from '#lib/notes.js';
   import type { SearchIndexStats, SemanticStatus } from '#lib/types.js';
   import { page } from '$app/state';
-  import Sparkles from 'lucide-svelte/icons/sparkles';
+  import Sparkles from '@lucide/svelte/icons/sparkles';
   import { downloadPercent, semanticStatusLabel } from '#lib/semantic.js';
   import { refreshSemanticStatus, semantic } from '#lib/semantic-state.svelte.js';
 

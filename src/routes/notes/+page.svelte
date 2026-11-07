@@ -56,7 +56,8 @@
 	let renaming: { id: number; title: string; done: Promise<boolean> } | null = null; // rename in flight
 	let lastFailedTitle: string | null = null; // skip blur-retry of a title just rejected
 
-	let confirmingDelete = $state(false);
+	let confirmingDelete = $state(false); // the editor header's delete confirm (open note)
+	let treeConfirmNoteId = $state<number | null>(null); // a tree row's delete confirm
 	let actionError = $state('');
 	let navError = $state('');
 
@@ -638,23 +639,32 @@
 
 	// The palette's "New note" navigates to ?new=1; create here so the title gets focus.
 	$effect(() => {
-		if (page.url.searchParams.get('new') !== null) untrack(requestCreate);
+		if (page.url.searchParams.get('new') !== null) untrack(() => requestCreate());
 	});
 
 	let createChain: Promise<void> = Promise.resolve();
 
-	/** Creates are serialized: each request makes exactly one note, in order. */
-	function requestCreate(): void {
-		createChain = createChain.then(createNote);
+	/**
+	 * Creates are serialized: each request makes exactly one note, in order. The folder is
+	 * taken at request time, so a later folder switch doesn't redirect a queued create.
+	 */
+	function requestCreate(folderId: number | null = currentFolder): void {
+		createChain = createChain.then(() => createNote(folderId));
 	}
 
-	async function createNote(): Promise<void> {
+	/** Tree menu "New note here" (null: root): the folder becomes current, then a create. */
+	function newNoteIn(folderId: number | null): void {
+		currentFolderId = folderId;
+		requestCreate(folderId);
+	}
+
+	async function createNote(folderId: number | null): Promise<void> {
 		actionError = '';
 		try {
 			const seq = ++selectSeq;
 			await commitTitle(true); // ⌘N while renaming keeps the rename; an invalid title is discarded
 			await queue.flush();
-			const note = await invoke<Note>('create_note', { folderId: currentFolder });
+			const note = await invoke<Note>('create_note', { folderId });
 			notes = upsertNote(notes, summaryOf(note));
 			query = '';
 			if (seq === selectSeq) {
@@ -765,6 +775,7 @@
 		const id = current.id;
 		const next = searchTerm ? neighborAfterRemoval(visible.map((r) => r.note.id), id) : noteNeighbour(tree, id);
 		confirmingDelete = false;
+		if (treeConfirmNoteId === id) treeConfirmNoteId = null;
 		actionError = '';
 		queue.pause(); // no autosave races the delete; the body stays dirty in case it fails
 		try {
@@ -785,6 +796,41 @@
 		current = null;
 		if (next === null) showNothing();
 		else await select(next);
+	}
+
+	/**
+	 * Tree delete: the open note goes through `deleteCurrent`; any other note is deleted
+	 * and dropped everywhere it is cached, so no save, banner or link points at it after.
+	 */
+	async function deleteNote(id: number): Promise<void> {
+		if (current?.id === id) return deleteCurrent();
+		if (treeConfirmNoteId === id) treeConfirmNoteId = null;
+		actionError = '';
+		try {
+			await invoke('delete_note', { id });
+		} catch (e) {
+			if (String(e) !== NOT_FOUND) {
+				actionError = String(e);
+				void load();
+				return;
+			}
+		}
+		queue.forget(id); // stops retries of a failed save and clears its banner
+		editor?.forget(id);
+		notes = notes.filter((n) => n.id !== id);
+		void refreshLinks(); // links to it are unresolved now
+		if (current) void loadBacklinks(current.id);
+	}
+
+	/** One delete confirm per note: the editor header's replaces a tree row's, and back. */
+	function confirmDeleteCurrent(): void {
+		confirmingDelete = true;
+		if (treeConfirmNoteId === current?.id) treeConfirmNoteId = null;
+	}
+
+	function setTreeConfirm(id: number | null): void {
+		treeConfirmNoteId = id;
+		if (id !== null && id === current?.id) confirmingDelete = false;
 	}
 
 	function onConfirmKeydown(e: KeyboardEvent): void {
@@ -943,7 +989,7 @@
 						class="btn-icon-secondary"
 						title={currentFolderName ? `New note in “${currentFolderName}” (⌘N)` : 'New note (⌘N)'}
 						aria-label="New note"
-						onclick={requestCreate}
+						onclick={() => requestCreate()}
 					>
 						<Plus size={16} />
 					</button>
@@ -969,6 +1015,7 @@
 							{selectedId}
 							currentFolderId={currentFolder}
 							bind:renamingId={renamingFolderId}
+							bind:confirmingNoteId={() => treeConfirmNoteId, setTreeConfirm}
 							scrollEl={listEl}
 							onopen={(id) => void select(id)}
 							ontoggle={toggleFolder}
@@ -976,9 +1023,11 @@
 							oncurrent={(id) => (currentFolderId = id)}
 							onpin={(n) => void togglePin(n)}
 							onnewfolder={(id) => void createFolder(id)}
+							onnewnote={newNoteIn}
 							onrename={renameFolder}
 							ondelete={deleteFolder}
-							onmoveto={(f) => openMove({ kind: 'folder', id: f.id, parentId: f.parent_id }, f.name)}
+							ondeletenote={deleteNote}
+							onmoveto={openMove}
 							onmove={(item, folderId) => void moveItem(item, folderId)}
 							onexit={() => searchInput?.focus()}
 						/>
@@ -1152,7 +1201,7 @@
 										class="btn-icon-ghost-danger"
 										title="Delete note"
 										aria-label="Delete note"
-										onclick={() => (confirmingDelete = true)}
+										onclick={confirmDeleteCurrent}
 									>
 										<Trash2 size={16} />
 									</button>
@@ -1185,7 +1234,7 @@
 								{notes.length ? 'Pick one from the list, or start a new one.' : 'Notes are markdown and save as you type.'}
 							</p>
 						</div>
-						<button type="button" class="btn-primary gap-2" onclick={requestCreate}>
+						<button type="button" class="btn-primary gap-2" onclick={() => requestCreate()}>
 							<Plus size={16} /> New note <kbd class="notes-btn-kbd">⌘N</kbd>
 						</button>
 					</div>

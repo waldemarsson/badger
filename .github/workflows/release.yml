@@ -29,8 +29,6 @@ jobs:
 
       - name: Cache Rust build
         uses: swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
 
       # ort's build script downloads ONNX Runtime (SHA-256 checked) into this
       # cache dir and skips the download when it is already there.

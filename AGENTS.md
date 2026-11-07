@@ -65,6 +65,7 @@ Gotchas:
 - **Icons:** `lucide-svelte`, imported per icon (`import X from 'lucide-svelte/icons/x'`).
 - **Routes:** add new pages to `navLinks` in `src/routes/+layout.svelte`. The list is `as const` so `resolve()` stays type-checked.
 - **Pickers:** reuse `src/lib/components/Combobox.svelte` for customer, project, and issue selection.
+- **Menus:** reuse `src/lib/components/ContextMenu.svelte` (items `{label, icon, hint, danger, run}`) for popup action menus; position with `placeMenu` in `src/lib/context-menu.ts`.
 - `svelte-ignore state_referenced_locally` is acceptable only for intentionally snapshotting a prop at mount (see `TodoModal.svelte`).
 
 ## UI / UX

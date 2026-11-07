@@ -86,7 +86,7 @@ The retention setting can be configured in the Settings > Backup & Restore tab. 
 
 The workspace `Cargo.toml` sets `[profile.dev.package.tokenizers] opt-level = 3`, because the tokenizer is far too slow unoptimised for debug builds and `cargo test`. The release profile (`panic = "abort"`) is unchanged, which is why the tokenizer, inference and download paths must not panic (see `docs/architecture.md`).
 
-The model itself is not bundled: it is downloaded at runtime from HuggingFace at a pinned commit, with SHA-256s hard-coded in `src-tauri/src/semantic/model_files.rs`. Bumping the model means updating the commit, hashes and `MODEL_ID` there, and recalibrating the similarity floor.
+The model itself is not bundled: it is downloaded at runtime from HuggingFace at a pinned commit, with SHA-256s hard-coded in `src-tauri/src/semantic/model_files.rs`. Bumping the model means updating the commit, hashes and `MODEL_ID` there, and recalibrating the similarity floor constants in `src-tauri/src/semantic/fusion.rs` (`MARGIN`, `ABSOLUTE_FLOOR`, `FIXED_FLOOR`).
 
 ### Ad-hoc macOS signing is enabled
 

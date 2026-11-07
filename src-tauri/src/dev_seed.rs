@@ -866,7 +866,7 @@ const SAMPLES_FOLDER: &str = "Samples";
 /// Adds [`SAMPLE_NOTES`] to a root `Samples` folder, skipping titles that already exist, so the
 /// Seed button also fills a dev database that already has notes. Returns how many were added.
 #[cfg(debug_assertions)]
-async fn seed_sample_notes(pool: &Pool<Sqlite>) -> Result<u64, sqlx::Error> {
+pub(crate) async fn seed_sample_notes(pool: &Pool<Sqlite>) -> Result<u64, sqlx::Error> {
     let mut tx = pool.begin().await?;
     let mut missing = Vec::new();
     for (title, body) in SAMPLE_NOTES {

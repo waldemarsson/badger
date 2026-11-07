@@ -507,6 +507,31 @@ fn queries() -> Vec<(usize, String)> {
         .collect()
 }
 
+/// Queries about nothing in the corpus (no topic covers them), Swedish and English: every
+/// note they return is noise.
+const OFF_TOPIC: [&str; 20] = [
+    "stickmönster för en ylletröja",
+    "fågelskådning vid sjön i gryningen",
+    "kvantfysik föreläsning",
+    "vulkanutbrott på Island",
+    "schacköppningar för nybörjare",
+    "medeltida borgar och riddare",
+    "måla akvarell med pensel",
+    "fiske efter gädda i skärgården",
+    "opera på Kungliga Operan",
+    "solförmörkelse genom teleskop",
+    "quantum physics lecture",
+    "knitting pattern for a wool sweater",
+    "birdwatching at dawn by the lake",
+    "volcanic eruption in Iceland",
+    "chess openings for beginners",
+    "medieval castles and knights",
+    "jazz concert tickets for Friday",
+    "guitar chords for a folk song",
+    "the fall of the Roman Empire",
+    "watching a solar eclipse through a telescope",
+];
+
 fn top_k(q: &[f32], docs: &[Vec<f32>], k: usize) -> Vec<usize> {
     let mut scored: Vec<(usize, f32)> = docs.iter().map(|d| dot(q, d)).enumerate().collect();
     scored.sort_by(|a, b| b.1.total_cmp(&a.1));
@@ -638,9 +663,9 @@ fn embed_notes(e: &OrtEmbedder, notes: &[SynthNote]) -> Vec<Vec<Vec<f32>>> {
         .collect()
 }
 
-/// The floor at note level, where a note scores its best chunk: the share of unrelated
+/// A fixed floor at note level, where a note scores its best chunk: the share of unrelated
 /// notes that pass (noise grows with chunk count) against the share of queries that keep
-/// a relevant note, over a range of floors.
+/// a relevant note, over a range of floors (`FIXED_FLOOR` and context for the relative rule).
 fn note_level_floor(
     notes: &[SynthNote],
     note_vectors: &[Vec<Vec<f32>>],
@@ -746,7 +771,7 @@ fn note_level_floor(
             with_hit * 100.0,
             kept_relevant as f32 / kept.max(1) as f32,
             if floor == current {
-                "  <- SIMILARITY_FLOOR"
+                "  <- FIXED_FLOOR"
             } else {
                 ""
             }
@@ -755,6 +780,197 @@ fn note_level_floor(
     match lowest_ok {
         Some(f) => println!("lowest floor with ≤ 2% unrelated notes: {f:.4}"),
         None => println!("no floor in the sweep keeps unrelated notes ≤ 2%"),
+    }
+}
+
+fn median(scores: &[f32]) -> f32 {
+    let mut sorted = scores.to_vec();
+    sorted.sort_by(f32::total_cmp);
+    let mid = sorted.len() / 2;
+    if sorted.len() % 2 == 0 {
+        (sorted[mid - 1] + sorted[mid]) / 2.0
+    } else {
+        sorted[mid]
+    }
+}
+
+/// Every note's best-chunk score for each query, as the app scores notes.
+fn note_scores(note_vectors: &[Vec<Vec<f32>>], qv: &[Vec<f32>]) -> Vec<Vec<f32>> {
+    qv.iter()
+        .map(|q| {
+            note_vectors
+                .iter()
+                .map(|chunks| chunks.iter().map(|c| dot(q, c)).fold(f32::MIN, f32::max))
+                .collect()
+        })
+        .collect()
+}
+
+/// What a floor rule (all of a query's note scores → minimum score) keeps at note level.
+struct RuleStats {
+    /// Topic queries keeping at least one relevant note.
+    queries_with_hit: f32,
+    /// Relevant (query, note) pairs kept.
+    recall: f32,
+    /// Unrelated (query, note) pairs kept, over topic queries.
+    unrelated: f32,
+    /// Off-topic queries returning any note.
+    off_topic_queries: f32,
+    /// Off-topic (query, note) pairs kept.
+    off_topic_pairs: f32,
+    /// Kept notes that are relevant, over topic queries.
+    precision: f32,
+}
+
+fn rule_stats(
+    notes: &[SynthNote],
+    queries: &[(usize, String)],
+    scores: &[Vec<f32>],
+    off_scores: &[Vec<f32>],
+    rule: impl Fn(&[f32]) -> f32,
+) -> RuleStats {
+    let (mut with_hit, mut relevant, mut relevant_kept, mut unrelated, mut unrelated_kept) =
+        (0, 0, 0, 0, 0);
+    for ((qt, _), s) in queries.iter().zip(scores) {
+        let floor = rule(s);
+        let mut hit = false;
+        for (note, score) in notes.iter().zip(s) {
+            let kept = *score >= floor;
+            if note.topics.contains(qt) {
+                relevant += 1;
+                relevant_kept += usize::from(kept);
+                hit |= kept;
+            } else {
+                unrelated += 1;
+                unrelated_kept += usize::from(kept);
+            }
+        }
+        with_hit += usize::from(hit);
+    }
+    let (mut off_hit, mut off_kept, mut off_pairs) = (0, 0, 0);
+    for s in off_scores {
+        let floor = rule(s);
+        let kept = s.iter().filter(|x| **x >= floor).count();
+        off_hit += usize::from(kept > 0);
+        off_kept += kept;
+        off_pairs += s.len();
+    }
+    RuleStats {
+        queries_with_hit: with_hit as f32 / queries.len() as f32,
+        recall: relevant_kept as f32 / relevant.max(1) as f32,
+        unrelated: unrelated_kept as f32 / unrelated.max(1) as f32,
+        off_topic_queries: off_hit as f32 / off_scores.len().max(1) as f32,
+        off_topic_pairs: off_kept as f32 / off_pairs.max(1) as f32,
+        precision: relevant_kept as f32 / (relevant_kept + unrelated_kept).max(1) as f32,
+    }
+}
+
+fn print_rule(name: &str, r: &RuleStats, mark: &str) {
+    println!(
+        "{name}: topic queries with a relevant note {:.1}%, relevant-note recall {:.1}%, \
+         unrelated pairs kept {:.2}%, precision {:.2}; off-topic queries with any note {:.1}% \
+         (pairs {:.2}%){mark}",
+        r.queries_with_hit * 100.0,
+        r.recall * 100.0,
+        r.unrelated * 100.0,
+        r.precision,
+        r.off_topic_queries * 100.0,
+        r.off_topic_pairs * 100.0,
+    );
+}
+
+/// The relative floor (`fusion::similarity_floor`): a note passes when its best chunk
+/// scores ≥ max(ABSOLUTE_FLOOR, the query's median note score + MARGIN). Sweeps MARGIN at
+/// the current absolute floor, then the absolute floor at the current MARGIN, with the
+/// fixed floor for comparison.
+fn relative_floor_sweep(
+    notes: &[SynthNote],
+    note_vectors: &[Vec<Vec<f32>>],
+    queries: &[(usize, String)],
+    qv: &[Vec<f32>],
+    off_qv: &[Vec<f32>],
+) {
+    use super::fusion::{ABSOLUTE_FLOOR, FIXED_FLOOR, MARGIN};
+    let scores = note_scores(note_vectors, qv);
+    let off_scores = note_scores(note_vectors, off_qv);
+
+    // Where the median sits, and how far the best relevant / best off-topic note rises above it.
+    let mut medians: Vec<f32> = scores
+        .iter()
+        .chain(&off_scores)
+        .map(|s| median(s))
+        .collect();
+    medians.sort_by(f32::total_cmp);
+    let mut relevant_gap: Vec<f32> = queries
+        .iter()
+        .zip(&scores)
+        .map(|((qt, _), s)| {
+            let best = notes
+                .iter()
+                .zip(s)
+                .filter(|(n, _)| n.topics.contains(qt))
+                .map(|(_, x)| *x)
+                .fold(f32::MIN, f32::max);
+            best - median(s)
+        })
+        .collect();
+    relevant_gap.sort_by(f32::total_cmp);
+    let mut off_gap: Vec<f32> = off_scores
+        .iter()
+        .map(|s| s.iter().copied().fold(f32::MIN, f32::max) - median(s))
+        .collect();
+    off_gap.sort_by(f32::total_cmp);
+    println!(
+        "per-query median note score: min {:.3} p50 {:.3} max {:.3}; best relevant note above \
+         the median: min {:.3} p10 {:.3} p50 {:.3}; best off-topic note above the median: \
+         p50 {:.3} p90 {:.3} max {:.3}",
+        medians[0],
+        percentile(&medians, 0.5),
+        medians[medians.len() - 1],
+        relevant_gap[0],
+        percentile(&relevant_gap, 0.1),
+        percentile(&relevant_gap, 0.5),
+        percentile(&off_gap, 0.5),
+        percentile(&off_gap, 0.9),
+        off_gap[off_gap.len() - 1],
+    );
+
+    let rule = |abs: f32, margin: f32| move |s: &[f32]| abs.max(median(s) + margin);
+    print_rule(
+        &format!("fixed floor {FIXED_FLOOR:.4}"),
+        &rule_stats(notes, queries, &scores, &off_scores, |_| FIXED_FLOOR),
+        "",
+    );
+    for i in 0..=10 {
+        let margin = 0.02 + i as f32 * 0.005;
+        let mark = if (margin - MARGIN).abs() < 1e-4 {
+            "  <- MARGIN"
+        } else {
+            ""
+        };
+        print_rule(
+            &format!("margin {margin:.3} (absolute {ABSOLUTE_FLOOR:.2})"),
+            &rule_stats(
+                notes,
+                queries,
+                &scores,
+                &off_scores,
+                rule(ABSOLUTE_FLOOR, margin),
+            ),
+            mark,
+        );
+    }
+    for abs in [0.0, 0.74, 0.75, 0.76, 0.77, 0.78] {
+        let mark = if (abs - ABSOLUTE_FLOOR).abs() < 1e-4 {
+            "  <- ABSOLUTE_FLOOR"
+        } else {
+            ""
+        };
+        print_rule(
+            &format!("absolute {abs:.2} (margin {MARGIN:.3})"),
+            &rule_stats(notes, queries, &scores, &off_scores, rule(abs, MARGIN)),
+            mark,
+        );
     }
 }
 
@@ -819,6 +1035,8 @@ fn real_model_spike() {
     let docs = embed_all(&e, &passages);
     println!("corpus of {} passages: {:?}", docs.len(), s.elapsed());
     let qv = embed_all(&e, &qtexts);
+    let off_texts: Vec<String> = OFF_TOPIC.iter().map(|q| query_text(q)).collect();
+    let off_qv = embed_all(&e, &off_texts);
     let synth = notes(&corpus, 400);
     let note_vectors = embed_notes(&e, &synth);
     drop(e);
@@ -868,9 +1086,9 @@ fn real_model_spike() {
         );
     }
 
-    // What the floor keeps per raw passage pair (no title prefix; the note-level sweep
-    // below, over app-chunked notes, is the calibration).
-    let floor = super::fusion::SIMILARITY_FLOOR;
+    // What the fixed floor keeps per raw passage pair (no title prefix; the note-level
+    // sweeps below, over app-chunked notes, are the calibration).
+    let floor = super::fusion::FIXED_FLOOR;
     let share = |v: &[f32]| v.iter().filter(|s| **s >= floor).count() as f32 / v.len() as f32;
     println!(
         "floor {floor}: keeps {:.1}% of unrelated pairs, {:.1}% of relevant pairs, \
@@ -881,6 +1099,7 @@ fn real_model_spike() {
     );
 
     note_level_floor(&synth, &note_vectors, &queries, &qv, floor);
+    relative_floor_sweep(&synth, &note_vectors, &queries, &qv, &off_qv);
 
     // int8 vs fp32 top-10 agreement, when the fp32 export is present.
     let fp32 = model_dir().join("model.onnx");
@@ -899,4 +1118,121 @@ fn real_model_spike() {
             overlap / queries.len() as f64
         );
     }
+}
+
+/// The relative floor on the 16 bilingual sample notes of the dev seed, through
+/// `inner_search_notes_hybrid`: each query must find its notes and nothing unrelated as a
+/// semantic-only hit. Prints every note's score, the median and the floor per query.
+#[cfg(debug_assertions)]
+#[tokio::test]
+#[ignore = "needs the downloaded model; see module docs"]
+async fn real_model_sample_notes() {
+    use super::SemanticState;
+    use crate::commands::notes::inner_search_notes_hybrid;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    let pool = crate::test_db().await;
+    crate::dev_seed::seed_sample_notes(&pool).await.unwrap();
+    let e: Arc<dyn Embedder> = Arc::new(load(model_files::MODEL_FILE));
+    let state = SemanticState::new(PathBuf::from("/nonexistent"));
+    state.set_enabled(true);
+    state.set_embedder(Some(e.clone()));
+    state.enqueue_all(&pool).await.unwrap();
+    let s = Instant::now();
+    state.drain(&pool).await;
+    println!(
+        "indexed {} notes in {:?}",
+        state.indexed_notes(),
+        s.elapsed()
+    );
+    assert_eq!(state.indexed_notes(), 16);
+    let titles: HashMap<i64, String> =
+        sqlx::query_as::<_, (i64, String)>("SELECT id, Title AS title FROM notes")
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .collect();
+
+    const RELEASE_SV: &str = "Flytta lanseringsdatumet";
+    const RELEASE_EN: &str = "Release slipping two weeks";
+    // (query, notes it must return, semantic-only hits allowed: None = any, Some = only these)
+    let cases: [(&str, &[&str], Option<&[&str]>); 9] = [
+        ("skjuta upp release", &[RELEASE_SV], None),
+        ("skjuta upp releasen", &[RELEASE_SV], None),
+        ("postpone the release", &[RELEASE_SV, RELEASE_EN], None),
+        // The Swedish accessibility note is a known near miss at MARGIN 0.045 (0.7895,
+        // median + 0.0449); it is checked below as the best note under the floor instead.
+        (
+            "screen reader problems",
+            &["Accessibility review of the landing page"],
+            None,
+        ),
+        (
+            "new hire first week",
+            &["Onboarding a new developer", "Introduktion för nyanställda"],
+            None,
+        ),
+        (
+            "recept på kanelbullar",
+            &["Kardemummabullar"],
+            Some(&["Kardemummabullar"]),
+        ),
+        ("kubernetes cluster upgrade", &[], Some(&[])),
+        ("quantum physics lecture", &[], Some(&[])),
+        // Diagnostic only: car service, unrelated to every sample note.
+        ("bilservice och däckbyte", &[], None),
+    ];
+    // (query, note that must be the best-scoring note just under the floor)
+    let near_misses = [("screen reader problems", "Tillgänglighet på webbplatsen")];
+    let mut failures = Vec::new();
+    for (query, expected, allowed_related) in cases {
+        let q = e.embed(&[query_text(query)]).unwrap().remove(0);
+        let scored = state.best_chunks(&q);
+        let all: Vec<f32> = scored.iter().map(|h| h.2).collect();
+        let floor = super::fusion::similarity_floor(&all);
+        let med = median(&all);
+        println!("\n{query:?}: median {med:.4}, floor {floor:.4}");
+        for (id, _, score) in &scored {
+            println!(
+                "  {score:.4} (+{:.4}) {}{}",
+                score - med,
+                titles[id],
+                if *score >= floor { "  <- kept" } else { "" }
+            );
+        }
+        let hits = inner_search_notes_hybrid(query, None, &pool, &state)
+            .await
+            .unwrap();
+        let found: Vec<(&str, bool)> = hits
+            .iter()
+            .map(|h| (titles[&h.note.id].as_str(), h.related))
+            .collect();
+        println!("  hits: {found:?}");
+        for (_, title) in near_misses.iter().filter(|(q, _)| *q == query) {
+            let below = scored
+                .iter()
+                .find(|h| h.2 < floor)
+                .map(|h| titles[&h.0].as_str());
+            if below != Some(*title) {
+                failures.push(format!(
+                    "{query:?}: best note under the floor is {below:?}, not {title:?}"
+                ));
+            }
+        }
+        for title in expected {
+            if !found.iter().any(|(t, _)| t == title) {
+                failures.push(format!("{query:?} misses {title:?}"));
+            }
+        }
+        if let Some(allowed) = allowed_related {
+            for (title, related) in &found {
+                if *related && !allowed.contains(title) {
+                    failures.push(format!("{query:?} returns unrelated {title:?}"));
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
 }

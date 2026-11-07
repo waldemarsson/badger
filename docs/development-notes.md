@@ -46,7 +46,7 @@ Unit tests never download or load the embedding model. Embedding sits behind the
 TIMETRACKER_MODEL_DIR=<dir> cargo test -p time-tracker real_model -- --ignored --nocapture --test-threads=1
 ```
 
-`real_model_spike` also compares against the fp32 export when `model.onnx` is in the same directory, and prints the timing, int8-vs-fp32 overlap and similarity-floor numbers; rerun it when the model, chunker or prefixes change (see `SIMILARITY_FLOOR` in `semantic/fusion.rs`).
+`real_model_spike` also compares against the fp32 export when `model.onnx` is in the same directory, and prints the timing, int8-vs-fp32 overlap and the similarity-floor sweeps (fixed floor, then the relative rule's `MARGIN` and `ABSOLUTE_FLOOR` over topic and off-topic queries); rerun it when the model, chunker or prefixes change (see `similarity_floor` in `semantic/fusion.rs`). `real_model_sample_notes` checks the rule on the dev seed's 16 sample notes through hybrid search and prints every note's score, the median and the floor per query.
 
 ## Report and restore behavior worth knowing
 

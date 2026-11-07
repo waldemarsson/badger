@@ -10,6 +10,7 @@ use sqlx::{Pool, Sqlite};
 
 use super::chunker::{chunk_note, CHUNK_TOKENS};
 use super::embedder::{dot, passage_text};
+use super::fusion;
 use super::{CachedChunk, SemanticState};
 
 /// Chunks per inference call. One: the int8 model's vectors depend on their batch-mates
@@ -285,9 +286,9 @@ impl SemanticState {
         Ok(())
     }
 
-    /// Notes whose best chunk scores at least `floor` against `query`, best first:
-    /// (note id, best chunk index, score), at most `depth`.
-    pub fn nearest(&self, query: &[f32], floor: f32, depth: usize) -> Vec<(i64, i64, f32)> {
+    /// Every indexed note's best chunk against `query`, best first:
+    /// (note id, best chunk index, score).
+    pub fn best_chunks(&self, query: &[f32]) -> Vec<(i64, i64, f32)> {
         let Ok(cache) = self.0.cache.read() else {
             return Vec::new();
         };
@@ -300,10 +301,18 @@ impl SemanticState {
                     .max_by(|a, b| a.1.total_cmp(&b.1))
                     .map(|(index, score)| (*id, index, score))
             })
-            .filter(|(_, _, score)| *score >= floor)
             .collect();
         hits.sort_by(|a, b| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0)));
-        hits.truncate(depth);
+        hits
+    }
+
+    /// Notes whose best chunk passes [`fusion::similarity_floor`] for `query` (computed over
+    /// every indexed note), best first: (note id, best chunk index, score).
+    pub fn nearest(&self, query: &[f32]) -> Vec<(i64, i64, f32)> {
+        let mut hits = self.best_chunks(query);
+        let scores: Vec<f32> = hits.iter().map(|h| h.2).collect();
+        let floor = fusion::similarity_floor(&scores);
+        hits.retain(|h| h.2 >= floor);
         hits
     }
 }
@@ -605,7 +614,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn startup_cache_load_and_nearest_respects_floor() {
+    async fn startup_cache_load_scores_every_note_by_its_best_chunk() {
         let pool = crate::test_db().await;
         let (state, _) = ready_state(&pool).await;
         let a = note("Budget", "money plan", &pool).await;
@@ -617,10 +626,11 @@ pub(crate) mod tests {
         fresh.load_cache("fake-1", &pool).await.unwrap();
         assert_eq!(fresh.indexed_notes(), 2);
         let q = FakeEmbedder::vector("budget money");
-        let hits = fresh.nearest(&q, 0.1, 50);
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].0, a);
-        assert!(fresh.nearest(&q, 0.99, 50).is_empty());
+        let scored = fresh.best_chunks(&q);
+        assert_eq!(scored.len(), 2);
+        assert_eq!((scored[0].0, scored[0].1), (a, 0));
+        assert!(scored[0].2 > scored[1].2);
+        assert_eq!(scored[1].0, b);
 
         let other = SemanticState::new("/nonexistent".into());
         other.load_cache("other-model", &pool).await.unwrap();

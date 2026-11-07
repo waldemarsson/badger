@@ -9,13 +9,48 @@ pub const RRF_K: f64 = 60.0;
 pub const DEPTH: usize = 50;
 /// The semantic leg needs a query (tags removed) at least this long.
 pub const MIN_SEMANTIC_CHARS: usize = 4;
-/// Minimum cosine similarity for a semantic hit, applied to a note's best chunk.
-/// Calibrated at note level with the real model on the synthetic Swedish/English corpus in
-/// `real_model_tests` (markdown notes chunked by the app's chunker, title + heading prefix
-/// included; 0.81 lets ~1.5% of unrelated notes pass with the same recall as 0.8075's 2%; see the
-/// brief's Spike line). Notes with many chunks get more chances to pass by noise, so a floor
-/// calibrated per chunk pair would be too low.
-pub const SIMILARITY_FLOOR: f32 = 0.81;
+/// Per-query similarity cut for semantic hits, applied to each note's best chunk. e5 scores
+/// sit in a narrow band (about 0.74–0.85) that shifts with the query, so no single cosine
+/// value separates relevant notes from noise. Instead a note must beat the typical note
+/// for this query: score ≥ max(`ABSOLUTE_FLOOR`, median best-chunk score over all indexed
+/// notes + `MARGIN`). The median is taken before tag filtering and the depth cut. Calibrated
+/// with the real model in `real_model_tests` (synthetic Swedish/English notes chunked by the
+/// app's chunker plus off-topic queries; see the brief's Spike line).
+///
+/// On 400 synthetic notes, 0.045 keeps a relevant note for 82.5% of topic queries (as many as
+/// the fixed 0.81) with precision 0.84 (0.68 fixed) and 0.49% of unrelated pairs (1.45%
+/// fixed), but 60% of off-topic queries still return a note (3.35 on average; 30% / 0.65
+/// fixed). e5 scores are compressed and no rule tried (fixed, median + margin, MAD, sd,
+/// percentile, top-N) separates cleanly; this one favours not missing real matches, which
+/// is the cheaper error here: semantic-only hits are labelled Related and fused by RRF with
+/// ties going to keyword hits.
+pub const MARGIN: f32 = 0.045;
+/// Safety floor under the relative rule: below this a note never counts as related, however
+/// low the median is for the query.
+pub const ABSOLUTE_FLOOR: f32 = 0.76;
+/// With fewer indexed notes than this the median says little about the query, so
+/// `FIXED_FLOOR` applies instead of the relative rule.
+pub const MIN_NOTES_FOR_RELATIVE: usize = 8;
+/// Fixed cosine floor for small indexes (the earlier global floor: ~1.5% of unrelated notes
+/// passed on the synthetic corpus).
+pub const FIXED_FLOOR: f32 = 0.81;
+
+/// The minimum best-chunk score for a semantic hit, given every indexed note's best-chunk
+/// score for the query (any order).
+pub fn similarity_floor(scores: &[f32]) -> f32 {
+    if scores.len() < MIN_NOTES_FOR_RELATIVE {
+        return FIXED_FLOOR;
+    }
+    let mut sorted = scores.to_vec();
+    sorted.sort_by(f32::total_cmp);
+    let mid = sorted.len() / 2;
+    let median = if sorted.len() % 2 == 0 {
+        (sorted[mid - 1] + sorted[mid]) / 2.0
+    } else {
+        sorted[mid]
+    };
+    ABSOLUTE_FLOOR.max(median + MARGIN)
+}
 
 /// The text the semantic leg embeds: the query without `#tag` terms, when it is long
 /// enough; `None` skips the semantic leg (short or tag-only queries).
@@ -79,6 +114,34 @@ mod tests {
     fn rrf_scores_match_the_formula() {
         // id 1: 1/61 + 1/63 ≈ 0.03227; id 2: 1/62 + 1/61 ≈ 0.03252 → 2 first.
         assert_eq!(rrf(&[1, 2], &[2, 9, 1]), vec![2, 1, 9]);
+    }
+
+    #[test]
+    fn similarity_floor_is_median_plus_margin() {
+        // Odd count: the middle score.
+        let scores = [0.70, 0.74, 0.78, 0.80, 0.82, 0.84, 0.86, 0.79, 0.81];
+        assert!((similarity_floor(&scores) - (0.80 + MARGIN)).abs() < 1e-6);
+        // Even count: mean of the two middle scores; order doesn't matter.
+        let scores = [0.86, 0.80, 0.84, 0.82, 0.83, 0.85, 0.87, 0.81];
+        assert!((similarity_floor(&scores) - (0.835 + MARGIN)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn similarity_floor_never_drops_below_the_absolute_floor() {
+        let scores = [0.0; 12];
+        assert_eq!(similarity_floor(&scores), ABSOLUTE_FLOOR);
+        let low = [0.60, 0.61, 0.62, 0.63, 0.64, 0.65, 0.66, 0.67];
+        assert!(0.635 + MARGIN < ABSOLUTE_FLOOR);
+        assert_eq!(similarity_floor(&low), ABSOLUTE_FLOOR);
+    }
+
+    #[test]
+    fn similarity_floor_is_fixed_for_small_indexes() {
+        assert_eq!(similarity_floor(&[]), FIXED_FLOOR);
+        let seven = [0.0; MIN_NOTES_FOR_RELATIVE - 1];
+        assert_eq!(similarity_floor(&seven), FIXED_FLOOR);
+        let eight = [0.0; MIN_NOTES_FOR_RELATIVE];
+        assert_eq!(similarity_floor(&eight), ABSOLUTE_FLOOR);
     }
 
     #[test]

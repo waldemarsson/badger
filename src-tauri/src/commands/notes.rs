@@ -851,7 +851,9 @@ pub async fn inner_search_notes_hybrid(
             return Ok(keyword.into_iter().take(cap).collect());
         }
     };
-    let nearest = semantic.nearest(&vector, fusion::SIMILARITY_FLOOR, usize::MAX);
+    // The floor is relative to the median over every indexed note, so it is taken before
+    // the tag filter and the depth cut.
+    let nearest = semantic.nearest(&vector);
     let best_chunk: std::collections::HashMap<i64, i64> =
         nearest.iter().map(|(id, chunk, _)| (*id, *chunk)).collect();
     let tags: Vec<String> = query
@@ -2277,14 +2279,124 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hybrid_excludes_hits_below_the_similarity_floor() {
+    async fn hybrid_excludes_hits_below_the_fixed_floor_in_small_indexes() {
         let pool = crate::test_db().await;
         let pure = note_with("Money", "money", &pool).await;
         // Half money, half garden: cosine ≈ 0.71 with a money query, under the floor.
         note_with("Mixed", "pengar tomater", &pool).await;
         let state = semantic_ready(&pool).await;
-        assert!(crate::semantic::fusion::SIMILARITY_FLOOR > 0.71);
+        assert!(crate::semantic::fusion::FIXED_FLOOR > 0.71);
         assert_eq!(hybrid("kostnad", &state, &pool).await, vec![(pure, true)]);
+    }
+
+    /// A note with `money` money words and `garden` garden words (neutral title): its
+    /// cosine with a money query is money / sqrt(money² + garden²).
+    async fn concept_note(money: usize, garden: usize, pool: &Pool<Sqlite>) -> i64 {
+        concept_note_with(money, garden, "", pool).await
+    }
+
+    async fn concept_note_with(
+        money: usize,
+        garden: usize,
+        extra: &str,
+        pool: &Pool<Sqlite>,
+    ) -> i64 {
+        let body = format!(
+            "{}{}{extra}",
+            "money ".repeat(money),
+            "tomato ".repeat(garden)
+        );
+        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM notes")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        note_with(&format!("Note {count}"), body.trim(), pool).await
+    }
+
+    fn sorted(mut hits: Vec<(i64, bool)>) -> Vec<(i64, bool)> {
+        hits.sort();
+        hits
+    }
+
+    #[tokio::test]
+    async fn hybrid_floor_is_relative_to_the_median_with_an_absolute_minimum() {
+        use crate::semantic::fusion::{ABSOLUTE_FLOOR, FIXED_FLOOR, MARGIN};
+        let pool = crate::test_db().await;
+        for _ in 0..8 {
+            concept_note(0, 1, &pool).await; // 0.0
+        }
+        let a = concept_note(3, 2, &pool).await; // 0.832
+        let b = concept_note(4, 3, &pool).await; // 0.800
+        let c = concept_note(5, 4, &pool).await; // 0.781
+        concept_note(7, 6, &pool).await; // 0.759
+        let state = semantic_ready(&pool).await;
+        // Median 0 → the absolute floor decides; it keeps notes the fixed floor would drop.
+        assert!(MARGIN < ABSOLUTE_FLOOR && ABSOLUTE_FLOOR > 0.7593 && ABSOLUTE_FLOOR <= 0.78);
+        assert!(FIXED_FLOOR > 0.80);
+        assert_eq!(
+            sorted(hybrid("kostnad", &state, &pool).await),
+            vec![(a, true), (b, true), (c, true)]
+        );
+    }
+
+    #[tokio::test]
+    async fn hybrid_floor_rises_with_the_median() {
+        use crate::semantic::fusion::{FIXED_FLOOR, MARGIN};
+        let pool = crate::test_db().await;
+        for _ in 0..8 {
+            concept_note(2, 1, &pool).await; // 0.894, above the fixed floor
+        }
+        let x = concept_note(5, 1, &pool).await; // 0.981
+        let y = concept_note(1, 0, &pool).await; // 1.0
+        let state = semantic_ready(&pool).await;
+        // Median 0.894: only notes clearly above the typical note pass.
+        assert!(0.894 > FIXED_FLOOR && 0.8945 + MARGIN < 0.98);
+        assert_eq!(
+            sorted(hybrid("kostnad", &state, &pool).await),
+            vec![(x, true), (y, true)]
+        );
+    }
+
+    #[tokio::test]
+    async fn hybrid_uses_the_fixed_floor_below_eight_indexed_notes() {
+        use crate::semantic::fusion::{ABSOLUTE_FLOOR, FIXED_FLOOR, MIN_NOTES_FOR_RELATIVE};
+        assert_eq!(MIN_NOTES_FOR_RELATIVE, 8);
+        assert!(ABSOLUTE_FLOOR <= 0.80 && FIXED_FLOOR > 0.80);
+        let pool = crate::test_db().await;
+        for _ in 0..5 {
+            concept_note(0, 1, &pool).await; // 0.0
+        }
+        let a = concept_note(3, 2, &pool).await; // 0.832
+        let b = concept_note(4, 3, &pool).await; // 0.800
+        let state = semantic_ready(&pool).await;
+        assert_eq!(hybrid("kostnad", &state, &pool).await, vec![(a, true)]);
+
+        // An eighth note switches to the relative rule (median 0 → absolute floor).
+        concept_note(0, 1, &pool).await;
+        let state = semantic_ready(&pool).await;
+        assert_eq!(
+            sorted(hybrid("kostnad", &state, &pool).await),
+            vec![(a, true), (b, true)]
+        );
+    }
+
+    #[tokio::test]
+    async fn hybrid_takes_the_median_before_the_tag_filter() {
+        use crate::semantic::fusion::{FIXED_FLOOR, MARGIN};
+        let pool = crate::test_db().await;
+        for _ in 0..7 {
+            concept_note(2, 1, &pool).await; // 0.894, untagged
+        }
+        concept_note_with(3, 2, " #work", &pool).await; // 0.832, under median + margin
+        let top = concept_note_with(1, 0, " #work", &pool).await; // 1.0
+        let state = semantic_ready(&pool).await;
+        // Over the two tagged notes alone the fixed floor would keep both; over all nine
+        // the median is 0.894, so only the top note passes.
+        assert!(0.832 > FIXED_FLOOR && 0.8944 + MARGIN > 0.833);
+        assert_eq!(
+            hybrid("#work kostnad", &state, &pool).await,
+            vec![(top, true)]
+        );
     }
 
     #[tokio::test]
@@ -2377,13 +2489,22 @@ mod tests {
         for i in 0..(crate::semantic::fusion::DEPTH + 15) {
             ids.push(note_with(&format!("Note {i}"), "money", &pool).await);
         }
+        // Unrelated notes keep the median low, so the relative floor is the absolute one.
+        for i in 0..(crate::semantic::fusion::DEPTH + 16) {
+            note_with(&format!("Garden {i}"), "tomato", &pool).await;
+        }
         let state = semantic_ready(&pool).await;
         // A delete that raced the worker leaves vectors cached without rows or note.
         let ghosts = &ids[..10];
         for id in ghosts {
             inner_delete_note(*id, &pool).await.unwrap();
         }
-        assert_eq!(state.indexed_notes(), ids.len(), "stale entries cached");
+        let garden = crate::semantic::fusion::DEPTH + 16;
+        assert_eq!(
+            state.indexed_notes(),
+            ids.len() + garden,
+            "stale entries cached"
+        );
 
         let hits = hybrid("pengar", &state, &pool).await;
         assert_eq!(
@@ -2396,7 +2517,7 @@ mod tests {
             .all(|(id, related)| *related && !ghosts.contains(id)));
         assert_eq!(
             state.indexed_notes(),
-            ids.len() - ghosts.len(),
+            ids.len() + garden - ghosts.len(),
             "ghosts evicted"
         );
     }

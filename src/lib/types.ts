@@ -128,6 +128,24 @@ export interface NoteSummary {
 export interface NoteHit extends NoteSummary {
 	title_marked: string;
 	snippet: string; // '' when the body has no highlighted hit
+	/** Semantic-only hit (hybrid search): `snippet` is the best-matching passage, unmarked. */
+	related: boolean;
+}
+
+/** get_semantic_status and the semantic search commands. */
+export interface SemanticStatus {
+	state: 'off' | 'downloading' | 'loading' | 'indexing' | 'ready' | 'error';
+	enabled: boolean;
+	downloaded_bytes: number;
+	download_bytes: number;
+	indexing_done: number;
+	indexing_total: number;
+	error: string | null;
+	model_name: string;
+	model_bytes: number;
+	indexed_notes: number;
+	notes: number;
+	index_bytes: number;
 }
 
 /** search_index_stats / rebuild_search_index. */

@@ -99,6 +99,18 @@ CREATE TABLE IF NOT EXISTS note_refs (
     PRIMARY KEY (NoteId, Kind, Target)
 );
 CREATE INDEX IF NOT EXISTS idx_note_refs_target ON note_refs(Kind, Target);
+
+-- Derived semantic index: one row per embedded chunk of a note (Vector = L2-normalised
+-- little-endian f32). Rust keeps it in sync; not part of backups: restore re-embeds.
+CREATE TABLE IF NOT EXISTS note_embeddings (
+    NoteId      INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    ChunkIndex  INTEGER NOT NULL,
+    ContentHash TEXT    NOT NULL,
+    ModelId     TEXT    NOT NULL,
+    ChunkText   TEXT    NOT NULL,
+    Vector      BLOB    NOT NULL,
+    PRIMARY KEY (NoteId, ChunkIndex)
+);
 ";
 
 /// Opens (or creates) the SQLite database at `db_path` with WAL mode and FK enforcement,
@@ -232,6 +244,10 @@ mod tests {
         assert!(names.contains(&"folders"), "folders table missing");
         assert!(names.contains(&"notes"), "notes table missing");
         assert!(names.contains(&"note_refs"), "note_refs table missing");
+        assert!(
+            names.contains(&"note_embeddings"),
+            "note_embeddings table missing"
+        );
     }
 
     async fn object_names(pool: &sqlx::SqlitePool, kind: &str) -> Vec<String> {
@@ -470,6 +486,28 @@ mod tests {
         let pool = super::init_db(&db.0).await.unwrap();
         assert_eq!(ref_rows(&pool).await, expected);
         pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn test_deleting_note_cascades_to_its_embeddings() {
+        let pool = crate::test_db().await;
+        sqlx::raw_sql(
+            "INSERT INTO notes (id, Title, CreatedAt, UpdatedAt) VALUES (1, 'A', 'x', 'x'), (2, 'B', 'x', 'x');
+             INSERT INTO note_embeddings (NoteId, ChunkIndex, ContentHash, ModelId, ChunkText, Vector)
+                 VALUES (1, 0, 'h', 'm', '', x''), (1, 1, 'h', 'm', '', x''), (2, 0, 'h', 'm', '', x'');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM notes WHERE id = 1")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let left: Vec<(i64,)> = sqlx::query_as("SELECT NoteId FROM note_embeddings")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(left, vec![(2,)]);
     }
 
     #[tokio::test]

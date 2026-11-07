@@ -34,6 +34,20 @@ The seed workflow populates sample customers, projects, issues, and time entries
 
 Notes and folders are seeded separately: whenever the `notes` table is empty, the seed adds sample notes covering every live-preview element plus a `Projects / Archive` folder pair holding one note. This happens even if the customer seed is skipped because customers already exist, so older dev databases get notes too.
 
+The Seed button (Settings › Dev) also adds 16 bilingual sample notes (100–200 words each) to a root `Samples` folder for trying semantic search: Swedish/English pairs on the same topic in different words (budget, release date, onboarding, invoice dispute, backups, accessibility, summer leave) plus two unrelated decoys. Titles that already exist are skipped, so it works on a dev database that already has notes and is safe to click again.
+
+## Semantic search tests
+
+Unit tests never download or load the embedding model. Embedding sits behind the `Embedder` trait and tests use `FakeEmbedder` (deterministic vectors, a word-count token counter); `semantic::index::tests::ready_state` builds a ready `SemanticState` around one. Download tests run against a local fake source, not the network.
+
+`src-tauri/src/semantic/real_model_tests.rs` holds `#[ignore]`d tests against the real model. They download nothing: enable semantic search in a debug build first (files land in `.timetracker-dev/models/`), or point `TIMETRACKER_MODEL_DIR` at a directory with `model_quantized.onnx` and `tokenizer.json`:
+
+```bash
+TIMETRACKER_MODEL_DIR=<dir> cargo test -p time-tracker real_model -- --ignored --nocapture --test-threads=1
+```
+
+`real_model_spike` also compares against the fp32 export when `model.onnx` is in the same directory, and prints the timing, int8-vs-fp32 overlap and the similarity-floor sweeps (fixed floor, then the relative rule's `MARGIN` and `ABSOLUTE_FLOOR` over topic and off-topic queries); rerun it when the model, chunker or prefixes change (see `similarity_floor` in `semantic/fusion.rs`). `real_model_sample_notes` checks the rule on the dev seed's 16 sample notes through hybrid search and prints every note's score, the median and the floor per query.
+
 ## Report and restore behavior worth knowing
 
 - Weekly and monthly reports are computed in Rust rather than assembled entirely in the frontend

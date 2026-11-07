@@ -1,4 +1,5 @@
 use crate::note_links::{self, RefKind};
+use crate::semantic::SemanticState;
 use crate::AppError;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Pool, Sqlite, SqliteConnection};
@@ -509,6 +510,9 @@ pub struct NoteHit {
     pub note: NoteSummary,
     pub title_marked: String,
     pub snippet: String,
+    /// A semantic-only hit (no keyword match): `snippet` is its best chunk, unmarked.
+    #[serde(default)]
+    pub related: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -746,8 +750,164 @@ pub async fn inner_search_notes(
             } else {
                 String::new()
             },
+            related: false,
         })
         .collect())
+}
+
+/// Maximum length of a semantic (chunk) snippet in characters.
+const SEMANTIC_SNIPPET_CHARS: usize = 160;
+
+/// Shortens chunk text for a snippet: whole words, `…` when cut.
+fn semantic_snippet(text: &str) -> String {
+    let text = strip_hit_markers(text);
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.chars().count() <= SEMANTIC_SNIPPET_CHARS {
+        return text;
+    }
+    let cut: String = text.chars().take(SEMANTIC_SNIPPET_CHARS).collect();
+    let cut = match cut.rfind(' ') {
+        Some(i) if i > SEMANTIC_SNIPPET_CHARS / 2 => &cut[..i],
+        _ => cut.as_str(),
+    };
+    format!("{}…", cut.trim_end())
+}
+
+/// Ids among `ids` that are still notes, in the given order.
+async fn existing_note_ids(ids: Vec<i64>, pool: &Pool<Sqlite>) -> Result<Vec<i64>, AppError> {
+    if ids.is_empty() {
+        return Ok(ids);
+    }
+    let json = format!(
+        "[{}]",
+        ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
+    );
+    let existing: std::collections::HashSet<i64> =
+        sqlx::query_scalar("SELECT id FROM notes WHERE id IN (SELECT value FROM json_each(?))")
+            .bind(json)
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .collect();
+    Ok(ids.into_iter().filter(|id| existing.contains(id)).collect())
+}
+
+/// Ids among `ids` tagged with every tag in `tags` (or below it), like the keyword filter.
+async fn filter_by_tags(
+    ids: Vec<i64>,
+    tags: &[String],
+    pool: &Pool<Sqlite>,
+) -> Result<Vec<i64>, AppError> {
+    if tags.is_empty() || ids.is_empty() {
+        return Ok(ids);
+    }
+    let mut keep: std::collections::HashSet<i64> = ids.iter().copied().collect();
+    for tag in tags {
+        let len = i64::try_from(tag.chars().count()).unwrap_or(i64::MAX - 1);
+        let tagged: std::collections::HashSet<i64> = sqlx::query_scalar(
+            "SELECT DISTINCT NoteId FROM note_refs WHERE Kind = 'tag' \
+             AND (Target = ? OR substr(Target, 1, ?) = ? || '/')",
+        )
+        .bind(tag)
+        .bind(len + 1)
+        .bind(tag)
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .collect();
+        keep.retain(|id| tagged.contains(id));
+    }
+    Ok(ids.into_iter().filter(|id| keep.contains(id)).collect())
+}
+
+/// Keyword search fused with semantic search (RRF, k = 60, depth 50 per leg). Falls back
+/// to exactly `inner_search_notes` when semantic search isn't ready, the query (without
+/// `#tag` terms) is under 4 characters, or the query can't be embedded. `#tag` terms
+/// filter both legs. Semantic-only hits carry `related` and their best chunk as snippet;
+/// keyword hits past the fusion depth follow the fused list in keyword order.
+pub async fn inner_search_notes_hybrid(
+    query: &str,
+    limit: Option<i64>,
+    pool: &Pool<Sqlite>,
+    semantic: &crate::semantic::SemanticState,
+) -> Result<Vec<NoteHit>, AppError> {
+    use crate::semantic::{embedder::query_text, fusion};
+
+    let text = match fusion::semantic_query(&strip_hit_markers(query)) {
+        Some(text) if semantic.is_ready() => text,
+        _ => return inner_search_notes(query, limit, pool).await,
+    };
+    let cap = limit
+        .and_then(|l| usize::try_from(l).ok())
+        .unwrap_or(usize::MAX);
+    let keyword_limit = limit.map(|l| l.max(fusion::DEPTH as i64));
+    let keyword = inner_search_notes(query, keyword_limit, pool).await?;
+
+    let vector = match semantic.embed(vec![query_text(&text)]).await {
+        Ok(mut v) if !v.is_empty() => v.swap_remove(0),
+        Ok(_) => return Ok(keyword.into_iter().take(cap).collect()),
+        Err(e) => {
+            tracing::error!("Semantic search: couldn't embed the query: {e}");
+            return Ok(keyword.into_iter().take(cap).collect());
+        }
+    };
+    // The floor is relative to the median over every indexed note, so it is taken before
+    // the tag filter and the depth cut.
+    let nearest = semantic.nearest(&vector);
+    let best_chunk: std::collections::HashMap<i64, i64> =
+        nearest.iter().map(|(id, chunk, _)| (*id, *chunk)).collect();
+    let tags: Vec<String> = query
+        .split_whitespace()
+        .filter_map(note_links::tag_term)
+        .collect();
+    let nearest_ids =
+        existing_note_ids(nearest.iter().map(|(id, _, _)| *id).collect(), pool).await?;
+    if nearest_ids.len() < nearest.len() {
+        // Cached vectors of a note deleted under the worker: drop them so they don't take
+        // a slot within the fusion depth or count as indexed.
+        let kept: std::collections::HashSet<i64> = nearest_ids.iter().copied().collect();
+        for (id, _, _) in nearest.iter().filter(|(id, _, _)| !kept.contains(id)) {
+            semantic.evict_cache(*id);
+        }
+    }
+    let mut semantic_ids = filter_by_tags(nearest_ids, &tags, pool).await?;
+    semantic_ids.truncate(fusion::DEPTH);
+
+    let keyword_ids: Vec<i64> = keyword.iter().map(|h| h.note.id).collect();
+    let mut order = fusion::rrf(&keyword_ids, &semantic_ids);
+    let fused: std::collections::HashSet<i64> = order.iter().copied().collect();
+    order.extend(keyword_ids.iter().filter(|id| !fused.contains(id)));
+
+    let mut by_id: std::collections::HashMap<i64, NoteHit> =
+        keyword.into_iter().map(|h| (h.note.id, h)).collect();
+    let mut hits = Vec::new();
+    for id in order {
+        if hits.len() >= cap {
+            break;
+        }
+        if let Some(hit) = by_id.remove(&id) {
+            hits.push(hit);
+            continue;
+        }
+        // Semantic only: the note may have been deleted since it was embedded.
+        let Ok(note) = inner_get_note(id, pool).await else {
+            continue;
+        };
+        let chunk: Option<String> = sqlx::query_scalar(
+            "SELECT ChunkText FROM note_embeddings WHERE NoteId = ? AND ChunkIndex = ?",
+        )
+        .bind(id)
+        .bind(best_chunk.get(&id).copied().unwrap_or(0))
+        .fetch_optional(pool)
+        .await?;
+        hits.push(NoteHit {
+            title_marked: strip_hit_markers(&note.title),
+            snippet: semantic_snippet(chunk.as_deref().unwrap_or("")),
+            note: NoteSummary::from(note),
+            related: true,
+        });
+    }
+    Ok(hits)
 }
 
 pub async fn inner_search_index_stats(pool: &Pool<Sqlite>) -> Result<SearchIndexStats, AppError> {
@@ -1038,6 +1198,76 @@ pub async fn inner_list_backlinks(id: i64, pool: &Pool<Sqlite>) -> Result<Vec<Ba
         .collect())
 }
 
+// ── Semantic index hooks ──────────────────────────────────────────────────────
+// Note writes that change embedded text queue the note(s) after their transaction
+// commits; delete evicts the cached vectors (the rows go with the note via cascade).
+
+pub async fn create_note_and_queue(
+    folder_id: Option<i64>,
+    pool: &Pool<Sqlite>,
+    semantic: &SemanticState,
+) -> Result<Note, AppError> {
+    let note = inner_create_note(folder_id, pool).await?;
+    semantic.enqueue([note.id]);
+    Ok(note)
+}
+
+pub async fn create_note_titled_and_queue(
+    title: &str,
+    folder_id: Option<i64>,
+    pool: &Pool<Sqlite>,
+    semantic: &SemanticState,
+) -> Result<Note, AppError> {
+    let note = inner_create_note_titled(title, folder_id, pool).await?;
+    semantic.enqueue([note.id]);
+    Ok(note)
+}
+
+/// Queues the renamed note and every note whose links were rewritten.
+pub async fn rename_note_and_queue(
+    id: i64,
+    title: &str,
+    pool: &Pool<Sqlite>,
+    semantic: &SemanticState,
+) -> Result<RenamedNote, AppError> {
+    let renamed = inner_rename_note(id, title, pool).await?;
+    semantic.enqueue(std::iter::once(id).chain(renamed.rewritten_ids.iter().copied()));
+    Ok(renamed)
+}
+
+pub async fn update_note_body_and_queue(
+    id: i64,
+    body: &str,
+    pool: &Pool<Sqlite>,
+    semantic: &SemanticState,
+) -> Result<NoteSummary, AppError> {
+    let summary = inner_update_note_body(id, body, pool).await?;
+    semantic.enqueue([id]);
+    Ok(summary)
+}
+
+pub async fn delete_note_and_evict(
+    id: i64,
+    pool: &Pool<Sqlite>,
+    semantic: &SemanticState,
+) -> Result<(), AppError> {
+    inner_delete_note(id, pool).await?;
+    semantic.evict(id);
+    Ok(())
+}
+
+/// After a customer or project rename that may have rewritten `#tags` in note bodies:
+/// queue every note (unchanged ones are skipped by hash). The rename has committed, so
+/// a failure here is logged, not returned.
+pub async fn queue_all_after_tag_rename(pool: &Pool<Sqlite>, semantic: &SemanticState) {
+    if !semantic.is_enabled() {
+        return;
+    }
+    if let Err(e) = semantic.enqueue_all(pool).await {
+        tracing::error!("Semantic search: couldn't queue notes after a rename: {e}");
+    }
+}
+
 // ── Tauri command wrappers ────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -1054,8 +1284,9 @@ pub async fn get_note(id: i64, pool: State<'_, Pool<Sqlite>>) -> Result<Note, Ap
 pub async fn create_note(
     folder_id: Option<i64>,
     pool: State<'_, Pool<Sqlite>>,
+    semantic: State<'_, SemanticState>,
 ) -> Result<Note, AppError> {
-    inner_create_note(folder_id, pool.inner()).await
+    create_note_and_queue(folder_id, pool.inner(), semantic.inner()).await
 }
 
 #[tauri::command]
@@ -1063,8 +1294,9 @@ pub async fn create_note_titled(
     title: String,
     folder_id: Option<i64>,
     pool: State<'_, Pool<Sqlite>>,
+    semantic: State<'_, SemanticState>,
 ) -> Result<Note, AppError> {
-    inner_create_note_titled(&title, folder_id, pool.inner()).await
+    create_note_titled_and_queue(&title, folder_id, pool.inner(), semantic.inner()).await
 }
 
 #[tauri::command]
@@ -1072,8 +1304,9 @@ pub async fn rename_note(
     id: i64,
     title: String,
     pool: State<'_, Pool<Sqlite>>,
+    semantic: State<'_, SemanticState>,
 ) -> Result<RenamedNote, AppError> {
-    inner_rename_note(id, &title, pool.inner()).await
+    rename_note_and_queue(id, &title, pool.inner(), semantic.inner()).await
 }
 
 #[tauri::command]
@@ -1081,8 +1314,9 @@ pub async fn update_note_body(
     id: i64,
     body: String,
     pool: State<'_, Pool<Sqlite>>,
+    semantic: State<'_, SemanticState>,
 ) -> Result<NoteSummary, AppError> {
-    inner_update_note_body(id, &body, pool.inner()).await
+    update_note_body_and_queue(id, &body, pool.inner(), semantic.inner()).await
 }
 
 #[tauri::command]
@@ -1095,17 +1329,28 @@ pub async fn set_note_pinned(
 }
 
 #[tauri::command]
-pub async fn delete_note(id: i64, pool: State<'_, Pool<Sqlite>>) -> Result<(), AppError> {
-    inner_delete_note(id, pool.inner()).await
+pub async fn delete_note(
+    id: i64,
+    pool: State<'_, Pool<Sqlite>>,
+    semantic: State<'_, SemanticState>,
+) -> Result<(), AppError> {
+    delete_note_and_evict(id, pool.inner(), semantic.inner()).await
 }
 
+/// `hybrid` (default false) adds semantic hits when semantic search is ready.
 #[tauri::command]
 pub async fn search_notes(
     query: String,
     limit: Option<i64>,
+    hybrid: Option<bool>,
     pool: State<'_, Pool<Sqlite>>,
+    semantic: State<'_, SemanticState>,
 ) -> Result<Vec<NoteHit>, AppError> {
-    inner_search_notes(&query, limit, pool.inner()).await
+    if hybrid.unwrap_or(false) {
+        inner_search_notes_hybrid(&query, limit, pool.inner(), semantic.inner()).await
+    } else {
+        inner_search_notes(&query, limit, pool.inner()).await
+    }
 }
 
 #[tauri::command]
@@ -1936,5 +2181,423 @@ mod tests {
         assert_eq!(stats.notes, 1);
         assert!(stats.bytes > 0);
         assert_eq!(hit_ids("searchable", &pool).await, vec![id]);
+    }
+
+    // ── Hybrid search ─────────────────────────────────────────────────────────
+
+    /// Test embedder with known geometry: one axis per concept (Swedish and English words
+    /// alike); words outside every concept add nothing, so such texts embed to zero.
+    struct ConceptEmbedder;
+
+    const CONCEPTS: [&[&str]; 2] = [
+        &["budget", "money", "pengar", "kostnad", "costs"],
+        &["garden", "tomato", "trädgård", "tomater"],
+    ];
+
+    impl crate::semantic::embedder::Embedder for ConceptEmbedder {
+        fn model_id(&self) -> &str {
+            "concepts"
+        }
+        fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
+            Ok(texts
+                .iter()
+                .map(|t| {
+                    let mut v = vec![0f32; CONCEPTS.len()];
+                    for w in t.split(|c: char| !c.is_alphanumeric()) {
+                        let w = w.to_lowercase();
+                        for (axis, words) in CONCEPTS.iter().enumerate() {
+                            if words.contains(&w.as_str()) {
+                                v[axis] += 1.0;
+                            }
+                        }
+                    }
+                    crate::semantic::embedder::l2_normalize(&mut v);
+                    v
+                })
+                .collect())
+        }
+        fn count_tokens(&self, t: &str) -> usize {
+            t.split_whitespace().count()
+        }
+    }
+
+    async fn semantic_ready(pool: &Pool<Sqlite>) -> SemanticState {
+        let state = SemanticState::new("/nonexistent".into());
+        state.set_enabled(true);
+        state.set_embedder(Some(std::sync::Arc::new(ConceptEmbedder)));
+        state.enqueue_all(pool).await.unwrap();
+        state.drain(pool).await;
+        state
+    }
+
+    async fn hybrid(q: &str, state: &SemanticState, pool: &Pool<Sqlite>) -> Vec<(i64, bool)> {
+        inner_search_notes_hybrid(q, None, pool, state)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|h| (h.note.id, h.related))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn hybrid_adds_semantic_only_hits_with_marker_and_chunk_snippet() {
+        let pool = crate::test_db().await;
+        let budget = note_with("Budget", "More money for travel next year.", &pool).await;
+        note_with("Garden", "Plant tomato seedlings.", &pool).await;
+        let state = semantic_ready(&pool).await;
+
+        // "pengar" (Swedish) matches no word but the money concept.
+        let hits = inner_search_notes_hybrid("pengar", None, &pool, &state)
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].note.id, budget);
+        assert!(hits[0].related);
+        assert_eq!(hits[0].snippet, "More money for travel next year.");
+        assert_eq!(hits[0].title_marked, "Budget", "no highlight markers");
+    }
+
+    #[tokio::test]
+    async fn hybrid_fuses_with_rrf_keyword_and_semantic() {
+        let pool = crate::test_db().await;
+        // Keyword-only: "costs" as a word in a garden note (semantically garden-heavy).
+        let mixed = note_with("Garden costs", "tomato tomato garden trädgård costs", &pool).await;
+        // Both legs: keyword "costs" and the money concept.
+        let both = note_with("Costs", "costs and money", &pool).await;
+        // Semantic only.
+        let sem = note_with("Budget", "money pengar", &pool).await;
+        let state = semantic_ready(&pool).await;
+
+        let keyword: Vec<i64> = hit_ids("costs", &pool).await;
+        assert_eq!(keyword.len(), 2);
+        let fused = hybrid("costs", &state, &pool).await;
+        // `both` is in both lists → first; then the better single ranks.
+        assert_eq!(fused[0], (both, false));
+        assert_eq!(fused.len(), 3);
+        assert!(fused.contains(&(sem, true)));
+        assert!(fused.contains(&(mixed, false)));
+    }
+
+    #[tokio::test]
+    async fn hybrid_excludes_hits_below_the_fixed_floor_in_small_indexes() {
+        let pool = crate::test_db().await;
+        let pure = note_with("Money", "money", &pool).await;
+        // Half money, half garden: cosine ≈ 0.71 with a money query, under the floor.
+        note_with("Mixed", "pengar tomater", &pool).await;
+        let state = semantic_ready(&pool).await;
+        assert!(crate::semantic::fusion::FIXED_FLOOR > 0.71);
+        assert_eq!(hybrid("kostnad", &state, &pool).await, vec![(pure, true)]);
+    }
+
+    /// A note with `money` money words and `garden` garden words (neutral title): its
+    /// cosine with a money query is money / sqrt(money² + garden²).
+    async fn concept_note(money: usize, garden: usize, pool: &Pool<Sqlite>) -> i64 {
+        concept_note_with(money, garden, "", pool).await
+    }
+
+    async fn concept_note_with(
+        money: usize,
+        garden: usize,
+        extra: &str,
+        pool: &Pool<Sqlite>,
+    ) -> i64 {
+        let body = format!(
+            "{}{}{extra}",
+            "money ".repeat(money),
+            "tomato ".repeat(garden)
+        );
+        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM notes")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        note_with(&format!("Note {count}"), body.trim(), pool).await
+    }
+
+    fn sorted(mut hits: Vec<(i64, bool)>) -> Vec<(i64, bool)> {
+        hits.sort();
+        hits
+    }
+
+    #[tokio::test]
+    async fn hybrid_floor_is_relative_to_the_median_with_an_absolute_minimum() {
+        use crate::semantic::fusion::{ABSOLUTE_FLOOR, FIXED_FLOOR, MARGIN};
+        let pool = crate::test_db().await;
+        for _ in 0..8 {
+            concept_note(0, 1, &pool).await; // 0.0
+        }
+        let a = concept_note(3, 2, &pool).await; // 0.832
+        let b = concept_note(4, 3, &pool).await; // 0.800
+        let c = concept_note(5, 4, &pool).await; // 0.781
+        concept_note(7, 6, &pool).await; // 0.759
+        let state = semantic_ready(&pool).await;
+        // Median 0 → the absolute floor decides; it keeps notes the fixed floor would drop.
+        assert!(MARGIN < ABSOLUTE_FLOOR && ABSOLUTE_FLOOR > 0.7593 && ABSOLUTE_FLOOR <= 0.78);
+        assert!(FIXED_FLOOR > 0.80);
+        assert_eq!(
+            sorted(hybrid("kostnad", &state, &pool).await),
+            vec![(a, true), (b, true), (c, true)]
+        );
+    }
+
+    #[tokio::test]
+    async fn hybrid_floor_rises_with_the_median() {
+        use crate::semantic::fusion::{FIXED_FLOOR, MARGIN};
+        let pool = crate::test_db().await;
+        for _ in 0..8 {
+            concept_note(2, 1, &pool).await; // 0.894, above the fixed floor
+        }
+        let x = concept_note(5, 1, &pool).await; // 0.981
+        let y = concept_note(1, 0, &pool).await; // 1.0
+        let state = semantic_ready(&pool).await;
+        // Median 0.894: only notes clearly above the typical note pass.
+        assert!(0.894 > FIXED_FLOOR && 0.8945 + MARGIN < 0.98);
+        assert_eq!(
+            sorted(hybrid("kostnad", &state, &pool).await),
+            vec![(x, true), (y, true)]
+        );
+    }
+
+    #[tokio::test]
+    async fn hybrid_uses_the_fixed_floor_below_eight_indexed_notes() {
+        use crate::semantic::fusion::{ABSOLUTE_FLOOR, FIXED_FLOOR, MIN_NOTES_FOR_RELATIVE};
+        assert_eq!(MIN_NOTES_FOR_RELATIVE, 8);
+        assert!(ABSOLUTE_FLOOR <= 0.80 && FIXED_FLOOR > 0.80);
+        let pool = crate::test_db().await;
+        for _ in 0..5 {
+            concept_note(0, 1, &pool).await; // 0.0
+        }
+        let a = concept_note(3, 2, &pool).await; // 0.832
+        let b = concept_note(4, 3, &pool).await; // 0.800
+        let state = semantic_ready(&pool).await;
+        assert_eq!(hybrid("kostnad", &state, &pool).await, vec![(a, true)]);
+
+        // An eighth note switches to the relative rule (median 0 → absolute floor).
+        concept_note(0, 1, &pool).await;
+        let state = semantic_ready(&pool).await;
+        assert_eq!(
+            sorted(hybrid("kostnad", &state, &pool).await),
+            vec![(a, true), (b, true)]
+        );
+    }
+
+    #[tokio::test]
+    async fn hybrid_takes_the_median_before_the_tag_filter() {
+        use crate::semantic::fusion::{FIXED_FLOOR, MARGIN};
+        let pool = crate::test_db().await;
+        for _ in 0..7 {
+            concept_note(2, 1, &pool).await; // 0.894, untagged
+        }
+        concept_note_with(3, 2, " #work", &pool).await; // 0.832, under median + margin
+        let top = concept_note_with(1, 0, " #work", &pool).await; // 1.0
+        let state = semantic_ready(&pool).await;
+        // Over the two tagged notes alone the fixed floor would keep both; over all nine
+        // the median is 0.894, so only the top note passes.
+        assert!(0.832 > FIXED_FLOOR && 0.8944 + MARGIN > 0.833);
+        assert_eq!(
+            hybrid("#work kostnad", &state, &pool).await,
+            vec![(top, true)]
+        );
+    }
+
+    #[tokio::test]
+    async fn hybrid_skips_semantic_leg_for_short_and_tag_only_queries() {
+        let pool = crate::test_db().await;
+        note_with("Budget", "money #work", &pool).await;
+        note_with("Plan", "pengar", &pool).await;
+        let state = semantic_ready(&pool).await;
+        for q in ["mon", "#work", "#work mon", "pen"] {
+            let keyword = inner_search_notes(q, None, &pool).await.unwrap();
+            let hybrid = inner_search_notes_hybrid(q, None, &pool, &state)
+                .await
+                .unwrap();
+            assert_eq!(hybrid, keyword, "query {q:?}");
+            assert!(hybrid.iter().all(|h| !h.related));
+        }
+    }
+
+    #[tokio::test]
+    async fn hybrid_tag_terms_filter_semantic_hits() {
+        let pool = crate::test_db().await;
+        let tagged = note_with("Budget", "money #work", &pool).await;
+        let nested = note_with("Costs", "kostnad #work/acme", &pool).await;
+        note_with("Private", "pengar", &pool).await;
+        let state = semantic_ready(&pool).await;
+        let mut hits = hybrid("#work pengar", &state, &pool).await;
+        hits.sort();
+        assert_eq!(hits, vec![(tagged, true), (nested, true)]);
+    }
+
+    #[tokio::test]
+    async fn hybrid_equals_keyword_search_when_not_ready() {
+        let pool = crate::test_db().await;
+        note_with("Budget", "money plan for 2027", &pool).await;
+        note_with("Garden", "tomato", &pool).await;
+        let off = SemanticState::new("/nonexistent".into());
+        let enabled_not_loaded = SemanticState::new("/nonexistent".into());
+        enabled_not_loaded.set_enabled(true);
+        for state in [&off, &enabled_not_loaded] {
+            for q in ["budget", "pengar", "plan 2027", "#x", ""] {
+                assert_eq!(
+                    inner_search_notes_hybrid(q, Some(5), &pool, state)
+                        .await
+                        .unwrap(),
+                    inner_search_notes(q, Some(5), &pool).await.unwrap(),
+                    "query {q:?}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn hybrid_keeps_keyword_hits_past_the_fusion_depth_and_applies_limit() {
+        let pool = crate::test_db().await;
+        for i in 0..55 {
+            note_with(&format!("Alpha {i}"), "alpha words", &pool).await;
+        }
+        let state = semantic_ready(&pool).await;
+        let keyword = hit_ids("alpha", &pool).await;
+        let fused: Vec<i64> = hybrid("alpha", &state, &pool)
+            .await
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(
+            fused, keyword,
+            "no semantic hits: keyword order, nothing dropped"
+        );
+        let limited = inner_search_notes_hybrid("alpha", Some(3), &pool, &state)
+            .await
+            .unwrap();
+        assert_eq!(limited.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn semantic_snippet_trims_long_chunks_at_a_word() {
+        let long = vec!["ord"; 100].join(" ");
+        let s = semantic_snippet(&long);
+        assert!(s.ends_with('…'));
+        assert!(s.chars().count() <= SEMANTIC_SNIPPET_CHARS + 1);
+        assert!(!s.contains("or…"), "cut between words");
+        assert_eq!(semantic_snippet("  short\n text "), "short text");
+    }
+
+    #[tokio::test]
+    async fn hybrid_drops_cached_vectors_of_deleted_notes_before_the_depth_cut() {
+        let pool = crate::test_db().await;
+        let mut ids = Vec::new();
+        // Semantic-only for "pengar"; equal scores, so the lowest ids rank first.
+        for i in 0..(crate::semantic::fusion::DEPTH + 15) {
+            ids.push(note_with(&format!("Note {i}"), "money", &pool).await);
+        }
+        // Unrelated notes keep the median low, so the relative floor is the absolute one.
+        for i in 0..(crate::semantic::fusion::DEPTH + 16) {
+            note_with(&format!("Garden {i}"), "tomato", &pool).await;
+        }
+        let state = semantic_ready(&pool).await;
+        // A delete that raced the worker leaves vectors cached without rows or note.
+        let ghosts = &ids[..10];
+        for id in ghosts {
+            inner_delete_note(*id, &pool).await.unwrap();
+        }
+        let garden = crate::semantic::fusion::DEPTH + 16;
+        assert_eq!(
+            state.indexed_notes(),
+            ids.len() + garden,
+            "stale entries cached"
+        );
+
+        let hits = hybrid("pengar", &state, &pool).await;
+        assert_eq!(
+            hits.len(),
+            crate::semantic::fusion::DEPTH,
+            "depth filled by live notes"
+        );
+        assert!(hits
+            .iter()
+            .all(|(id, related)| *related && !ghosts.contains(id)));
+        assert_eq!(
+            state.indexed_notes(),
+            ids.len() + garden - ghosts.len(),
+            "ghosts evicted"
+        );
+    }
+
+    // ── Semantic index hooks ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn note_writes_queue_for_the_semantic_index() {
+        let pool = crate::test_db().await;
+        let (state, _) = crate::semantic::index::tests::ready_state(&pool).await;
+
+        let a = create_note_and_queue(None, &pool, &state).await.unwrap();
+        let b = create_note_titled_and_queue("Old plan", None, &pool, &state)
+            .await
+            .unwrap();
+        assert_eq!(state.queued(), vec![a.id, b.id], "create");
+        state.drain(&pool).await;
+
+        update_note_body_and_queue(a.id, "See [[Old plan]].", &pool, &state)
+            .await
+            .unwrap();
+        assert_eq!(state.queued(), vec![a.id], "body update");
+        state.drain(&pool).await;
+
+        // Rename queues the note and the notes whose links were rewritten.
+        rename_note_and_queue(b.id, "New plan", &pool, &state)
+            .await
+            .unwrap();
+        assert_eq!(state.queued(), vec![b.id, a.id], "rename + link rewrite");
+
+        // A failed write queues nothing.
+        state.drain(&pool).await;
+        assert!(update_note_body_and_queue(999, "x", &pool, &state)
+            .await
+            .is_err());
+        assert!(state.queued().is_empty());
+    }
+
+    #[tokio::test]
+    async fn note_delete_evicts_cached_vectors_and_queue_entry() {
+        let pool = crate::test_db().await;
+        let (state, _) = crate::semantic::index::tests::ready_state(&pool).await;
+        let a = create_note_and_queue(None, &pool, &state).await.unwrap();
+        let b = create_note_and_queue(None, &pool, &state).await.unwrap();
+        state.drain(&pool).await;
+        assert_eq!(state.indexed_notes(), 2);
+
+        delete_note_and_evict(a.id, &pool, &state).await.unwrap();
+        assert_eq!(state.indexed_notes(), 1);
+        // Queued then deleted: the queue entry goes too.
+        state.enqueue([b.id]);
+        delete_note_and_evict(b.id, &pool, &state).await.unwrap();
+        assert_eq!(state.indexed_notes(), 0);
+        assert!(state.queued().is_empty());
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM note_embeddings")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(rows, 0, "cascade");
+    }
+
+    #[tokio::test]
+    async fn tag_rename_catch_up_queues_all_notes_and_only_logs_failures() {
+        let pool = crate::test_db().await;
+        let a = note_with("A", "#acme", &pool).await;
+        let b = note_with("B", "plain", &pool).await;
+        let off = SemanticState::new("/nonexistent".into());
+        queue_all_after_tag_rename(&pool, &off).await;
+        assert!(off.queued().is_empty(), "disabled: nothing queued");
+
+        let (state, _) = crate::semantic::index::tests::ready_state(&pool).await;
+        queue_all_after_tag_rename(&pool, &state).await;
+        let mut queued = state.queued();
+        queued.sort();
+        assert_eq!(queued, vec![a, b]);
+
+        // The query fails (closed pool): logged, no panic, nothing queued.
+        let (state, _) = crate::semantic::index::tests::ready_state(&pool).await;
+        pool.close().await;
+        queue_all_after_tag_rename(&pool, &state).await;
+        assert!(state.queued().is_empty());
     }
 }

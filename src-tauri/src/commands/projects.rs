@@ -210,6 +210,19 @@ pub async fn inner_set_default_project(
     Ok(())
 }
 
+/// Renames a project, then queues every note for the semantic index: the rename may have
+/// rewritten `#tags` in note bodies.
+pub async fn update_project_and_queue(
+    id: i64,
+    name: &str,
+    pool: &Pool<Sqlite>,
+    semantic: &crate::semantic::SemanticState,
+) -> Result<Project, AppError> {
+    let row = inner_update_project(id, name, pool).await?;
+    crate::commands::notes::queue_all_after_tag_rename(pool, semantic).await;
+    Ok(row)
+}
+
 // ── Tauri command wrappers ────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -234,8 +247,9 @@ pub async fn update_project(
     id: i64,
     name: String,
     pool: State<'_, Pool<Sqlite>>,
+    semantic: State<'_, crate::semantic::SemanticState>,
 ) -> Result<Project, AppError> {
-    inner_update_project(id, &name, pool.inner()).await
+    update_project_and_queue(id, &name, pool.inner(), semantic.inner()).await
 }
 
 #[tauri::command]
@@ -538,5 +552,40 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.to_string(), "Name clashes with tag #site (Site)");
+    }
+
+    // ── Semantic index ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn rename_queues_all_notes_and_survives_a_queue_failure() {
+        let pool = crate::test_db().await;
+        let c = crate::commands::customers::inner_create_customer("Acme", &pool)
+            .await
+            .unwrap();
+        let id = inner_create_project(c.id, "Web", &pool).await.unwrap().id;
+        let tagged =
+            crate::commands::customers::tests::tagged_note("Tagged", "#acme/web notes", &pool)
+                .await;
+        let plain = crate::commands::customers::tests::tagged_note("Plain", "nothing", &pool).await;
+        let (state, _) = crate::semantic::index::tests::ready_state(&pool).await;
+
+        update_project_and_queue(id, "Portal", &pool, &state)
+            .await
+            .unwrap();
+        let mut queued = state.queued();
+        queued.sort();
+        assert_eq!(queued, vec![tagged, plain]);
+
+        // Queueing fails after the rename committed: the rename still succeeds.
+        let (state, _) = crate::semantic::index::tests::ready_state(&pool).await;
+        sqlx::raw_sql("DROP TABLE notes_fts; DROP TABLE note_refs; DROP TABLE note_embeddings; DROP TABLE notes;")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let renamed = update_project_and_queue(id, "PORTAL", &pool, &state)
+            .await
+            .unwrap();
+        assert_eq!(renamed.name, "PORTAL");
+        assert!(state.queued().is_empty());
     }
 }

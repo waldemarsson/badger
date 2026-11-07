@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { fade } from 'svelte/transition';
   import { invoke } from '@tauri-apps/api/core';
   import CustomerProjects from '#lib/components/CustomerProjects.svelte';
   import X      from 'lucide-svelte/icons/x';
@@ -15,12 +16,22 @@
   import { palette } from '#lib/palette-state.svelte.js';
   import { formatHours, parseDailyTarget } from '#lib/today.js';
   import { formatBytes } from '#lib/notes.js';
-  import type { SearchIndexStats } from '#lib/types.js';
+  import type { SearchIndexStats, SemanticStatus } from '#lib/types.js';
+  import { page } from '$app/state';
+  import Sparkles from 'lucide-svelte/icons/sparkles';
+  import { downloadPercent, semanticStatusLabel } from '#lib/semantic.js';
+  import { refreshSemanticStatus, semantic } from '#lib/semantic-state.svelte.js';
 
   type Tab = 'customers' | 'preferences' | 'backup' | 'dev';
   let activeTab = $state<Tab>('customers');
 
   onMount(() => {
+    // The notes search hint links to ?tab=preferences.
+    if (page.url.searchParams.get('tab') === 'preferences') {
+      activeTab = 'preferences';
+      void loadIndexStats();
+      void refreshSemanticStatus();
+    }
     void loadStartupBackupSettings();
     void loadDailyTarget();
     return () => (palette.recording = false);
@@ -74,6 +85,32 @@
       indexError = String(e);
       indexState = 'idle';
     }
+  }
+
+  // ── Semantic search ───────────────────────────────────────────────────────────
+  // Status comes from the shared watch (Rust status events); actions reply with a fresh one.
+  let semanticBusy = $state<'' | 'enable' | 'cancel' | 'remove' | 'rebuild'>('');
+  let semanticError = $state('');
+  let confirmingRemove = $state(false);
+  const semanticStatus = $derived(semantic.status);
+
+  async function semanticAction(kind: 'enable' | 'cancel' | 'remove' | 'rebuild', command: string) {
+    semanticBusy = kind;
+    semanticError = '';
+    try {
+      const next = await invoke<SemanticStatus | null>(command);
+      if (next) semantic.status = next;
+      else await refreshSemanticStatus();
+    } catch (e) {
+      semanticError = String(e);
+    } finally {
+      semanticBusy = '';
+      confirmingRemove = false;
+    }
+  }
+
+  function focusOnMount(node: HTMLElement) {
+    node.focus();
   }
 
   // ── Hours target ──────────────────────────────────────────────────────────────
@@ -399,7 +436,7 @@
         class="border-0 bg-transparent px-4 py-2 text-sm font-medium transition {activeTab === 'preferences'
           ? 'border-b-2 border-slate-900 text-slate-900 dark:border-neutral-100 dark:text-neutral-100'
           : 'text-slate-500 dark:text-neutral-400 hover:text-slate-800 dark:hover:text-neutral-200'}"
-        onclick={() => { activeTab = 'preferences'; void loadIndexStats(); }}
+        onclick={() => { activeTab = 'preferences'; void loadIndexStats(); void refreshSemanticStatus(); }}
       >Preferences</button>
       <button
         class="border-0 bg-transparent px-4 py-2 text-sm font-medium transition {activeTab === 'backup'
@@ -553,6 +590,99 @@
 
         {#if indexError}
           <p class="form-error" role="alert">{indexError}</p>
+        {/if}
+      </section>
+
+      <section class="panel-card mt-4 space-y-4" aria-labelledby="semantic-title">
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <h2 id="semantic-title" class="panel-title">Semantic search</h2>
+            <p class="panel-copy">Finds notes by meaning as well as by words, across Swedish and English. The model runs on this Mac; it downloads once (about {formatBytes(semanticStatus?.download_bytes ?? 0)}) from Hugging Face.</p>
+          </div>
+          {#if semanticStatus}
+            <span
+              class="semantic-pill"
+              class:semantic-pill-ready={semanticStatus.state === 'ready'}
+              class:semantic-pill-busy={semanticStatus.state === 'downloading' || semanticStatus.state === 'loading' || semanticStatus.state === 'indexing'}
+              class:semantic-pill-error={semanticStatus.state === 'error'}
+              role="status"
+            >{semanticStatusLabel(semanticStatus)}</span>
+          {/if}
+        </div>
+
+        {#if !semanticStatus}
+          <p class="text-sm text-slate-500 dark:text-neutral-400">Loading…</p>
+        {:else}
+          {#if semanticStatus.state === 'downloading' || semanticStatus.state === 'indexing'}
+            {@const percent = semanticStatus.state === 'downloading'
+              ? downloadPercent(semanticStatus)
+              : semanticStatus.indexing_total ? Math.floor((semanticStatus.indexing_done / semanticStatus.indexing_total) * 100) : 0}
+            <div class="space-y-1.5" in:fade={{ duration: 150 }}>
+              <div class="semantic-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow={percent} aria-label={semanticStatusLabel(semanticStatus)}>
+                <div class="semantic-progress-bar" style:width="{percent}%"></div>
+              </div>
+              <p class="text-xs text-slate-500 dark:text-neutral-400">
+                {#if semanticStatus.state === 'downloading'}
+                  {formatBytes(semanticStatus.downloaded_bytes)} of {formatBytes(semanticStatus.download_bytes)}
+                {:else}
+                  Indexing notes: {semanticStatus.indexing_done} of {semanticStatus.indexing_total}. Search already uses what is indexed.
+                {/if}
+              </p>
+            </div>
+          {/if}
+
+          {#if semanticStatus.state === 'error'}
+            <div class="alert-panel alert-error" role="alert">
+              <p class="alert-error-title">Semantic search is unavailable</p>
+              <p class="alert-error-copy">{semanticStatus.error}</p>
+            </div>
+          {/if}
+
+          {#if semanticStatus.state !== 'off' && semanticStatus.state !== 'downloading' && semanticStatus.model_bytes > 0}
+            <dl class="semantic-facts">
+              <div><dt>Model</dt><dd>{semanticStatus.model_name} · {formatBytes(semanticStatus.model_bytes)}</dd></div>
+              <div><dt>Index</dt><dd>{semanticStatus.indexed_notes} of {semanticStatus.notes} {semanticStatus.notes === 1 ? 'note' : 'notes'} · {formatBytes(semanticStatus.index_bytes)}</dd></div>
+            </dl>
+          {/if}
+
+          <div class="flex flex-wrap items-center gap-2">
+            {#if semanticStatus.state === 'off'}
+              <button type="button" class="btn-primary gap-1.5" onclick={() => semanticAction('enable', 'enable_semantic_search')} disabled={semanticBusy !== ''}>
+                <Download size={16} /> {semanticBusy === 'enable' ? 'Starting…' : 'Download and turn on'}
+              </button>
+            {:else if semanticStatus.state === 'downloading'}
+              <button type="button" class="btn-secondary" onclick={() => semanticAction('cancel', 'cancel_semantic_download')} disabled={semanticBusy !== ''}>Cancel download</button>
+            {:else if semanticStatus.state === 'error'}
+              <button type="button" class="btn-primary gap-1.5" onclick={() => semanticAction('enable', 'enable_semantic_search')} disabled={semanticBusy !== ''}>
+                <Download size={16} /> {semanticBusy === 'enable' ? 'Starting…' : semanticStatus.model_bytes > 0 ? 'Retry' : 'Download again'}
+              </button>
+            {:else if semanticStatus.state === 'ready'}
+              <button type="button" class="btn-secondary" onclick={() => semanticAction('rebuild', 'rebuild_semantic_index')} disabled={semanticBusy !== ''}>
+                {semanticBusy === 'rebuild' ? 'Rebuilding…' : 'Rebuild'}
+              </button>
+            {/if}
+            {#if semanticStatus.state !== 'off' && semanticStatus.state !== 'downloading'}
+              {#if confirmingRemove}
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <div class="flex items-center gap-1.5" onkeydown={(e) => { if (e.key === 'Escape') confirmingRemove = false; }} in:fade={{ duration: 150 }}>
+                  <span class="text-xs font-medium text-red-700 dark:text-red-300">Delete the model and all vectors?</span>
+                  <button type="button" class="btn-danger-sm" use:focusOnMount onclick={() => semanticAction('remove', 'remove_semantic_model')} disabled={semanticBusy !== ''}>
+                    {semanticBusy === 'remove' ? 'Removing…' : 'Remove'}
+                  </button>
+                  <button type="button" class="btn-secondary-sm" onclick={() => (confirmingRemove = false)}>Cancel</button>
+                </div>
+              {:else}
+                <button type="button" class="btn-secondary" onclick={() => (confirmingRemove = true)} disabled={semanticBusy !== ''}>Remove model</button>
+              {/if}
+            {/if}
+            {#if semanticStatus.state === 'ready' && semanticBusy === ''}
+              <span class="inline-flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400"><Sparkles size={12} /> Notes search and ⌘K include related notes</span>
+            {/if}
+          </div>
+        {/if}
+
+        {#if semanticError}
+          <p class="form-error" role="alert">{semanticError}</p>
         {/if}
       </section>
 

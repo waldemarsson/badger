@@ -425,9 +425,16 @@ pub async fn read_backup_file(path: String) -> Result<String, AppError> {
 }
 
 /// Replaces all data with the contents of a JSON backup.
+/// The semantic index is derived and not in backups: every restored note is re-embedded.
 #[tauri::command]
-pub async fn restore_data(json: String, pool: State<'_, Pool<Sqlite>>) -> Result<(), AppError> {
-    inner_restore_data(&json, &pool).await
+pub async fn restore_data(
+    json: String,
+    pool: State<'_, Pool<Sqlite>>,
+    semantic: State<'_, crate::semantic::SemanticState>,
+) -> Result<(), AppError> {
+    inner_restore_data(&json, &pool).await?;
+    crate::commands::semantic::after_restore(semantic.inner(), pool.inner()).await;
+    Ok(())
 }
 
 /// Reads the startup backup retention setting from the database.
@@ -645,6 +652,40 @@ mod tests {
         );
         assert_eq!(ids("plan", pool.clone()).await, vec![2]);
         assert_eq!(ids("åsa", pool.clone()).await, vec![1]);
+    }
+
+    #[tokio::test]
+    async fn test_restore_reembeds_all_notes_and_backup_excludes_vectors() {
+        use crate::semantic::index::tests::ready_state;
+        let pool = crate::test_db().await;
+        seed_notes(&pool).await;
+        let (state, fake) = ready_state(&pool).await;
+        state.enqueue_all(&pool).await.unwrap();
+        state.drain(&pool).await;
+        let before: i64 = sqlx::query_scalar("SELECT COUNT(DISTINCT NoteId) FROM note_embeddings")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(before > 0);
+
+        let json = inner_backup_data(&pool).await.unwrap();
+        assert!(!json.contains("embedding"), "vectors are not backed up");
+        assert!(!json.contains("ChunkText") && !json.contains("chunk_text"));
+
+        let embedded_before = fake.embedded().len();
+        inner_restore_data(&json, &pool).await.unwrap();
+        crate::commands::semantic::after_restore(&state, &pool).await;
+        assert_eq!(state.indexed_notes(), 0, "cache cleared");
+        state.drain(&pool).await;
+        let (notes, embedded): (i64, i64) = sqlx::query_as(
+            "SELECT (SELECT COUNT(*) FROM notes), (SELECT COUNT(DISTINCT NoteId) FROM note_embeddings)",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(embedded, notes, "every restored note re-embedded");
+        assert_eq!(fake.embedded().len() - embedded_before, notes as usize);
+        assert_eq!(state.indexed_notes() as i64, notes);
     }
 
     #[tokio::test]

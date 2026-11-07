@@ -11,6 +11,7 @@
   import { normalizeShortcut } from '#lib/palette.js';
   import { palette } from '#lib/palette-state.svelte.js';
   import { FLUSH_REQUEST_EVENT, runFlushHandlers } from '#lib/flush-guard.js';
+  import { watchSemanticStatus } from '#lib/semantic-state.svelte.js';
   import type { PaletteSettings } from '#lib/types.js';
   import CommandPalette from '#lib/components/CommandPalette.svelte';
   import Toast from '#lib/components/Toast.svelte';
@@ -47,9 +48,11 @@
     })
       .then((stop) => (disposed ? stop() : (unlisten = stop)))
       .catch(() => {});
+    const stopSemantic = watchSemanticStatus();
     return () => {
       disposed = true;
       unlisten?.();
+      stopSemantic();
     };
   });
 

@@ -17,6 +17,8 @@ pub const DEFAULT_DAILY_TARGET: f64 = 8.0;
 const MAX_DAILY_TARGET: f64 = 24.0;
 /// JSON array of the folder ids expanded in the notes tree.
 pub const EXPANDED_FOLDERS_KEY: &str = "notes_expanded_folders";
+/// "true" once the semantic search model is downloaded and verified.
+pub const SEMANTIC_ENABLED_KEY: &str = "semantic_search_enabled";
 
 /// Command palette preferences. Last-used ids may point at deleted rows;
 /// the frontend falls back when they do.
@@ -203,6 +205,20 @@ pub async fn set_daily_target(pool: &Pool<Sqlite>, target: f64) -> Result<f64, A
 
     set_value(pool, DAILY_TARGET_KEY, &target.to_string()).await?;
     Ok(target)
+}
+
+/// Whether semantic search is enabled; unset or anything but "true" is off.
+pub async fn get_semantic_enabled(pool: &Pool<Sqlite>) -> Result<bool, AppError> {
+    Ok(get_value(pool, SEMANTIC_ENABLED_KEY).await?.as_deref() == Some("true"))
+}
+
+pub async fn set_semantic_enabled(pool: &Pool<Sqlite>, enabled: bool) -> Result<(), AppError> {
+    set_value(
+        pool,
+        SEMANTIC_ENABLED_KEY,
+        if enabled { "true" } else { "false" },
+    )
+    .await
 }
 
 /// Parses a stored id list; anything unparseable reads as empty.

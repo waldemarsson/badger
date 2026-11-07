@@ -26,3 +26,10 @@ thiserror = "2"
 chrono = "0.4"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 tauri-plugin-opener = "2.5"
+# Semantic search: in-process embedding model (ONNX Runtime, statically linked from the
+# prebuilt binaries `ort` downloads at build time), its tokenizer, and the opt-in model
+# download (GET only, SHA-256 verified).
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "download-binaries", "tls-rustls", "api-22"] }
+tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+sha2 = "0.10"

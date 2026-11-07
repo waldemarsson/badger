@@ -191,6 +191,19 @@ pub async fn inner_set_default_customer(id: i64, pool: &Pool<Sqlite>) -> Result<
     Ok(())
 }
 
+/// Renames a customer, then queues every note for the semantic index: the rename may have
+/// rewritten `#tags` in note bodies.
+pub async fn update_customer_and_queue(
+    id: i64,
+    name: &str,
+    pool: &Pool<Sqlite>,
+    semantic: &crate::semantic::SemanticState,
+) -> Result<Customer, AppError> {
+    let row = inner_update_customer(id, name, pool).await?;
+    crate::commands::notes::queue_all_after_tag_rename(pool, semantic).await;
+    Ok(row)
+}
+
 // ── Tauri command wrappers ────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -211,8 +224,9 @@ pub async fn update_customer(
     id: i64,
     name: String,
     pool: State<'_, Pool<Sqlite>>,
+    semantic: State<'_, crate::semantic::SemanticState>,
 ) -> Result<Customer, AppError> {
-    inner_update_customer(id, &name, pool.inner()).await
+    update_customer_and_queue(id, &name, pool.inner(), semantic.inner()).await
 }
 
 #[tauri::command]
@@ -471,5 +485,36 @@ pub(crate) mod tests {
             "#issue/12 #issue #acme #acme/web #todo/3",
             "Todo had no tag to rename from"
         );
+    }
+
+    // ── Semantic index ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn rename_queues_all_notes_and_survives_a_queue_failure() {
+        let pool = crate::test_db().await;
+        let c = inner_create_customer("Acme", &pool).await.unwrap();
+        let id = c.id;
+        let tagged = tagged_note("Tagged", "#acme notes", &pool).await;
+        let plain = tagged_note("Plain", "nothing", &pool).await;
+        let (state, _) = crate::semantic::index::tests::ready_state(&pool).await;
+
+        update_customer_and_queue(id, "Globex", &pool, &state)
+            .await
+            .unwrap();
+        let mut queued = state.queued();
+        queued.sort();
+        assert_eq!(queued, vec![tagged, plain]);
+
+        // Queueing fails after the rename committed: the rename still succeeds.
+        let (state, _) = crate::semantic::index::tests::ready_state(&pool).await;
+        sqlx::raw_sql("DROP TABLE notes_fts; DROP TABLE note_refs; DROP TABLE note_embeddings; DROP TABLE notes;")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let renamed = update_customer_and_queue(id, "GLOBEX", &pool, &state)
+            .await
+            .unwrap();
+        assert_eq!(renamed.name, "GLOBEX");
+        assert!(state.queued().is_empty());
     }
 }

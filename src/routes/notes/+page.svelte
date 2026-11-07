@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { invoke } from '@tauri-apps/api/core';
 	import { beforeNavigate, goto } from '$app/navigation';
+	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { onMount, tick, untrack } from 'svelte';
 	import { flip } from 'svelte/animate';
@@ -10,6 +11,8 @@
 	import { NoteSaveQueue } from '#lib/note-save-queue.js';
 	import { registerFlushHandler } from '#lib/flush-guard.js';
 	import { splitSearchQuery, type LinkFollow } from '#lib/note-links.js';
+	import { HYBRID_DEBOUNCE_MS, qualifiesForSemantic, semanticHintVisible, semanticReady, shouldApply, type SearchResponse } from '#lib/semantic.js';
+	import { semantic } from '#lib/semantic-state.svelte.js';
 	import { linkData } from '#lib/editor/links.js';
 	import { buildTree, folderChain, folderPath, moveTargets, noteNeighbour, sameIds, targetFolderId, visibleRows, type DragItem } from '#lib/folders.js';
 	import type { Backlink, Folder, LinkTargets, Note, NoteHit, NoteSummary, RenamedNote, RenderMode, TagSuggestion } from '#lib/types.js';
@@ -31,6 +34,7 @@
 	import PinOff from 'lucide-svelte/icons/pin-off';
 	import Plus from 'lucide-svelte/icons/plus';
 	import Search from 'lucide-svelte/icons/search';
+	import Sparkles from 'lucide-svelte/icons/sparkles';
 	import Trash2 from 'lucide-svelte/icons/trash-2';
 	import X from 'lucide-svelte/icons/x';
 
@@ -266,33 +270,51 @@
 	// ── List ──────────────────────────────────────────────────────────────────────
 
 	// Search runs in Rust on query change only, so editing a note never drops it from the
-	// results. Hits are resolved against `notes`, which edits keep current.
+	// results. Hits are resolved against `notes`, which edits keep current. Keyword results
+	// show at once; with semantic search ready, hybrid results (keyword + related notes)
+	// replace them after a pause in typing.
 	let hits = $state<NoteHit[]>([]);
 	let hitsFor = $state(''); // the query `hits` answer; differs while a search is in flight
 	let searchError = $state('');
 	let searchSeq = 0;
+	let shown: SearchResponse | null = null;
 	const searchTerm = $derived(query.trim());
+	const hybridSearch = $derived(semanticReady(semantic.status));
 
 	$effect(() => {
 		const term = searchTerm;
+		const hybrid = hybridSearch;
 		const seq = ++searchSeq;
 		if (!term) {
 			searchError = '';
 			return;
 		}
+		const apply = (rows: NoteHit[], response: SearchResponse) => {
+			if (!shouldApply(searchSeq, shown, response)) return;
+			shown = response;
+			hits = rows;
+			hitsFor = term;
+			searchError = '';
+		};
 		invoke<NoteHit[]>('search_notes', { query: term, limit: null })
-			.then((rows) => {
-				if (seq !== searchSeq) return;
-				hits = rows;
-				hitsFor = term;
-				searchError = '';
-			})
+			.then((rows) => apply(rows, { seq, hybrid: false }))
 			.catch((e) => {
 				if (seq !== searchSeq) return;
 				hits = []; // don't show the previous query's rows under the error
 				searchError = String(e);
 			});
+		if (!hybrid || !qualifiesForSemantic(splitSearchQuery(term).text)) return;
+		const timer = setTimeout(() => {
+			invoke<NoteHit[]>('search_notes', { query: term, limit: null, hybrid: true })
+				.then((rows) => apply(rows, { seq, hybrid: true }))
+				.catch(() => {}); // the keyword results stay
+		}, HYBRID_DEBOUNCE_MS);
+		return () => clearTimeout(timer);
 	});
+	/** Offer semantic search under results when it is off (or broken) and would apply. */
+	const showSemanticHint = $derived(
+		semanticHintVisible(semantic.status) && qualifiesForSemantic(splitSearchQuery(searchTerm).text)
+	);
 
 	const visible = $derived(searchTerm ? searchRows(notes, hits) : plainRows(notes));
 	const tree = $derived(buildTree(folders, notes));
@@ -1033,7 +1055,7 @@
 							</p>
 						{/if}
 						<div role="list" aria-label="Search results">
-							{#each visible as { note: n, title, snippet } (n.id)}
+							{#each visible as { note: n, title, snippet, related } (n.id)}
 								{@const path = folderPath(tree.byId, n.folder_id)}
 								<div role="listitem" class="group relative" animate:flip={{ duration: 180 }}>
 									<div
@@ -1047,6 +1069,9 @@
 										onkeydown={(e) => onRowKeydown(e, n.id)}
 									>
 										<p class="note-row-title pr-6">{@render marked(title)}</p>
+										{#if related}
+											<p class="note-related" title="Found by meaning: no exact word match"><Sparkles size={11} class="shrink-0" />Related</p>
+										{/if}
 										{#if path}
 											<p class="note-row-path"><FolderIcon size={11} class="shrink-0" /><span class="truncate">{path}</span></p>
 										{/if}
@@ -1075,6 +1100,12 @@
 								</div>
 							{/each}
 						</div>
+						{#if showSemanticHint && !searchError && !searching}
+							<p class="semantic-hint" in:fade={{ duration: 150 }}>
+								<Sparkles size={12} class="shrink-0" />
+								<span>Find notes by meaning too: <a href="{resolve('/settings')}?tab=preferences">turn on semantic search</a></span>
+							</p>
+						{/if}
 					{/if}
 				</div>
 			</aside>

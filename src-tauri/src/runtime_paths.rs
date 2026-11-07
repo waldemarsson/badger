@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 pub struct RuntimePaths {
     pub db_path: PathBuf,
     pub log_dir: PathBuf,
+    /// Downloaded embedding models (semantic search), one directory per model id.
+    pub models_dir: PathBuf,
 }
 
 pub fn repo_root_from_manifest_dir(manifest_dir: &Path) -> PathBuf {
@@ -27,6 +29,7 @@ pub fn resolve_runtime_paths(
     RuntimePaths {
         db_path: base_dir.join("timetracker.db"),
         log_dir: base_dir.join("logs"),
+        models_dir: base_dir.join("models"),
     }
 }
 
@@ -48,13 +51,18 @@ mod tests {
         let home_dir = Path::new("/home/tester");
         let manifest_dir = Path::new("/workspace/src-tauri");
 
-        let RuntimePaths { db_path, log_dir } = resolve_runtime_paths(home_dir, manifest_dir, true);
+        let RuntimePaths {
+            db_path,
+            log_dir,
+            models_dir,
+        } = resolve_runtime_paths(home_dir, manifest_dir, true);
 
         assert_eq!(
             db_path,
             Path::new("/workspace/.timetracker-dev/timetracker.db")
         );
         assert_eq!(log_dir, Path::new("/workspace/.timetracker-dev/logs"));
+        assert_eq!(models_dir, Path::new("/workspace/.timetracker-dev/models"));
     }
 
     #[test]
@@ -62,14 +70,18 @@ mod tests {
         let home_dir = Path::new("/home/tester");
         let manifest_dir = Path::new("/workspace/src-tauri");
 
-        let RuntimePaths { db_path, log_dir } =
-            resolve_runtime_paths(home_dir, manifest_dir, false);
+        let RuntimePaths {
+            db_path,
+            log_dir,
+            models_dir,
+        } = resolve_runtime_paths(home_dir, manifest_dir, false);
 
         assert_eq!(
             db_path,
             Path::new("/home/tester/.timetracker/timetracker.db")
         );
         assert_eq!(log_dir, Path::new("/home/tester/.timetracker/logs"));
+        assert_eq!(models_dir, Path::new("/home/tester/.timetracker/models"));
         assert_eq!(
             repo_root_from_manifest_dir(manifest_dir),
             Path::new("/workspace")

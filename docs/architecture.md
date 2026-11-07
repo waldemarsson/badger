@@ -39,6 +39,7 @@ The backend is organized around command modules:
 - `travel` for business trips, listed per month
 - `folders` for note folders (`list_folders`, `create_folder`, `rename_folder`, `move_folder`, `delete_folder`) and `move_note`; see Notes folders
 - `notes` for markdown notes (create, rename, body save, pin, delete), the list excerpt, which is computed in Rust, full-text search (`search_notes`, `search_index_stats`, `rebuild_search_index`), and links (`create_note_titled`, `list_tag_suggestions`, `get_link_targets`, `list_backlinks`)
+- `semantic` for semantic note search: the lifecycle commands (`get_semantic_status`, `enable_semantic_search`, `cancel_semantic_download`, `remove_semantic_model`, `rebuild_semantic_index`) live in `commands/semantic.rs`; the engine is the top-level `semantic/` module (not a command module); see Semantic search
 - `markdown` for `render_markdown`, which turns note markdown into safe HTML (read view, copy as HTML)
 - `note_links` (a top-level module, not a command module) for the `#tag` / `[[wikilink]]` extractor and entity slugs; see Notes links
 - `reports` for weekly and monthly rollups
@@ -102,6 +103,28 @@ The frontend keeps TypeScript interfaces in `src/lib/types.ts` aligned with the 
 
 `search_notes` (in `commands/notes.rs`) queries the `notes_fts` FTS5 table (after splitting off `#tag` terms, see Notes links), which holds each note's title and a plain-text body from `markdown::to_plain_text` (markers and markdown link/image destinations dropped; raw HTML and autolinks are indexed as written). The `trigram` tokenizer matches case-insensitive substrings, which suits Swedish compounds; it can't match terms under 3 characters, so those filter the rows in Rust (Unicode case folding) without highlights. Every whitespace-separated term must match and is quoted, so FTS5 operators are plain text. Results are ranked with `bm25` (title weighted 10×), and hits come back wrapped in `\u0002`/`\u0003`, which are stripped from indexed text. The frontend splits them into `<mark>` segments (`splitHighlights` in `src/lib/notes.ts`) and never uses `{@html}`. The list re-searches only when the query changes, and rows are drawn from the current summaries, so the note you are editing never drops out mid-edit. The palette shows the top 5 hits under its commands once the query has 3 characters; shorter queries list commands only.
 
+`search_notes` takes an optional `hybrid` argument (default false, which is exactly the keyword search above). With it, and semantic search ready, semantic hits are fused in; see Semantic search.
+
+### Semantic search
+
+Opt-in hybrid search: an embedding model finds notes by meaning (Swedish and English, cross-language) and its hits are fused with the FTS5 keyword hits. Nothing downloads until the user clicks Enable in Settings › Preferences › Semantic search; until then, search is keyword-only and the notes search shows a hint linking to Settings.
+
+**Model and runtime.** `intfloat/multilingual-e5-base` as an int8 ONNX export (`Xenova/multilingual-e5-base`, about 280 MB, 768 dimensions, 512-token limit), run in-process on the CPU only (CoreML, which `ort` would otherwise register on macOS, is disabled so vectors are deterministic and match the calibration), by `ort` (ONNX Runtime, a prebuilt downloaded at build time; see `docs/configuration.md`) with the `tokenizers` crate. One fixed model, no picker; vectors store the model id, so a different model re-embeds everything. e5 needs `query: ` / `passage: ` prefixes, which `embedder.rs` adds. `tract-onnx` (pure Rust) was tried first and dropped: about 3.1 s per 200-token chunk against about 0.35 s for `ort` on the dev host (2 vCPU x86_64). `ort` is above the 200 ms-per-chunk target on that host; on Apple Silicon a full rebuild of the dev seed's notes takes about one second, and the app builds and runs on macOS with the prebuilt `ort` selects for aarch64-apple-darwin (checked by hand, 2026-11-07).
+
+**Module layout** (`src-tauri/src/semantic/`): `model_files.rs` (pinned HuggingFace commit and SHA-256 per file; download, verify, remove), `embedder.rs` (`Embedder` trait, `OrtEmbedder`, a deterministic `FakeEmbedder` for tests), `chunker.rs` (heading-aware chunks), `index.rs` (`note_embeddings` rows, vector cache, worker), `fusion.rs` (ranking constants), `real_model_tests.rs` (opt-in, see `docs/development-notes.md`).
+
+**Download.** Only GET requests, to huggingface.co (and its CDN redirects). Each file streams to `<file>.part`, is hashed, and is renamed only if the SHA-256 matches; HTTP, hash and disk errors delete the partial file and show an inline error with Retry. There is no resume. Cancel (and Remove) poll the cancel flag every 100 ms, so they return promptly on a stalled connection. Files live in `<data dir>/models/<model-id>/` (see Storage model); quitting mid-download leaves semantic search off and the stale `.part` is deleted at the next start.
+
+**State and lifecycle.** `SemanticState` is managed Tauri state (an `Arc`). `semantic_search_enabled` (in `app_settings`) turns true only after download and verify succeed. One mutex (`lifecycle`) serialises enable, startup activation, Remove and Rebuild, so a download that finishes during a Remove cannot leave semantic search on without files. At startup: enabled and files present loads the model and catches up on missing or stale notes; enabled with files missing shows an error state with Download, never a crash. Status (`off`, `downloading`, `loading`, `indexing`, `ready`, `error`) is queryable with `get_semantic_status` and pushed as a payload-less `semantic-status` event (`semantic::STATUS_EVENT`); the frontend re-reads the status on each event (`src/lib/semantic-state.svelte.ts`) and on opening Settings.
+
+**Worker and epoch.** Note writes (create, rename, body save, link rewrites, and customer/project renames, which re-queue all notes) enqueue the note id after their transaction commits through the `*_and_queue` helpers in `commands/notes.rs`; the queue dedupes by id. One background worker embeds queued notes one chunk per inference call, releasing the inference lock between chunks, so a query waits for at most about one chunk. Every input (chunk or query) runs alone: the int8 model quantises activations per run, so texts batched together would change each other's vectors. It skips notes whose content hash and model id are unchanged. Restore, Remove and Rebuild bump an in-memory epoch and clear the vector cache; the worker re-checks epoch and hash inside its write transaction and drops stale results, and a missing note (deleted meanwhile) is a skip, not an error. A failed inference is logged and the note skipped. Release builds use `panic = "abort"`, so tokenizer, inference and download paths must not panic: inputs are truncated to 512 tokens before inference.
+
+**Chunking.** Notes split on pulldown-cmark heading events into chunks of about 200 tokens with no overlap. Each chunk is embedded with the note title and heading path as a prefix, but `ChunkText` stores the body only; that is the snippet shown for semantic hits. Token counting is injected (the real tokenizer in the app, a word-count fake in tests).
+
+**Hybrid search.** The vectors are an in-memory cache loaded from `note_embeddings`, searched by brute-force dot product (no `sqlite-vec`, no ANN). A note scores its best chunk. `search_notes` with `hybrid: true` runs the semantic leg only when ready and the query with `#tag` terms removed has at least 4 characters (tag-only queries stay keyword-only); `#tag` terms filter both legs. Both legs are cut to depth 50 and fused with Reciprocal Rank Fusion (k = 60). e5 scores sit in a narrow band that shifts with the query, so the similarity cut is relative (`similarity_floor` in `fusion.rs`): a semantic hit's best-chunk score must reach the median best-chunk score of all indexed notes for that query plus 0.045 (`MARGIN`), and never less than 0.76 (`ABSOLUTE_FLOOR`). The median is taken over every indexed note, before the tag filter and the depth cut. With fewer than 8 indexed notes the median says little, so a fixed 0.81 (`FIXED_FLOOR`) applies instead. The values were calibrated at note level with the real model on a synthetic Swedish/English corpus plus off-topic queries: no rule tried separates relevant notes from noise cleanly, and this one favours not missing real matches (about 60% of off-topic queries still return a related note, versus 30% with a fixed 0.81). `real_model_sample_notes` checks it on the dev seed's sample notes. Re-calibrate with `real_model_spike` if the model, chunking or prefix changes. Keyword hits past depth 50 are appended in keyword order, so a large `limit` never drops hits that plain search returns. Semantic-only hits come back with `related: true` (`NoteHit`) and their best-chunk snippet; the UI marks them "related".
+
+The notes list and ⌘K search in two phases: keyword results immediately, then `hybrid: true` results after a 250 ms debounce, with stale responses dropped by the existing sequence guard. Pure helpers (merge, stale guard, status labels) are in `src/lib/semantic.ts`, tested in `tests/semantic.test.mjs`. The Search index Rebuild stays FTS-only; the Semantic search section has its own Rebuild.
+
 ### Notes links
 
 `#tags` and `[[wikilinks]]` (`[[Title]]`, `[[Title|alias]]`; no heading links or embeds) follow Obsidian's rules, and Rust and the editor each implement them. `src-tauri/src/note_links.rs` walks pulldown-cmark events with byte offsets (skipping code, links, autolinks and raw HTML, and joining the text runs pulldown-cmark splits at `[`, `]` and table pipes) and returns tags and wikilinks with ranges. The one extractor feeds indexing (`note_refs`), `render_markdown` and rename rewriting. `src/lib/note-links.ts` is its TypeScript twin for the editor (scanning, `#`/`[[` triggers, slugs); both are tested against the shared case table `tests/fixtures/note-links-cases.json`, so change a rule in both places and add a case there.
@@ -130,6 +153,7 @@ Development (`npm run dev` / debug builds):
 .timetracker-dev/timetracker.db
 .timetracker-dev/logs/
 .timetracker-dev/backups/
+.timetracker-dev/models/
 ```
 
 Non-debug builds:
@@ -138,6 +162,7 @@ Non-debug builds:
 ~/.timetracker/timetracker.db
 ~/.timetracker/logs/
 ~/.timetracker/backups/
+~/.timetracker/models/
 ```
 
 The schema is created on startup if it does not exist. The main tables are:
@@ -151,6 +176,7 @@ The schema is created on startup if it does not exist. The main tables are:
 - `notes`
 - `folders` (note folders, see Notes folders)
 - `note_refs` (derived link index, see Notes links; not in backups)
+- `note_embeddings` (derived semantic index, see Semantic search; not in backups)
 
 Foreign keys are enabled, and cascading deletes are used to keep related records consistent.
 

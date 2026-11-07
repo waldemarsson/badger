@@ -7,6 +7,7 @@ pub mod markdown;
 pub mod notes;
 pub mod projects;
 pub mod reports;
+pub mod semantic;
 pub mod settings;
 pub mod time_entries;
 pub mod todos;

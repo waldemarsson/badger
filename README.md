@@ -48,7 +48,7 @@ Drag cards between *Not started*, *In progress*, and *Done*. Due dates turn ambe
 
 ### Notes — markdown with live preview
 
-Notes with a live-preview editor: headings, task lists, quotes, and syntax-highlighted code render as you type. Organise them in nested folders with drag and drop, link notes with `[[wikilinks]]` and see what links back, and tag them with `#tags` — including your customers, projects, issues, and todos, which show up as live chips. Pin the important ones, search (or filter by `#tag`) everything with ranked full-text search and highlighted matches, switch to a clean read view, and copy a note as HTML for email or chat. Edits save automatically, including on quit.
+Notes with a live-preview editor: headings, task lists, quotes, and syntax-highlighted code render as you type. Organise them in nested folders with drag and drop or a right-click menu, link notes with `[[wikilinks]]` and see what links back, and tag them with `#tags` — including your customers, projects, issues, and todos, which show up as live chips. Pin the important ones, search (or filter by `#tag`) everything with ranked full-text search and highlighted matches, switch to a clean read view, and copy a note as HTML for email or chat. Edits save automatically, including on quit.
 
 | Light | Dark |
 | --- | --- |

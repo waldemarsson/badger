@@ -587,6 +587,61 @@
     @apply mt-0.5 flex min-w-0 items-center gap-1 text-xs text-slate-400 dark:text-neutral-500;
   }
 
+  /* Semantic-only search hit: found by meaning, no exact word match. */
+  .note-related {
+    @apply mt-1 inline-flex items-center gap-1 rounded-full bg-slate-100 px-1.5 py-px text-[10px] font-medium text-slate-500 dark:bg-neutral-800 dark:text-neutral-400;
+  }
+
+  /* Settings › Semantic search: status pill, progress bar, model/index facts. */
+  .semantic-pill {
+    @apply shrink-0 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600 dark:bg-neutral-800 dark:text-neutral-300;
+  }
+
+  .semantic-pill-ready {
+    @apply bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400;
+  }
+
+  .semantic-pill-busy {
+    @apply bg-sky-50 text-sky-700 dark:bg-sky-500/10 dark:text-sky-400;
+  }
+
+  .semantic-pill-error {
+    @apply bg-red-50 text-red-700 dark:bg-red-500/10 dark:text-red-400;
+  }
+
+  .semantic-progress {
+    @apply h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-neutral-800;
+  }
+
+  .semantic-progress-bar {
+    @apply h-full rounded-full bg-sky-500 transition-[width] duration-200 dark:bg-sky-400;
+  }
+
+  .semantic-facts {
+    @apply grid gap-1 text-sm sm:grid-cols-[auto_1fr] sm:gap-x-4;
+  }
+
+  .semantic-facts > div {
+    @apply contents;
+  }
+
+  .semantic-facts dt {
+    @apply text-slate-500 dark:text-neutral-400;
+  }
+
+  .semantic-facts dd {
+    @apply text-slate-800 dark:text-neutral-100;
+  }
+
+  /* Quiet pointer to Settings under note search results while semantic search is off. */
+  .semantic-hint {
+    @apply mx-1 mt-2 flex items-center gap-1.5 px-2 py-1.5 text-xs text-slate-400 dark:text-neutral-500;
+  }
+
+  .semantic-hint a {
+    @apply text-slate-500 underline decoration-slate-300 underline-offset-2 transition-colors hover:text-sky-600 dark:text-neutral-400 dark:decoration-neutral-600 dark:hover:text-sky-400;
+  }
+
   /* Notes folder tree (NoteTree.svelte): one flat list of rows, indented per level. */
   .tree {
     @apply min-h-full;

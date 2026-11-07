@@ -14,6 +14,7 @@ TimeTracker stores its working data in a local SQLite database. The schema is in
 - `folders` — nestable note folders (`ParentId`, root = NULL, `Name`, `Position`). `Position` is unused: the tree sorts folders by name in the frontend. Names are trimmed, 1–100 characters, may not contain `/`, and are unique among siblings ignoring case (Rust `to_lowercase()`, like note titles)
 - `note_refs` — link index: one row per note and distinct `#tag` or `[[wikilink]]` target (`Kind` `tag`/`link`, `Target` lowercased, tags without the `#`); `NoteId` cascades on note delete. Derived data like `notes_fts`: Rust writes it in the same transaction as every body write, it is not in backups, and it is rebuilt by restore, by the same Settings › Preferences › Search index › Rebuild button (which rebuilds both indexes), and at startup when the `note_refs_version` value in `app_settings` differs from the code's `NOTE_REFS_VERSION` (first start after upgrade, or after the extraction rules change; bump the constant when they do). The startup rebuild is version-only, so a drifted index is repaired by Rebuild, not at startup. Entities are resolved at read time, so deleting a customer, project, todo or note needs no index cleanup
 - `notes_fts` — FTS5 search index (`trigram` tokenizer) over note titles and plain-text bodies; rowid = note id. Derived data: Rust writes it in the same transaction as every note write, it is not in backups, and it is rebuilt by restore, by Settings › Preferences › Search index › Rebuild, and at startup when its row count differs from `notes` (`backfill_notes_fts`: the first start after an upgrade, or notes written by an older build)
+- `note_embeddings` — semantic search index: one row per embedded note chunk (`NoteId` cascades on note delete, `ChunkIndex`, `ContentHash`, `ModelId`, `ChunkText` = the chunk body without its title/heading prefix, `Vector` = L2-normalised little-endian f32 BLOB). Derived data like `notes_fts`, and a deliberate exception to the "every table is backed up" rule: it is not in backups, and restore re-embeds every restored note in the background. It is empty until semantic search is enabled; rows whose `ModelId` differs from the current model are re-embedded. Settings › Preferences › Semantic search › Rebuild re-embeds everything; the Search index Rebuild does not touch it
 
 Deletes cascade downward from customers to projects, issues, and time entries, so the hierarchy stays consistent without manual cleanup across tables. Todos are never deleted by a cascade: deleting a linked issue only clears the todo's link. Likewise, deleting a folder never deletes notes: `delete_folder` first moves its notes and child folders to the folder's parent (the root for a top-level folder) in one transaction, then deletes it. `ON DELETE SET NULL` on `FolderId` and `ParentId` remains only as a backstop.
 
@@ -44,6 +45,19 @@ Installed and other non-debug builds:
 ```text
 ~/.timetracker/timetracker.db
 ```
+
+## Semantic search model files
+
+Enabling semantic search downloads the embedding model (about 300 MB) into a `models/<model-id>/` directory beside the database:
+
+```text
+.timetracker-dev/models/multilingual-e5-base-int8/    (debug builds)
+~/.timetracker/models/multilingual-e5-base-int8/      (non-debug builds)
+```
+
+The files are not part of backups. The `semantic_search_enabled` setting in `app_settings` is `true` only after the download is verified; like other settings it is not in backups either, so a restored database keeps this machine's value. Downloads stream to `<file>.part` and are renamed only after the SHA-256 matches; stale `.part` files are deleted at startup. Remove model deletes the files and all vectors and turns the setting off. If the setting is on but the files are gone, the Settings section shows an error with a Download button.
+
+Downgrading to a build without semantic search leaves the `note_embeddings` table and the model files behind; both are harmless and can be deleted by hand.
 
 ## Automatic startup backups
 
@@ -95,6 +109,7 @@ Restore always overwrites. In one transaction it:
 - clears todos, travel, notes and folders explicitly (the cascade does not reach them)
 - re-inserts the full backup, folders before notes
 - rebuilds the notes search and link indexes (`notes_fts`, `note_refs`) from the restored notes, in the same transaction
+- after the transaction commits, drops in-flight semantic work and queues every restored note for re-embedding (the delete cascaded away the old vectors; `note_embeddings` is not in the backup)
 
 Data not in the backup is lost, so restoring a backup made before notes existed leaves zero notes. If the backup file is invalid, nothing is changed.
 

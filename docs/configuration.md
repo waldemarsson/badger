@@ -10,6 +10,7 @@ Development (`npm run dev` / debug builds):
 .timetracker-dev/timetracker.db
 .timetracker-dev/logs/
 .timetracker-dev/backups/
+.timetracker-dev/models/
 ```
 
 Non-debug builds (installed app / release bundle):
@@ -18,9 +19,10 @@ Non-debug builds (installed app / release bundle):
 ~/.timetracker/timetracker.db
 ~/.timetracker/logs/
 ~/.timetracker/backups/
+~/.timetracker/models/
 ```
 
-In development, `.timetracker-dev/` lives at the repo root. The database file is created on startup if it does not exist, and log files are written with daily rotation. Automatic startup backups are stored in the `backups/` subdirectory when enabled.
+In development, `.timetracker-dev/` lives at the repo root. The database file is created on startup if it does not exist, and log files are written with daily rotation. Automatic startup backups are stored in the `backups/` subdirectory when enabled. `models/` holds the semantic search model once the user enables it (see `docs/architecture.md`, Semantic search); it is created on first download.
 
 ## Key configuration files
 
@@ -72,6 +74,19 @@ TimeTracker automatically creates a backup on each application startup. The rete
 - **Retention = 0**: Automatic startup backups are disabled
 
 The retention setting can be configured in the Settings > Backup & Restore tab. The setting is stored in the `app_settings` table with key `startup_backup_retention`.
+
+### Semantic search dependencies
+
+`src-tauri/Cargo.toml` adds, for semantic search:
+
+- `ort` (pinned with `=`, default features off: `std`, `download-binaries`, `tls-rustls`, `api-22`) — ONNX Runtime bindings. **The `ort` build script downloads a prebuilt ONNX Runtime from `cdn.pyke.io` at build time**, so the first build, or any build with an empty `target/`, needs network access. The archive is checked against a SHA-256 shipped in `ort-sys` and unpacked to `~/Library/Caches/ort.pyke.io` (macOS) or `~/.cache/ort.pyke.io` (Linux); later builds reuse it, and release CI caches that directory. On the Linux dev host it is linked statically (no dylib to sign). On `aarch64-apple-darwin` (the release target) `ort` resolves its CoreML prebuilt; static linking, signing and speed there are unverified. The `=` pin is deliberate: `ort` 2.0 is still a release candidate, and Cargo's semver rules don't protect pre-releases, so `^2.0.0-rc.15` could pull a later rc with breaking API changes; bump it by hand
+- `tokenizers` (default features off, `fancy-regex`) — the e5 tokenizer, pure Rust
+- `reqwest` (default features off, `rustls`) — the opt-in model download; GET only
+- `sha2` — verifies the downloaded files
+
+The workspace `Cargo.toml` sets `[profile.dev.package.tokenizers] opt-level = 3`, because the tokenizer is far too slow unoptimised for debug builds and `cargo test`. The release profile (`panic = "abort"`) is unchanged, which is why the tokenizer, inference and download paths must not panic (see `docs/architecture.md`).
+
+The model itself is not bundled: it is downloaded at runtime from HuggingFace at a pinned commit, with SHA-256s hard-coded in `src-tauri/src/semantic/model_files.rs`. Bumping the model means updating the commit, hashes and `MODEL_ID` there, and recalibrating the similarity floor.
 
 ### Ad-hoc macOS signing is enabled
 

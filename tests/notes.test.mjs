@@ -90,6 +90,18 @@ test('plainRows: every note, unhighlighted', () => {
 	const rows = plainRows([note(1, 'x', { title: 'A' })]);
 	assert.deepEqual(rows[0].title, [{ text: 'A', hit: false }]);
 	assert.equal(rows[0].snippet, null);
+	assert.equal(rows[0].related, false);
+});
+
+test('searchRows: semantic-only hits keep the related marker and their passage', () => {
+	const notes = [note(1, 'b', { title: 'Budget' }), note(2, 'a', { title: 'Money' })];
+	const rows = searchRows(notes, [
+		{ ...notes[0], title_marked: '\u0002Budget\u0003', snippet: '', related: false },
+		{ ...notes[1], title_marked: 'Money', snippet: 'Spend less on travel', related: true }
+	]);
+	assert.deepEqual(rows.map((r) => r.related), [false, true]);
+	assert.deepEqual(rows[1].snippet, [{ text: 'Spend less on travel', hit: false }]);
+	assert.equal(rows[0].snippet, null, 'no snippet: the excerpt shows');
 });
 
 test('upsertNote replaces by id or adds, and keeps list order', () => {

@@ -4,3 +4,8 @@ resolver = "2"
 
 [workspace.lints.clippy]
 all = "warn"
+
+# The tokenizer is far too slow unoptimised; optimise it in dev builds and `cargo test`
+# so the debug app stays usable. (ONNX Runtime itself is a prebuilt static library.)
+[profile.dev.package.tokenizers]
+opt-level = 3

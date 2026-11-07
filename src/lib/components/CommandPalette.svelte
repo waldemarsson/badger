@@ -13,6 +13,7 @@
 	import ChevronRight from 'lucide-svelte/icons/chevron-right';
 	import NotebookPen from 'lucide-svelte/icons/notebook-pen';
 	import FileText from 'lucide-svelte/icons/file-text';
+	import Sparkles from 'lucide-svelte/icons/sparkles';
 	import { today } from '#lib/date-ranges.js';
 	import {
 		filterItems,
@@ -25,7 +26,9 @@
 	} from '#lib/palette.js';
 	import { changes, logTimeRequest, palette, showToast, type LogTimePrefill } from '#lib/palette-state.svelte.js';
 	import { splitHighlights } from '#lib/notes.js';
-	import { tagTerm } from '#lib/note-links.js';
+	import { splitSearchQuery, tagTerm } from '#lib/note-links.js';
+	import { HYBRID_DEBOUNCE_MS, keepActiveIndex, qualifiesForSemantic, semanticReady, shouldApply, type SearchResponse } from '#lib/semantic.js';
+	import { semantic } from '#lib/semantic-state.svelte.js';
 	import type { Customer, Issue, NoteHit, PaletteSettings, Project, TimeEntryRow } from '#lib/types.js';
 
 	let {
@@ -102,18 +105,37 @@
 	// Only hits for the current text: stale ones could be picked with Enter.
 	const noteHits = $derived(noteResults.term === noteTerm ? noteResults.hits : []);
 	const notesPending = $derived(noteTerm !== '' && noteResults.term !== noteTerm);
+	let noteShown: SearchResponse | null = null;
+	const hybridNotes = $derived(semanticReady(semantic.status));
+	// Keyword hits at once; hybrid hits (with related notes) after a pause in typing.
 	$effect(() => {
 		const term = noteTerm;
+		const hybrid = hybridNotes;
 		const seq = ++noteSeq;
 		if (!term) return;
+		const apply = (hits: NoteHit[], response: SearchResponse) => {
+			if (!shouldApply(noteSeq, noteShown, response)) return;
+			// Keep the active row on the same item when the list changes under it.
+			const commandIds = filteredCommands.map((c) => c.id);
+			const before = [...commandIds, ...noteHits.map((h) => `note:${h.id}`)];
+			const after = [...commandIds, ...hits.map((h) => `note:${h.id}`)];
+			highlight = keepActiveIndex(before, after, highlight);
+			noteShown = response;
+			noteResults = { term, hits };
+		};
 		invoke<NoteHit[]>('search_notes', { query: term, limit: NOTE_HIT_LIMIT })
-			.then((hits) => {
-				if (seq === noteSeq) noteResults = { term, hits };
-			})
+			.then((hits) => apply(hits, { seq, hybrid: false }))
 			.catch(() => {
 				// commands still work; the notes page shows search errors
 				if (seq === noteSeq) noteResults = { term, hits: [] };
 			});
+		if (!hybrid || !qualifiesForSemantic(splitSearchQuery(term).text)) return;
+		const timer = setTimeout(() => {
+			invoke<NoteHit[]>('search_notes', { query: term, limit: NOTE_HIT_LIMIT, hybrid: true })
+				.then((hits) => apply(hits, { seq, hybrid: true }))
+				.catch(() => {}); // keep the keyword hits
+		}, HYBRID_DEBOUNCE_MS);
+		return () => clearTimeout(timer);
 	});
 	const filteredProjects = $derived(filterItems(projects, texts.project, (p) => p.label));
 	const issueOptions: IssueOption[] = $derived.by(() => {
@@ -476,7 +498,12 @@
 	>
 		<FileText size={16} class="mt-0.5 shrink-0 {active ? 'text-sky-500 dark:text-sky-400' : 'text-slate-400 dark:text-neutral-500'}" />
 		<span class="min-w-0 flex-1">
-			<span class="block truncate">{@render marked(hit.title_marked)}</span>
+			<span class="flex min-w-0 items-center gap-2">
+				<span class="min-w-0 truncate">{@render marked(hit.title_marked)}</span>
+				{#if hit.related}
+					<span class="note-related mt-0 shrink-0" title="Found by meaning: no exact word match"><Sparkles size={10} class="shrink-0" />Related</span>
+				{/if}
+			</span>
 			{#if hit.snippet || hit.excerpt}
 				<span class="block truncate text-xs text-slate-500 dark:text-neutral-400">
 					{#if hit.snippet}{@render marked(hit.snippet)}{:else}{hit.excerpt}{/if}

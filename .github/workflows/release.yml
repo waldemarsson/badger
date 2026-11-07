@@ -32,6 +32,15 @@ jobs:
         with:
           workspaces: src-tauri
 
+      # ort's build script downloads ONNX Runtime (SHA-256 checked) into this
+      # cache dir and skips the download when it is already there.
+      - name: Cache ONNX Runtime prebuilt
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/ort.pyke.io
+          key: ort-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ort-${{ runner.os }}-
+
       - name: Build and release .dmg
         uses: tauri-apps/tauri-action@v0
         env:

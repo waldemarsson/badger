@@ -7,6 +7,7 @@ pub mod flush_guard;
 pub mod logger;
 pub mod note_links;
 pub mod runtime_paths;
+pub mod semantic;
 pub mod startup_backup;
 
 #[cfg(debug_assertions)]
@@ -126,6 +127,35 @@ pub fn run() {
                 }
             });
 
+            // ── Semantic search ──────────────────────────────────────────────
+            // Managed state, the indexing worker, and a startup task that loads the model
+            // (when enabled) and catches up on notes. Nothing downloads until opt-in.
+            let semantic = semantic::SemanticState::new(runtime_paths.models_dir.clone());
+            let emit_handle = app.handle().clone();
+            semantic.set_emitter(move || {
+                use tauri::Emitter;
+                if let Err(e) = emit_handle.emit(semantic::STATUS_EVENT, ()) {
+                    tracing::debug!("Semantic search: status event not sent: {}", e);
+                }
+            });
+            app.manage(semantic.clone());
+            tauri::async_runtime::spawn(semantic::index::run_worker(
+                semantic.clone(),
+                pool.clone(),
+            ));
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = commands::semantic::startup(
+                    &semantic,
+                    &pool,
+                    &semantic::model_files::FILES,
+                    commands::semantic::load_model,
+                )
+                .await
+                {
+                    tracing::error!("Semantic search: startup failed: {}", e);
+                }
+            });
+
             // ── Quit/close flush guard ───────────────────────────────────────
             // ⌘Q must reach RunEvent::ExitRequested so unsaved notes get flushed.
             if cfg!(target_os = "macos") {
@@ -217,6 +247,12 @@ pub fn run() {
                     commands::settings::set_daily_target,
                     commands::settings::get_expanded_folders,
                     commands::settings::set_expanded_folders,
+                    // Semantic search
+                    commands::semantic::get_semantic_status,
+                    commands::semantic::enable_semantic_search,
+                    commands::semantic::cancel_semantic_download,
+                    commands::semantic::remove_semantic_model,
+                    commands::semantic::rebuild_semantic_index,
                     // Quit/close flush guard
                     flush_guard::flush_done,
                     // Dev-only
@@ -303,6 +339,12 @@ pub fn run() {
                     commands::settings::set_daily_target,
                     commands::settings::get_expanded_folders,
                     commands::settings::set_expanded_folders,
+                    // Semantic search
+                    commands::semantic::get_semantic_status,
+                    commands::semantic::enable_semantic_search,
+                    commands::semantic::cancel_semantic_download,
+                    commands::semantic::remove_semantic_model,
+                    commands::semantic::rebuild_semantic_index,
                     // Quit/close flush guard
                     flush_guard::flush_done,
                 ]

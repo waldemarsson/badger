@@ -34,6 +34,18 @@ The seed workflow populates sample customers, projects, issues, and time entries
 
 Notes and folders are seeded separately: whenever the `notes` table is empty, the seed adds sample notes covering every live-preview element plus a `Projects / Archive` folder pair holding one note. This happens even if the customer seed is skipped because customers already exist, so older dev databases get notes too.
 
+## Semantic search tests
+
+Unit tests never download or load the embedding model. Embedding sits behind the `Embedder` trait and tests use `FakeEmbedder` (deterministic vectors, a word-count token counter); `semantic::index::tests::ready_state` builds a ready `SemanticState` around one. Download tests run against a local fake source, not the network.
+
+`src-tauri/src/semantic/real_model_tests.rs` holds `#[ignore]`d tests against the real model. They download nothing: enable semantic search in a debug build first (files land in `.timetracker-dev/models/`), or point `TIMETRACKER_MODEL_DIR` at a directory with `model_quantized.onnx` and `tokenizer.json`:
+
+```bash
+TIMETRACKER_MODEL_DIR=<dir> cargo test -p time-tracker real_model -- --ignored --nocapture --test-threads=1
+```
+
+`real_model_spike` also compares against the fp32 export when `model.onnx` is in the same directory, and prints the timing, int8-vs-fp32 overlap and similarity-floor numbers; rerun it when the model, chunker or prefixes change (see `SIMILARITY_FLOOR` in `semantic/fusion.rs`).
+
 ## Report and restore behavior worth knowing
 
 - Weekly and monthly reports are computed in Rust rather than assembled entirely in the frontend

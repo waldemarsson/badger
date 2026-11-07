@@ -452,8 +452,13 @@ pub async fn inner_seed_database(pool: &Pool<Sqlite>) -> Result<String, AppError
 
 #[cfg(debug_assertions)]
 #[tauri::command]
-pub async fn seed_database(pool: State<'_, Pool<Sqlite>>) -> Result<String, AppError> {
-    inner_seed_database(&pool).await
+pub async fn seed_database(
+    pool: State<'_, Pool<Sqlite>>,
+    semantic: State<'_, crate::semantic::SemanticState>,
+) -> Result<String, AppError> {
+    let message = inner_seed_database(&pool).await?;
+    semantic.enqueue_all(pool.inner()).await?;
+    Ok(message)
 }
 
 #[cfg(test)]

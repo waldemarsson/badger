@@ -25,6 +25,8 @@ export interface ListRow {
 	note: NoteSummary;
 	title: Segment[];
 	snippet: Segment[] | null; // null: show the excerpt
+	/** A semantic-only hit: found by meaning, no keyword match. */
+	related: boolean;
 }
 
 const HIT_START = '\u0002';
@@ -53,7 +55,7 @@ export function splitHighlights(marked: string): Segment[] {
 
 /** Rows for a blank query: every note, nothing highlighted. */
 export function plainRows(notes: NoteSummary[]): ListRow[] {
-	return notes.map((note) => ({ note, title: [{ text: note.title, hit: false }], snippet: null }));
+	return notes.map((note) => ({ note, title: [{ text: note.title, hit: false }], snippet: null, related: false }));
 }
 
 /**
@@ -67,7 +69,7 @@ export function searchRows(notes: NoteSummary[], hits: NoteHit[]): ListRow[] {
 		const note = byId.get(hit.id);
 		if (!note) return [];
 		const title = note.title === hit.title ? splitHighlights(hit.title_marked) : [{ text: note.title, hit: false }];
-		return [{ note, title, snippet: hit.snippet ? splitHighlights(hit.snippet) : null }];
+		return [{ note, title, snippet: hit.snippet ? splitHighlights(hit.snippet) : null, related: hit.related === true }];
 	});
 }
 

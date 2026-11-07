@@ -29,8 +29,6 @@ jobs:
 
       - name: Cache Rust build
         uses: swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
 
       - name: Build and release .dmg
         uses: tauri-apps/tauri-action@v0

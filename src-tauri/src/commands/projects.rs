@@ -1,5 +1,6 @@
 // src-tauri/src/commands/projects.rs
-use crate::commands::customers::{clean_name, is_duplicate};
+use crate::commands::customers::{clean_name, is_duplicate, owns_tag, tag_clash};
+use crate::note_links::{customer_slug, slug};
 use crate::AppError;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Pool, Sqlite};
@@ -35,6 +36,38 @@ async fn ensure_unique(
     Ok(())
 }
 
+/// Fails if another project of `customer_id` (other than `exclude_id`) has the same
+/// tag slug. The message names the full tag (`#acme/web`) when the customer has one.
+async fn ensure_no_tag_clash(
+    customer_id: i64,
+    name: &str,
+    exclude_id: i64,
+    pool: &Pool<Sqlite>,
+) -> Result<(), AppError> {
+    let Some(tag) = slug(name) else {
+        return Ok(());
+    };
+    let others: Vec<String> = sqlx::query_scalar(
+        "SELECT Name FROM projects WHERE CustomerId = ? AND id != ? ORDER BY id",
+    )
+    .bind(customer_id)
+    .bind(exclude_id)
+    .fetch_all(pool)
+    .await?;
+    let Some(other) = others.iter().find(|n| slug(n).as_deref() == Some(&tag)) else {
+        return Ok(());
+    };
+    let customer: Option<String> = sqlx::query_scalar("SELECT Name FROM customers WHERE id = ?")
+        .bind(customer_id)
+        .fetch_optional(pool)
+        .await?;
+    let full = match customer.as_deref().and_then(customer_slug) {
+        Some(cslug) => format!("{cslug}/{tag}"),
+        None => tag,
+    };
+    Err(tag_clash(&full, other))
+}
+
 // ── Inner functions (testable without a Tauri app) ────────────────────────────
 
 pub async fn inner_list_projects(
@@ -60,6 +93,7 @@ pub async fn inner_create_project(
 ) -> Result<Project, AppError> {
     let name = clean_name(name)?;
     ensure_unique(customer_id, &name, 0, pool).await?;
+    ensure_no_tag_clash(customer_id, &name, 0, pool).await?;
     let row = sqlx::query_as::<_, Project>(
         "INSERT INTO projects (CustomerId, Name, UseAsDefault) VALUES (?, ?, 0) \
          RETURNING id, CustomerId as customer_id, Name as name, UseAsDefault as use_as_default",
@@ -71,26 +105,56 @@ pub async fn inner_create_project(
     Ok(row)
 }
 
+/// Renames a project. When it owns its tag (`#acme/web`: its customer owns `#acme` and
+/// no lower-id project of that customer has the same slug), tags in notes follow the
+/// rename (`#acme/web`, `#acme/web/x` → `#acme/portal`, `#acme/portal/x`) in the same
+/// transaction.
 pub async fn inner_update_project(
     id: i64,
     name: &str,
     pool: &Pool<Sqlite>,
 ) -> Result<Project, AppError> {
     let name = clean_name(name)?;
-    let customer_id: i64 = sqlx::query_scalar("SELECT CustomerId FROM projects WHERE id = ?")
-        .bind(id)
-        .fetch_optional(pool)
-        .await?
-        .ok_or_else(|| AppError::Custom("Project not found".to_string()))?;
+    let (customer_id, old): (i64, String) =
+        sqlx::query_as("SELECT CustomerId, Name FROM projects WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
+            .ok_or_else(|| AppError::Custom("Project not found".to_string()))?;
     ensure_unique(customer_id, &name, id, pool).await?;
+    ensure_no_tag_clash(customer_id, &name, id, pool).await?;
+    let mut tx = pool.begin().await?;
+    // The write comes first, so the transaction holds the write lock before it reads.
     let row = sqlx::query_as::<_, Project>(
         "UPDATE projects SET Name = ? WHERE id = ? \
          RETURNING id, CustomerId as customer_id, Name as name, UseAsDefault as use_as_default",
     )
-    .bind(name)
+    .bind(&name)
     .bind(id)
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await?;
+    if let (Some(old_tag), Some(new_tag)) = (slug(&old), slug(&name)) {
+        if old_tag != new_tag {
+            let customer: String = sqlx::query_scalar("SELECT Name FROM customers WHERE id = ?")
+                .bind(customer_id)
+                .fetch_one(&mut *tx)
+                .await?;
+            let lower: Vec<String> =
+                sqlx::query_scalar("SELECT Name FROM projects WHERE CustomerId = ? AND id < ?")
+                    .bind(customer_id)
+                    .bind(id)
+                    .fetch_all(&mut *tx)
+                    .await?;
+            let owns_project_tag = !lower.iter().any(|n| slug(n).as_deref() == Some(&old_tag));
+            if let Some(cslug) = customer_slug(&customer) {
+                if owns_project_tag && owns_tag(customer_id, &cslug, &mut tx).await? {
+                    let old_path = format!("{cslug}/{old_tag}");
+                    crate::commands::notes::rewrite_tag_refs(&old_path, &new_tag, &mut tx).await?;
+                }
+            }
+        }
+    }
+    tx.commit().await?;
     Ok(row)
 }
 
@@ -359,5 +423,120 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.to_string(), "Project not found");
+    }
+
+    // ── Tags ──────────────────────────────────────────────────────────────────
+
+    use crate::commands::customers::tests::{note_body, tagged_note};
+
+    #[tokio::test]
+    async fn test_project_tag_clash_blocks_create_and_rename_within_customer() {
+        let pool = crate::test_db().await;
+        let acme = inner_create_customer("Acme", &pool).await.unwrap();
+        let beta = inner_create_customer("Beta", &pool).await.unwrap();
+        let web = inner_create_project(acme.id, "Web App", &pool)
+            .await
+            .unwrap();
+        let err = inner_create_project(acme.id, "web-app", &pool)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Name clashes with tag #acme/web-app (Web App)"
+        );
+        inner_create_project(beta.id, "web-app", &pool)
+            .await
+            .unwrap();
+        let api = inner_create_project(acme.id, "API", &pool).await.unwrap();
+        let err = inner_update_project(api.id, "Web/App", &pool)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Name clashes with tag #acme/web-app (Web App)"
+        );
+        inner_update_project(web.id, "WEB APP", &pool)
+            .await
+            .unwrap();
+        // A customer without a tag: the message names the project slug only.
+        let digits = inner_create_customer("42", &pool).await.unwrap();
+        inner_create_project(digits.id, "Ops", &pool).await.unwrap();
+        let err = inner_create_project(digits.id, "ops!", &pool)
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "Name clashes with tag #ops (Ops)");
+    }
+
+    #[tokio::test]
+    async fn test_project_rename_rewrites_its_tags_in_notes() {
+        let pool = crate::test_db().await;
+        let acme = inner_create_customer("Acme", &pool).await.unwrap();
+        let web = inner_create_project(acme.id, "Web", &pool).await.unwrap();
+        let n = tagged_note(
+            "Tagged",
+            "#acme/web #Acme/Web/x #acme/webby #acme #web `#acme/web`",
+            &pool,
+        )
+        .await;
+        inner_update_project(web.id, "Portal 2", &pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            note_body(n, &pool).await,
+            (
+                "#acme/portal-2 #Acme/portal-2/x #acme/webby #acme #web `#acme/web`".to_string(),
+                "2000-01-01T00:00:00.000".to_string()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn test_project_rename_skips_tags_it_does_not_own() {
+        let pool = crate::test_db().await;
+        // Customer 2 collides with 1 on `#acme`; projects 3 and 4 collide on `web`.
+        sqlx::raw_sql(
+            "INSERT INTO customers (id, Name) VALUES (1, 'Acme'), (2, 'ACME!');
+             INSERT INTO projects (id, CustomerId, Name) VALUES
+                 (3, 1, 'Web'), (4, 1, 'web!'), (5, 2, 'Web');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let n = tagged_note("Tagged", "#acme/web", &pool).await;
+        inner_update_project(5, "Other", &pool).await.unwrap();
+        assert_eq!(
+            note_body(n, &pool).await.0,
+            "#acme/web",
+            "customer not owner"
+        );
+        inner_update_project(4, "Else", &pool).await.unwrap();
+        assert_eq!(
+            note_body(n, &pool).await.0,
+            "#acme/web",
+            "project not owner"
+        );
+        inner_update_project(3, "123", &pool).await.unwrap();
+        assert_eq!(note_body(n, &pool).await.0, "#acme/web", "no new tag");
+        inner_update_project(3, "Site", &pool).await.unwrap();
+        assert_eq!(note_body(n, &pool).await.0, "#acme/web", "123 had no tag");
+    }
+
+    #[tokio::test]
+    async fn test_project_under_reserved_customer_has_no_tag() {
+        let pool = crate::test_db().await;
+        let issue = inner_create_customer("Issue", &pool).await.unwrap();
+        let web = inner_create_project(issue.id, "12", &pool).await.unwrap();
+        let api = inner_create_project(issue.id, "Web", &pool).await.unwrap();
+        let n = tagged_note("Tagged", "#issue/12 #issue/web", &pool).await;
+        inner_update_project(web.id, "Thirteen", &pool)
+            .await
+            .unwrap();
+        inner_update_project(api.id, "Site", &pool).await.unwrap();
+        assert_eq!(note_body(n, &pool).await.0, "#issue/12 #issue/web");
+        // Clash message names the project slug only, as for any untagged customer.
+        let err = inner_create_project(issue.id, "site!", &pool)
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "Name clashes with tag #site (Site)");
     }
 }

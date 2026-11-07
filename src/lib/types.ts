@@ -106,7 +106,7 @@ export interface PaletteSettings {
 	last_issue_id: number | null;
 }
 
-/** Note list row (list_notes, rename_note, update_note_body, set_note_pinned). */
+/** Note list row (list_notes, update_note_body, set_note_pinned). */
 export interface NoteSummary {
 	id: number;
 	folder_id: number | null;
@@ -129,7 +129,40 @@ export interface SearchIndexStats {
 	bytes: number;
 }
 
-/** Full note (get_note, create_note). */
+/** rename_note: the renamed note and the notes whose [[links]] to the old title were
+ *  rewritten (the renamed note itself included when it links to itself). */
+export interface RenamedNote {
+	note: NoteSummary;
+	rewritten_ids: number[];
+}
+
+/** list_tag_suggestions: one `#` autocomplete entry; `tag` is what follows the `#`. */
+export interface TagSuggestion {
+	kind: 'tag' | 'customer' | 'project' | 'issue' | 'todo';
+	tag: string; // e.g. "meeting", "acme", "acme/web", "issue/12", "todo/3"
+	label: string; // tag / customer or project name / "title — customer / project" / todo title
+	detail: string | null; // projects: the customer name
+	status: Exclude<TodoStatus, 'done'> | null; // todos only
+}
+
+/** list_backlinks: a note linking to the open one, with the line that links (raw markdown). */
+export interface Backlink {
+	id: number;
+	title: string;
+	snippet: string;
+}
+
+/** get_link_targets: what wikilinks and #issue/#todo chips resolve to. */
+export interface LinkTargets {
+	notes: { id: number; title: string }[];
+	issues: { id: number; title: string; context: string }[]; // context: "Customer / Project"
+	todos: { id: number; title: string; status: TodoStatus }[];
+}
+
+/** render_markdown mode: the read view, or "Copy as HTML" (links and tags as plain text). */
+export type RenderMode = 'read' | 'copy';
+
+/** Full note (get_note, create_note, create_note_titled). */
 export interface Note {
 	id: number;
 	folder_id: number | null;

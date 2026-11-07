@@ -37,8 +37,9 @@ The backend is organized around command modules:
 - `issues` and `time_entries` for core timesheet operations
 - `todos` for standalone todos and their optional issue link
 - `travel` for business trips, listed per month
-- `notes` for markdown notes (create, rename, body save, pin, delete), the list excerpt, which is computed in Rust, and full-text search (`search_notes`, `search_index_stats`, `rebuild_search_index`)
+- `notes` for markdown notes (create, rename, body save, pin, delete), the list excerpt, which is computed in Rust, full-text search (`search_notes`, `search_index_stats`, `rebuild_search_index`), and links (`create_note_titled`, `list_tag_suggestions`, `get_link_targets`, `list_backlinks`)
 - `markdown` for `render_markdown`, which turns note markdown into safe HTML (read view, copy as HTML)
+- `note_links` (a top-level module, not a command module) for the `#tag` / `[[wikilink]]` extractor and entity slugs; see Notes links
 - `reports` for weekly and monthly rollups
 - `backup` for JSON export and import
 - `settings` for app preferences (theme, daily hours target, command palette shortcut and last-used project/issue) stored in `app_settings`
@@ -72,9 +73,9 @@ Today (`src/routes/+page.svelte`) aggregates in the frontend: it loads the curre
 
 ### Notes editor
 
-The editor is CodeMirror 6 (`@codemirror/*` packages only: no `codemirror` meta-package or basicSetup), hosted by `src/lib/components/NoteEditor.svelte`. The live preview is written in this repo under `src/lib/editor/` rather than taken from a library, because the existing ones are alpha or stale. It hides markdown markers except on the lines touched by the selection and renders GFM tables as a block widget (raw source shows while the cursor is inside the table). Links are styled but not clickable in the editor (they are in the read view), and images stay as raw markdown. Editor colors are CSS variables in `src/app.css` for light and `.dark`, so a theme change needs no editor reconfigure. Each note keeps its own undo history while the page is open.
+The editor is CodeMirror 6 (`@codemirror/*` packages only: no `codemirror` meta-package or basicSetup), hosted by `src/lib/components/NoteEditor.svelte`. The live preview is written in this repo under `src/lib/editor/` rather than taken from a library, because the existing ones are alpha or stale. It hides markdown markers except on the lines touched by the selection and renders GFM tables as a block widget (raw source shows while the cursor is inside the table). Markdown links are styled but not clickable in the editor (they are in the read view); tags, chips and wikilinks follow on ⌘-click (see Notes links). Images stay as raw markdown. Editor colors are CSS variables in `src/app.css` for light and `.dark`, so a theme change needs no editor reconfigure. Each note keeps its own undo history while the page is open.
 
-Fenced code is highlighted per language via `@codemirror/language-data` (each language is a lazy chunk, loaded on first use; unknown languages stay plain), with code colors scoped to code so they never restyle markdown. Typing `/` at a line start or after whitespace (not in words, URLs or code) opens a snippet menu (`@codemirror/autocomplete`, its only completion source): table, code block, task list, callout and today's date; the pure rules are in `src/lib/slash-menu.ts`.
+Fenced code is highlighted per language via `@codemirror/language-data` (each language is a lazy chunk, loaded on first use; unknown languages stay plain), with code colors scoped to code so they never restyle markdown. Typing `/` at a line start or after whitespace (not in words, URLs or code) opens a snippet menu (`@codemirror/autocomplete`): table, code block, task list, callout and today's date; the pure rules are in `src/lib/slash-menu.ts`. The `#` and `[[` link menus are two more sources in the same `autocompletion` config (`override`, so no word completion).
 
 The title is a separate field above the editor, not derived from a heading, because wikilinks need a stable, unique, user-controlled name. Rename commits on Enter or blur; Esc reverts.
 
@@ -82,11 +83,11 @@ Autosave is a pure queue in `src/lib/note-save-queue.ts` (tested in `tests/note-
 
 #### Read view and copy as HTML
 
-⌘E (or the book/pencil button in the title bar) swaps the editor for a read view; the mode survives note switches and resets on page load, and creating a note always returns to edit. The editor stays mounted but hidden, so each note keeps its state. The read view renders the editor's current text, unsaved edits included, through the stateless `render_markdown` command (`src-tauri/src/commands/markdown.rs`, `pulldown-cmark` with tables, strikethrough and task lists).
+⌘E (or the book/pencil button in the title bar) swaps the editor for a read view; the mode survives note switches and resets on page load, and creating a note always returns to edit. The editor stays mounted but hidden, so each note keeps its state. The read view renders the editor's current text, unsaved edits included, through the `render_markdown` command (`src-tauri/src/commands/markdown.rs`, `pulldown-cmark` with tables, strikethrough and task lists). It takes a `mode` (`read` or `copy`) and the database pool, because tags, chips and wikilinks are resolved against current data (see Notes links), so the same text can render differently after a rename.
 
 The app has no CSP, so Rust locks the HTML down instead of the WebView: raw HTML is escaped and shown as text, only `http:`, `https:` and `mailto:` links are kept (others render as their text), and images never load (they become links labelled with their alt text). `src/lib/components/NoteReader.svelte` inserts the result, highlights code blocks with the editor's parsers and colors (`src/lib/editor/highlight-code.ts`), and opens links in the default browser through `tauri-plugin-opener`, checking the scheme again (`src/lib/links.ts`); a link never navigates the WebView. The capability grants only `opener:allow-open-url` with `opener:allow-default-urls` (http, https, mailto, tel).
 
-"Copy as HTML" writes the same rendered HTML as `text/html` and the markdown source as `text/plain`, using a `ClipboardItem` whose HTML is a promise so WebKit's user-gesture requirement holds across the `invoke`.
+"Copy as HTML" writes the same rendered HTML (`copy` mode: tags, wikilinks and chips become plain text) as `text/html` and the markdown source as `text/plain`, using a `ClipboardItem` whose HTML is a promise so WebKit's user-gesture requirement holds across the `invoke`.
 
 #### Quit/close flush guard
 
@@ -98,7 +99,17 @@ The frontend keeps TypeScript interfaces in `src/lib/types.ts` aligned with the 
 
 ### Notes search
 
-`search_notes` (in `commands/notes.rs`) queries the `notes_fts` FTS5 table, which holds each note's title and a plain-text body from `markdown::to_plain_text` (markers and markdown link/image destinations dropped; raw HTML and autolinks are indexed as written). The `trigram` tokenizer matches case-insensitive substrings, which suits Swedish compounds; it can't match terms under 3 characters, so those filter the rows in Rust (Unicode case folding) without highlights. Every whitespace-separated term must match and is quoted, so FTS5 operators are plain text. Results are ranked with `bm25` (title weighted 10×), and hits come back wrapped in `\u0002`/`\u0003`, which are stripped from indexed text. The frontend splits them into `<mark>` segments (`splitHighlights` in `src/lib/notes.ts`) and never uses `{@html}`. The list re-searches only when the query changes, and rows are drawn from the current summaries, so the note you are editing never drops out mid-edit. The palette shows the top 5 hits under its commands once the query has 3 characters; shorter queries list commands only.
+`search_notes` (in `commands/notes.rs`) queries the `notes_fts` FTS5 table (after splitting off `#tag` terms, see Notes links), which holds each note's title and a plain-text body from `markdown::to_plain_text` (markers and markdown link/image destinations dropped; raw HTML and autolinks are indexed as written). The `trigram` tokenizer matches case-insensitive substrings, which suits Swedish compounds; it can't match terms under 3 characters, so those filter the rows in Rust (Unicode case folding) without highlights. Every whitespace-separated term must match and is quoted, so FTS5 operators are plain text. Results are ranked with `bm25` (title weighted 10×), and hits come back wrapped in `\u0002`/`\u0003`, which are stripped from indexed text. The frontend splits them into `<mark>` segments (`splitHighlights` in `src/lib/notes.ts`) and never uses `{@html}`. The list re-searches only when the query changes, and rows are drawn from the current summaries, so the note you are editing never drops out mid-edit. The palette shows the top 5 hits under its commands once the query has 3 characters; shorter queries list commands only.
+
+### Notes links
+
+`#tags` and `[[wikilinks]]` (`[[Title]]`, `[[Title|alias]]`; no heading links or embeds) follow Obsidian's rules, and Rust and the editor each implement them. `src-tauri/src/note_links.rs` walks pulldown-cmark events with byte offsets (skipping code, links, autolinks and raw HTML, and joining the text runs pulldown-cmark splits at `[`, `]` and table pipes) and returns tags and wikilinks with ranges. The one extractor feeds indexing (`note_refs`), `render_markdown` and rename rewriting. `src/lib/note-links.ts` is its TypeScript twin for the editor (scanning, `#`/`[[` triggers, slugs); both are tested against the shared case table `tests/fixtures/note-links-cases.json`, so change a rule in both places and add a case there.
+
+Tags match case-insensitively and nest by prefix: `#acme` matches `#acme` and `#acme/website`. Customers and projects get tags from their names (lowercase, runs of characters not allowed in tags become `-`: customer `#<cslug>`, project `#<cslug>/<pslug>`); issues and todos use their ids (`#issue/<id>`, `#todo/<id>`, inserted by autocomplete and drawn as chips with the live title; an unknown id stays a plain tag). Entities are resolved at read time, so deleting one just leaves a plain tag, and deleting a note leaves its incoming links unresolved. To keep a slug owned by one entity, creating or renaming a customer (or a project within its customer) whose slug equals another's is refused ("Name clashes with tag #…"); a name whose slug is empty or all digits gets no tag, and so does a customer whose slug is `issue` or `todo` (the chip namespaces), along with its projects. Data that already collides gives the slug to the lowest id.
+
+Renames rewrite bodies in the same transaction: a note rename retargets `[[Old]]`/`[[Old|alias]]` (case-insensitive) in other notes, and a customer or project rename rewrites its slug tags (nested ones too), only when it owned the old slug and the new slug is valid. Rewrites edit at the extractor's byte ranges, so code is untouched, re-index FTS and refs, and do not bump `UpdatedAt`. `rename_note` returns the ids of the notes it rewrote; the notes page then drops their cached editor state and queued saves and reloads the open note if affected (undo history of rewritten notes resets), so no stale body can restore the old title. Customer and project renames happen in Settings, where the notes page is unmounted.
+
+`search_notes` treats each `#term` in the query as a tag filter (AND, prefix-nested) and the rest as the text search; a tag-only query lists every tagged note (the note list and ⌘K both). In the editor, resolution data (note titles, entity names, todo status) sits in a CodeMirror `StateField` the page fills from `get_link_targets` and `list_tag_suggestions` (`src/lib/editor/links.ts`); ⌘-click follows (a wikilink opens its note, creating it first through `create_note_titled` when unresolved; a tag or chip filters the list). The read view follows on a plain click through `data-tag` / `data-note` attributes on the rendered anchors, checked before the external-URL path. A collapsible "Linked mentions" strip under the note lists the notes linking to it (`list_backlinks`, one-line snippet, no unlinked mentions).
 
 ## Storage model
 
@@ -130,6 +141,7 @@ The schema is created on startup if it does not exist. The main tables are:
 - `travel`
 - `notes`
 - `folders` (schema only; no commands or UI yet)
+- `note_refs` (derived link index, see Notes links; not in backups)
 
 Foreign keys are enabled, and cascading deletes are used to keep related records consistent.
 

@@ -648,13 +648,19 @@
     @apply opacity-0;
   }
 
-  .tree-folder-confirm {
+  .tree-folder-confirm,
+  .tree-note-confirm {
     @apply bg-red-50 hover:bg-red-50 dark:bg-red-500/10 dark:hover:bg-red-500/10;
   }
 
   /* Second line under the folder name: "Delete? Contents move to …" [Delete] [Cancel]. */
   .tree-folder-confirm-bar {
     @apply flex basis-full flex-wrap items-center justify-end gap-x-2 gap-y-1.5 pb-1 pl-[39px] pt-1.5 text-xs text-slate-600 dark:text-neutral-300;
+  }
+
+  /* Under the note's title and excerpt: "Delete this note?" [Delete] [Cancel]. */
+  .tree-note-confirm-bar {
+    @apply flex flex-wrap items-center justify-end gap-x-2 gap-y-1.5 pt-2 text-xs text-slate-600 dark:text-neutral-300;
   }
 
   .tree-empty {
@@ -702,6 +708,45 @@
 
   .tree-drag-ghost-target {
     @apply text-xs font-normal text-sky-600 dark:text-sky-400;
+  }
+
+  /* The row (or root) whose context menu is open. */
+  .tree-row-menu {
+    @apply ring-2 ring-inset ring-sky-300 dark:ring-sky-400/60;
+  }
+
+  /* Right-click menu (ContextMenu.svelte). */
+  .ctx-menu {
+    @apply fixed z-50 min-w-[11rem] max-w-[16rem] rounded-xl bg-white p-1 text-sm shadow-lg ring-1 ring-slate-200 focus:outline-none dark:bg-neutral-900 dark:shadow-black/40 dark:ring-neutral-700;
+  }
+
+  .ctx-menu-item {
+    @apply flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-slate-700 outline-none focus:bg-sky-50 focus:text-sky-700 dark:text-neutral-200 dark:focus:bg-sky-500/10 dark:focus:text-sky-300;
+  }
+
+  .ctx-menu-icon {
+    @apply shrink-0 text-slate-400 dark:text-neutral-500;
+  }
+
+  .ctx-menu-item:focus .ctx-menu-icon {
+    @apply text-sky-500 dark:text-sky-400;
+  }
+
+  .ctx-menu-item-danger {
+    @apply text-red-600 focus:bg-red-50 focus:text-red-700 dark:text-red-400 dark:focus:bg-red-500/10 dark:focus:text-red-300;
+  }
+
+  .ctx-menu-item-danger .ctx-menu-icon,
+  .ctx-menu-item-danger:focus .ctx-menu-icon {
+    @apply text-red-500 dark:text-red-400;
+  }
+
+  .ctx-menu-hint {
+    @apply ml-auto shrink-0 pl-4 font-sans text-xs text-slate-400 dark:text-neutral-500;
+  }
+
+  .ctx-menu-separator {
+    @apply mx-1 my-1 h-px bg-slate-100 dark:bg-neutral-800;
   }
 
   .note-title-input {

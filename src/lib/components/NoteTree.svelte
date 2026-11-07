@@ -7,6 +7,7 @@
 		autoScrollStep,
 		dropFolder,
 		folderChain,
+		noteNeighbour,
 		targetFolderId,
 		treeKeyAction,
 		visibleRows,
@@ -16,7 +17,9 @@
 	} from '#lib/folders.js';
 	import type { Folder, NoteSummary } from '#lib/types.js';
 	import NameInput from '#lib/components/NameInput.svelte';
+	import ContextMenu, { type MenuItem } from '#lib/components/ContextMenu.svelte';
 	import ChevronRight from 'lucide-svelte/icons/chevron-right';
+	import FilePlus from 'lucide-svelte/icons/file-plus';
 	import FileText from 'lucide-svelte/icons/file-text';
 	import FolderIcon from 'lucide-svelte/icons/folder';
 	import FolderInput from 'lucide-svelte/icons/folder-input';
@@ -28,13 +31,15 @@
 	import Trash2 from 'lucide-svelte/icons/trash-2';
 
 	// The notes folder tree: one flat keyed list of visible rows (so `animate:flip` works
-	// across levels), ARIA tree keyboard navigation, inline folder rename/delete, and
-	// pointer-event drag and drop (todos-page pattern) with auto-expand and auto-scroll.
+	// across levels), ARIA tree keyboard navigation, inline folder rename/delete, a
+	// right-click menu per row, and pointer-event drag and drop (todos-page pattern) with
+	// auto-expand and auto-scroll.
 
 	const DRAG_THRESHOLD = 5; // px of movement before a press becomes a drag
 	const AUTO_EXPAND_MS = 600;
 	const INDENT = 18; // px per level: chevron + gap, so children's chevrons sit under the folder icon
 	const MAX_INDENT_DEPTH = 6; // deeper levels stop indenting so titles stay readable
+	const ROOT_KEY = 'root'; // the "Notes" root row (tree rows are `f:<id>` / `n:<id>`)
 
 	let {
 		tree,
@@ -42,6 +47,7 @@
 		selectedId,
 		currentFolderId,
 		renamingId = $bindable(null),
+		confirmingNoteId = $bindable(null),
 		scrollEl,
 		onopen,
 		ontoggle,
@@ -49,8 +55,10 @@
 		oncurrent,
 		onpin,
 		onnewfolder,
+		onnewnote,
 		onrename,
 		ondelete,
+		ondeletenote,
 		onmoveto,
 		onmove,
 		onexit
@@ -61,6 +69,8 @@
 		currentFolderId: number | null;
 		/** Folder whose name is being edited. */
 		renamingId?: number | null;
+		/** Note whose inline delete confirm is showing. */
+		confirmingNoteId?: number | null;
 		/** The scrolling list element (auto-scrolled while dragging). */
 		scrollEl: HTMLElement | undefined;
 		onopen: (noteId: number) => void;
@@ -71,17 +81,23 @@
 		/** Click / Enter / Space on the "Notes" root row (null: root becomes current). */
 		oncurrent: (folderId: number | null) => void;
 		onpin: (note: NoteSummary) => void;
-		onnewfolder: (parentId: number) => void;
+		/** null: at the top level. */
+		onnewfolder: (parentId: number | null) => void;
+		/** Context menu "New note here" / root "New note" (null): the folder becomes current. */
+		onnewnote: (folderId: number | null) => void;
 		/** Rejects with the user-facing message (shown under the name input). */
 		onrename: (folderId: number, name: string) => Promise<void>;
 		ondelete: (folderId: number) => Promise<void>;
-		onmoveto: (folder: Folder) => void;
+		ondeletenote: (noteId: number) => Promise<void>;
+		/** Opens the "Move to…" picker for a folder or note. */
+		onmoveto: (item: DragItem, name: string) => void;
 		onmove: (item: DragItem, folderId: number | null) => void;
 		/** ↑ on the "Notes" root row (↑ on the first tree row focuses the root row). */
 		onexit: () => void;
 	} = $props();
 
 	let rootEl = $state<HTMLElement>();
+	let rootRowEl = $state<HTMLElement>();
 	let focusKey = $state<string | null>(null); // last focused row (roving tabindex)
 	let confirmingId = $state<number | null>(null);
 	let flashKey = $state<string | null>(null);
@@ -111,7 +127,7 @@
 	}
 
 	function focusRow(key: string): void {
-		const el = rowEl(key);
+		const el = key === ROOT_KEY ? (rootRowEl ?? null) : rowEl(key);
 		el?.focus();
 		el?.scrollIntoView({ block: 'nearest' });
 	}
@@ -122,6 +138,22 @@
 		const active = document.activeElement;
 		if (!active || active === document.body || !active.isConnected) focusRow(key);
 	}
+
+	// A focused row that moves (Move to…, a drop) is re-inserted by the keyed each, which
+	// drops DOM focus to the body: put it back on the row.
+	let focusedBeforeUpdate: string | null = null;
+	$effect.pre(() => {
+		void rows;
+		const el = document.activeElement;
+		focusedBeforeUpdate = el instanceof HTMLElement && el.dataset.key && rootEl?.contains(el) ? el.dataset.key : null;
+	});
+	$effect(() => {
+		void rows;
+		const key = focusedBeforeUpdate;
+		focusedBeforeUpdate = null;
+		const active = document.activeElement;
+		if (key && (!active || active === document.body)) focusRow(key);
+	});
 
 	// A folder just put into rename mode (created from the bar) scrolls into view.
 	$effect(() => {
@@ -138,7 +170,7 @@
 	}
 
 	/** The row's own controls and inline panels: they neither toggle/open nor start drags. */
-	const ROW_CONTROLS = 'button, input, textarea, a, .tree-folder-confirm-bar, .form-error';
+	const ROW_CONTROLS = 'button, input, textarea, a, .tree-folder-confirm-bar, .tree-note-confirm-bar, .form-error';
 
 	function onRowClick(e: MouseEvent, row: TreeRow): void {
 		if ((e.target as Element).closest(ROW_CONTROLS)) return;
@@ -147,13 +179,24 @@
 
 	function onRowKeydown(e: KeyboardEvent, index: number): void {
 		if (e.target !== e.currentTarget || e.isComposing) return; // keys in the row's buttons/input
-		if (e.metaKey || e.ctrlKey || e.altKey) return;
 		const row = rows[index];
+		if (isMenuKey(e)) {
+			e.preventDefault();
+			if (row) openMenuAt(row.key, e.currentTarget as HTMLElement);
+			return;
+		}
+		if (e.metaKey || e.ctrlKey || e.altKey) return;
 		if (e.key === 'Escape' && row?.kind === 'folder' && confirmingId === row.folder.id) {
 			// Clicking the confirm bar's text focuses the row, so Esc lands here, not in the bar.
 			e.preventDefault();
 			e.stopPropagation();
 			confirmingId = null;
+			return;
+		}
+		if (e.key === 'Escape' && row?.kind === 'note' && confirmingNoteId === row.note.id) {
+			e.preventDefault();
+			e.stopPropagation();
+			confirmingNoteId = null;
 			return;
 		}
 		const action = treeKeyAction(rows, index, e.key);
@@ -182,6 +225,11 @@
 
 	/** The "Notes" root row is its own Tab stop: ↓ into the tree, ↑ back to the search box. */
 	function onRootKeydown(e: KeyboardEvent): void {
+		if (isMenuKey(e)) {
+			e.preventDefault();
+			openMenuAt(ROOT_KEY, e.currentTarget as HTMLElement);
+			return;
+		}
 		if (e.metaKey || e.ctrlKey || e.altKey) return;
 		if (e.key === 'ArrowDown') {
 			e.preventDefault();
@@ -198,6 +246,18 @@
 	function startRename(id: number): void {
 		confirmingId = null;
 		renamingId = id;
+	}
+
+	/** One inline delete confirm in the tree at a time. */
+	function askDeleteFolder(id: number): void {
+		renamingId = null;
+		confirmingNoteId = null;
+		confirmingId = id;
+	}
+
+	function askDeleteNote(id: number): void {
+		confirmingId = null;
+		confirmingNoteId = id;
 	}
 
 	async function saveRename(id: number, name: string): Promise<void> {
@@ -225,6 +285,127 @@
 		void refocus(`f:${id}`);
 	}
 
+	// ── Note delete (from the context menu) ───────────────────────────────────────
+
+	/** Focus then goes to the next/previous note in its folder, else the folder, else root. */
+	async function confirmDeleteNote(id: number, parentId: number | null): Promise<void> {
+		confirmingNoteId = null;
+		const next = noteNeighbour(tree, id);
+		const fallback = next !== null ? `n:${next}` : parentId !== null ? `f:${parentId}` : ROOT_KEY;
+		await ondeletenote(id);
+		await tick();
+		const key = `n:${id}`;
+		void refocus(rows.some((r) => r.key === key) ? key : fallback); // still there: it failed
+	}
+
+	function onNoteConfirmKeydown(e: KeyboardEvent, key: string): void {
+		if (e.key !== 'Escape') return;
+		e.preventDefault();
+		e.stopPropagation();
+		confirmingNoteId = null;
+		void refocus(key);
+	}
+
+	// ── Context menu (right-click, ctrl+click, Shift+F10, the ContextMenu key) ─────
+
+	type OpenMenu = { key: string; x: number; y: number; anchorHeight: number; label: string; items: MenuItem[]; seq: number };
+	let menu = $state<OpenMenu | null>(null);
+	let menuSeq = 0;
+	let keyMenuAt = -Infinity; // when the keyboard last opened one (its own contextmenu event is ignored)
+	const KEY_MENU_GRACE_MS = 500;
+
+	/** Inline editors and confirm bars keep the WebView's own menu (copy, paste). */
+	const NATIVE_MENU = 'input, textarea, .tree-folder-confirm-bar, .tree-note-confirm-bar';
+
+	function isMenuKey(e: KeyboardEvent): boolean {
+		return e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey);
+	}
+
+	/** The row's actions, built when the menu opens (null: no menu for this key). */
+	function menuFor(key: string): { label: string; items: MenuItem[] } | null {
+		if (key === ROOT_KEY) {
+			return {
+				label: 'Notes actions',
+				items: [
+					{ label: 'New note', icon: FilePlus, run: () => onnewnote(null) },
+					{
+						label: 'New folder',
+						icon: FolderPlus,
+						run: () => {
+							oncurrent(null);
+							onnewfolder(null);
+						}
+					}
+				]
+			};
+		}
+		const row = rows.find((r) => r.key === key);
+		if (row?.kind === 'folder') {
+			const f = row.folder;
+			return {
+				label: `Actions for ${f.name}`,
+				items: [
+					{ label: 'New note here', icon: FilePlus, run: () => onnewnote(f.id) },
+					{ label: 'New subfolder', icon: FolderPlus, run: () => onnewfolder(f.id) },
+					{ label: 'Rename', icon: PencilLine, hint: 'F2', run: () => startRename(f.id) },
+					{ label: 'Move to…', icon: FolderInput, run: () => onmoveto({ kind: 'folder', id: f.id, parentId: row.parentId }, f.name) },
+					{ label: 'Delete', icon: Trash2, danger: true, run: () => askDeleteFolder(f.id) }
+				]
+			};
+		}
+		if (row?.kind === 'note') {
+			const n = row.note;
+			return {
+				label: `Actions for ${n.title}`,
+				items: [
+					{ label: n.pinned ? 'Unpin' : 'Pin', icon: n.pinned ? PinOff : Pin, run: () => onpin(n) },
+					{ label: 'Move to…', icon: FolderInput, run: () => onmoveto({ kind: 'note', id: n.id, folderId: row.parentId }, n.title) },
+					{ label: 'Delete', icon: Trash2, danger: true, run: () => askDeleteNote(n.id) }
+				]
+			};
+		}
+		return null;
+	}
+
+	function openMenu(key: string, x: number, y: number, anchorHeight = 0): void {
+		if (pending || drag) return; // never mid-press or mid-drag
+		const built = menuFor(key);
+		if (!built) return;
+		confirmingId = null;
+		confirmingNoteId = null;
+		menu = { key, x, y, anchorHeight, ...built, seq: ++menuSeq };
+	}
+
+	/** Keyboard opening: under the row, lined up with its content. */
+	function openMenuAt(key: string, el: HTMLElement): void {
+		const r = el.getBoundingClientRect();
+		const pad = parseFloat(getComputedStyle(el).paddingLeft) || 0;
+		keyMenuAt = performance.now();
+		openMenu(key, r.left + pad, r.bottom, r.height);
+	}
+
+	function onContextMenu(e: MouseEvent, key: string): void {
+		if ((e.target as Element).closest(NATIVE_MENU)) return;
+		e.preventDefault();
+		if (performance.now() - keyMenuAt < KEY_MENU_GRACE_MS) return; // Shift+F10 already opened it
+		openMenu(key, e.clientX, e.clientY);
+	}
+
+	function closeMenu(refocus: boolean): void {
+		const key = menu?.key;
+		menu = null;
+		if (!refocus || key === undefined) return;
+		(key === ROOT_KEY ? rootRowEl : rowEl(key))?.focus({ preventScroll: true });
+	}
+
+	// The target row went away (a reload, a collapse elsewhere): close its menu.
+	$effect(() => {
+		const key = menu?.key;
+		if (key === undefined || key === ROOT_KEY || rows.some((r) => r.key === key)) return;
+		menu = null;
+		if (activeKey !== null) void refocus(activeKey);
+	});
+
 	function autofocus(node: HTMLElement): void {
 		node.focus();
 	}
@@ -246,7 +427,7 @@
 	}
 
 	function onRowPointerDown(e: PointerEvent, row: TreeRow): void {
-		if (e.button !== 0 || pending || drag) return;
+		if (e.button !== 0 || e.ctrlKey || pending || drag) return; // ctrl+click opens the menu
 		if ((e.target as Element).closest(ROW_CONTROLS)) return; // pin, actions, rename, confirm
 		const item = dragItem(row);
 		if (!item) return;
@@ -271,6 +452,7 @@
 			drag = { ...pending, x: e.clientX, y: e.clientY, target: undefined };
 			dragged = true;
 			confirmingId = null;
+			confirmingNoteId = null;
 			document.body.classList.add('is-dragging');
 			scrollFrame = requestAnimationFrame(autoScroll);
 		}
@@ -410,18 +592,29 @@
 </script>
 
 <!-- Empty space below the rows is the root drop target. -->
-<div bind:this={rootEl} class="tree" data-drop-folder={ROOT_TARGET}>
+<!-- Ctrl+click is the macOS secondary click: it only opens the menu, never row or button actions. -->
+<div
+	bind:this={rootEl}
+	class="tree"
+	data-drop-folder={ROOT_TARGET}
+	onclickcapture={(e) => {
+		if (e.ctrlKey) e.stopPropagation();
+	}}
+>
 	<button
+		bind:this={rootRowEl}
 		type="button"
 		class="tree-root"
 		class:tree-root-current={currentFolderId === null}
 		class:tree-row-drop={drag?.target === null}
 		class:tree-row-flash={flashKey === 'root'}
+		class:tree-row-menu={menu?.key === ROOT_KEY}
 		data-drop-folder={ROOT_TARGET}
 		aria-current={currentFolderId === null ? 'true' : undefined}
 		title="Top level: new notes and folders go here"
 		onclick={() => oncurrent(null)}
 		onkeydown={onRootKeydown}
+		oncontextmenu={(e) => onContextMenu(e, ROOT_KEY)}
 	>
 		Notes
 	</button>
@@ -447,10 +640,12 @@
 						class:tree-row-dragging={isDragged(row)}
 						class:tree-row-flash={flashKey === row.key}
 						class:tree-folder-confirm={confirmingId === f.id}
+						class:tree-row-menu={menu?.key === row.key}
 						style={indent(row.depth)}
 						onclick={(e) => onRowClick(e, row)}
 						onkeydown={(e) => onRowKeydown(e, index)}
 						onpointerdown={(e) => onRowPointerDown(e, row)}
+						oncontextmenu={(e) => onContextMenu(e, row.key)}
 						onfocus={() => (focusKey = row.key)}
 					>
 						<ChevronRight size={14} class="tree-chevron {row.expanded ? 'rotate-90' : ''} {row.hasChildren ? '' : 'opacity-40'}" />
@@ -499,7 +694,7 @@
 									<button type="button" class="btn-icon-ghost p-1" title="Rename (F2)" aria-label="Rename {f.name}" onclick={() => startRename(f.id)}>
 										<PencilLine size={14} />
 									</button>
-									<button type="button" class="btn-icon-ghost p-1" title="Move to…" aria-label="Move {f.name} to…" onclick={() => onmoveto(f)}>
+									<button type="button" class="btn-icon-ghost p-1" title="Move to…" aria-label="Move {f.name} to…" onclick={() => onmoveto({ kind: 'folder', id: f.id, parentId: f.parent_id }, f.name)}>
 										<FolderInput size={14} />
 									</button>
 									<button
@@ -507,10 +702,7 @@
 										class="btn-icon-ghost-danger p-1"
 										title="Delete folder"
 										aria-label="Delete {f.name}"
-										onclick={() => {
-											renamingId = null;
-											confirmingId = f.id;
-										}}
+										onclick={() => askDeleteFolder(f.id)}
 									>
 										<Trash2 size={14} />
 									</button>
@@ -533,10 +725,13 @@
 						class:note-row-active={n.id === selectedId}
 						class:tree-row-drop-zone={inDropZone(row)}
 						class:tree-row-dragging={isDragged(row)}
+						class:tree-note-confirm={confirmingNoteId === n.id}
+						class:tree-row-menu={menu?.key === row.key}
 						style={indent(row.depth, true)}
 						onclick={(e) => onRowClick(e, row)}
 						onkeydown={(e) => onRowKeydown(e, index)}
 						onpointerdown={(e) => onRowPointerDown(e, row)}
+						oncontextmenu={(e) => onContextMenu(e, row.key)}
 						onfocus={() => (focusKey = row.key)}
 					>
 						<p class="note-row-title pr-6">{n.title}</p>
@@ -560,6 +755,29 @@
 								<Pin size={13} />
 							{/if}
 						</button>
+						{#if confirmingNoteId === n.id}
+							<!-- svelte-ignore a11y_no_static_element_interactions -->
+							<div class="tree-note-confirm-bar" onkeydown={(e) => onNoteConfirmKeydown(e, row.key)} in:fade={{ duration: 150 }}>
+								<span class="mr-auto font-medium text-red-700 dark:text-red-300">Delete note?</span>
+								<span class="flex shrink-0 gap-1.5">
+									<button
+										type="button"
+										class="btn-danger-sm"
+										aria-label="Confirm delete {n.title}"
+										use:autofocus
+										onclick={() => void confirmDeleteNote(n.id, row.parentId)}>Delete</button
+									>
+									<button
+										type="button"
+										class="btn-secondary-sm"
+										onclick={() => {
+											confirmingNoteId = null;
+											void refocus(row.key);
+										}}>Cancel</button
+									>
+								</span>
+							</div>
+						{/if}
 					</div>
 				{:else}
 					<p
@@ -576,6 +794,12 @@
 		{/each}
 	</div>
 </div>
+
+{#if menu}
+	{#key menu.seq}
+		<ContextMenu x={menu.x} y={menu.y} anchorHeight={menu.anchorHeight} label={menu.label} items={menu.items} onclose={closeMenu} />
+	{/key}
+{/if}
 
 {#if drag}
 	<!-- Floating label that follows the pointer; never a hit-test target. -->

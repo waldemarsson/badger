@@ -438,6 +438,491 @@ async fn seed_notes_if_empty(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
+/// Bilingual sample notes for trying semantic search: Swedish/English pairs that cover the same
+/// topic in different words (budget, release date, onboarding, invoice dispute, backups,
+/// accessibility, summer leave), plus two unrelated decoys. Each body is 100–200 words.
+#[cfg(debug_assertions)]
+const SAMPLE_NOTES: [(&str, &str); 16] = [
+    (
+        "Budget forecast for next year",
+        r##"# Budget forecast for next year
+
+#blue-harbor-labs asked for a cost outlook before the board meeting in December.
+
+## Where the money goes
+
+- Hosting has grown about 12% per quarter since the dashboard launched.
+- Contractor hours are the largest line item and the hardest to predict.
+- Licences for the design tools renew in March, so they land in Q1.
+
+## Assumptions
+
+We expect the same team size, no new office, and a modest increase in travel once the second site opens. If the client adds the reporting module we discussed, development spend rises by roughly a third in the first half of the year.
+
+## Open questions
+
+- [ ] Should we pre-pay hosting for twelve months to get the discount?
+- [ ] Who signs off on contractor overruns above 10%?
+- [ ] Do we split the forecast per quarter or per project?
+
+Send a draft to finance by Friday so they can merge it with the other departments before the review.
+"##,
+    ),
+    (
+        "Ekonomimöte om prognosen",
+        r##"# Ekonomimöte om prognosen
+
+Ekonomichefen vill se en prognos per kvartal i stället för en siffra för hela året. Resekostnaderna sticker ut och behöver förklaras bättre.
+
+## Beslut
+
+- Vi delar upp kalkylen per kvartal och per kund.
+- Driftkostnaden för servrarna redovisas separat från utvecklingstimmarna.
+- Konsulternas timmar får inte överskrida ramen med mer än tio procent utan godkännande.
+
+## Diskussion
+
+Det fanns oro för att licenserna förnyas samtidigt som det nya kontoret öppnar, vilket ger en topp i första kvartalet. Någon föreslog att betala serveravtalet för ett helt år i förväg för att få rabatt, men det binder kapital.
+
+## Att göra
+
+- [ ] Ta fram en ny kalkyl med tre scenarier: låg, normal och hög.
+- [ ] Fråga leverantören om rabatten gäller även vid kvartalsvis betalning.
+- [ ] Boka uppföljning med ledningsgruppen om två veckor.
+"##,
+    ),
+    (
+        "Flytta lanseringsdatumet",
+        r##"# Flytta lanseringsdatumet
+
+Vi kommer inte hinna till den planerade releasen den femtonde. Integrationen mot betalsystemet är inte klar och testmiljön har varit nere i tre dagar.
+
+## Förslag
+
+Skjut lanseringen två veckor framåt och släpp en mindre version först, utan exportfunktionen. Kunden har sagt att de hellre får något stabilt än allt på en gång.
+
+## Risker
+
+- Marknadsavdelningen har redan bokat annonser för den gamla veckan.
+- Supporten behöver utbildning innan de nya flödena går live.
+- Om vi skjuter mer än två veckor krockar det med semestrarna.
+
+## Nästa steg
+
+- [ ] Informera kunden i dag och be om skriftligt godkännande.
+- [ ] Uppdatera tidplanen i projektverktyget.
+- [ ] Be marknad flytta kampanjen eller pausa den.
+- [ ] Sätt upp en extra testmiljö så att vi inte blir stående igen.
+
+Beslut tas på torsdagens styrgruppsmöte.
+"##,
+    ),
+    (
+        "Release slipping two weeks",
+        r##"# Release slipping two weeks
+
+The go-live we promised for mid-month is not realistic. The payment provider integration still fails in staging, and QA lost three days when the test server went down.
+
+## What we tell the client
+
+We ship a smaller first version on time, without the export feature, and deliver the rest a fortnight later. They told us last week that stability matters more than scope.
+
+## Knock-on effects
+
+- Ads were booked for the original week and may need to move.
+- Support staff need a short training session before the new flows reach customers.
+- Pushing further than two weeks runs straight into the summer holidays.
+
+## Actions
+
+- [ ] Email the client today and ask for written approval of the new date.
+- [ ] Update the timeline in the project tracker.
+- [ ] Ask marketing to pause the campaign.
+- [ ] Add a second staging environment so one outage does not block everyone.
+"##,
+    ),
+    (
+        "Onboarding a new developer",
+        r##"# Onboarding a new developer
+
+A short checklist so the first week feels organised instead of chaotic.
+
+## Before day one
+
+- Order the laptop and make sure it arrives two days early.
+- Create accounts for email, chat, the code host and the issue tracker.
+- Pick a buddy who is not on call that week.
+
+## First week
+
+1. Walk through the architecture document together, not alone.
+2. Pair on a small, real bug fix and ship it to production by Wednesday.
+3. Read the incident write-ups from the last six months.
+4. Join every stand-up and one customer call, just to listen.
+
+## Things people usually forget
+
+- Access to the shared password vault.
+- Adding them to the on-call calendar, but not as primary yet.
+- Explaining how we log time against projects and issues.
+
+Check in on Friday: what was confusing, what was missing, and what should change in this list?
+"##,
+    ),
+    (
+        "Introduktion för nyanställda",
+        r##"# Introduktion för nyanställda
+
+Det här är upplägget när någon börjar i teamet, så att första veckan inte blir rörig.
+
+## Innan första dagen
+
+- Beställ dator i god tid och kontrollera att den levereras.
+- Skapa konton för mejl, chatt, kodförrådet och ärendehanteringen.
+- Utse en fadder som inte har jour samma vecka.
+
+## Första veckan
+
+1. Gå igenom systemets uppbyggnad tillsammans med faddern.
+2. Rätta en liten bugg i par och driftsätt den före onsdag.
+3. Läs igenom rapporterna från tidigare driftstörningar.
+4. Var med på dagliga avstämningar och lyssna på ett kundsamtal.
+
+## Sådant som brukar glömmas
+
+- Behörighet till lösenordshanteraren.
+- Att lägga in personen i jourschemat, men inte som första linje än.
+- Hur vi rapporterar tid mot projekt och ärenden.
+
+På fredagen pratar vi om vad som var otydligt och vad som borde ändras i listan.
+"##,
+    ),
+    (
+        "Kunden bestrider fakturan",
+        r##"# Kunden bestrider fakturan
+
+#northwind-studio hörde av sig och menar att oktoberfakturan innehåller timmar som aldrig godkändes. Det gäller främst arbetet med den nya startsidan.
+
+## Vad vi vet
+
+- Timmarna är loggade och kopplade till rätt ärenden.
+- Ändringsbeställningen skickades per mejl men bekräftades aldrig skriftligt.
+- Projektledaren på deras sida har bytts ut under hösten.
+
+## Hur vi går vidare
+
+Vi skickar en specifikation per ärende och datum, tillsammans med mejlet där tillägget beställdes. Om de fortfarande inte vill betala föreslår vi en kreditnota på halva beloppet för att bevara relationen.
+
+## Lärdomar
+
+- Ändringar ska alltid bekräftas skriftligt innan arbetet börjar.
+- Skicka en månadsrapport med timmar så att ingen blir överraskad av fakturan.
+
+- [ ] Ta fram specifikationen senast måndag.
+- [ ] Stäm av med ekonomi innan vi lovar någon kreditering.
+"##,
+    ),
+    (
+        "Invoice dispute follow-up",
+        r##"# Invoice dispute follow-up
+
+The client pushed back on last month's bill, saying several hours were never approved. Most of the disputed time is the homepage redesign.
+
+## Facts
+
+- Every hour is logged against the right issue.
+- The change request went out by email, but nobody on their side confirmed it.
+- Their project manager changed in September and the new one was not briefed.
+
+## Plan
+
+Send an itemised breakdown per issue and date, with the original email attached. If they still refuse, offer a credit note for half the disputed amount to protect the relationship; the account is worth far more than this month.
+
+## Process changes
+
+- Get written confirmation before starting any change request.
+- Send a monthly hours summary so the bill is never a surprise.
+
+- [ ] Prepare the breakdown by Monday.
+- [ ] Check with finance before promising any credit.
+"##,
+    ),
+    (
+        "Backup strategy",
+        r##"# Backup strategy
+
+How we keep customer data safe, and how we prove that we can get it back.
+
+## Schedule
+
+- Nightly full database dump, kept for thirty days.
+- Hourly incremental snapshots, kept for two days.
+- A weekly copy goes to a different cloud region.
+
+## The part people skip
+
+Backups are worthless until someone has restored one. Once a month we pick a random snapshot, restore it into an isolated environment, and run the smoke tests against it. We write down how long it took, because that number is our real recovery time.
+
+## Last drill
+
+The restore worked, but it took ninety minutes instead of the thirty we promise in the contract. Most of the time went to rebuilding search indexes after the data was back.
+
+- [ ] Rebuild indexes in parallel during restore.
+- [ ] Alert when a nightly dump is smaller than the previous one by more than 20%.
+- [ ] Document the restore steps so anyone on call can do it.
+"##,
+    ),
+    (
+        "Återläsningstest av säkerhetskopior",
+        r##"# Återläsningstest av säkerhetskopior
+
+En säkerhetskopia är bara värd något om vi faktiskt kan läsa tillbaka den. Därför övar vi varje månad.
+
+## Så gick det till
+
+Vi valde en slumpvis ögonblicksbild från förra veckan och läste in den i en isolerad miljö. Därefter körde vi de automatiska kontrollerna för att se att inloggning, rapporter och export fungerade.
+
+## Resultat
+
+Återställningen lyckades, men tog en och en halv timme. I avtalet utlovar vi en halvtimme. Det mesta av tiden gick åt till att bygga om sökindexen efter att datan var på plats.
+
+## Förbättringar
+
+- Bygg om indexen parallellt i stället för ett i taget.
+- Larma om nattens dump är betydligt mindre än föregående natt.
+- Skriv en tydlig instruktion så att den som har jour kan göra detta utan hjälp.
+- Spara en kopia i en annan region varje vecka.
+
+Nästa övning sker första måndagen i nästa månad.
+"##,
+    ),
+    (
+        "Accessibility review of the landing page",
+        r##"# Accessibility review of the landing page
+
+Findings from going through the new #northwind-studio/northwind-marketing-site pages with a screen reader and keyboard only.
+
+## Problems
+
+- Grey body text on the light background fails the contrast ratio for normal text.
+- The hero carousel moves on its own and cannot be paused.
+- Several icon buttons have no label, so the screen reader just says "button".
+- Focus disappears after closing the newsletter dialog.
+
+## Quick wins
+
+1. Darken the body text one step in the palette.
+2. Add visible focus outlines instead of removing them in the reset styles.
+3. Give every icon button an accessible name.
+
+## Bigger items
+
+- Replace the carousel with a static hero, or add pause controls.
+- Test forms with error messages read aloud.
+
+We should add an automated check to the build so regressions are caught before review, and repeat the manual pass before each release.
+"##,
+    ),
+    (
+        "Tillgänglighet på webbplatsen",
+        r##"# Tillgänglighet på webbplatsen
+
+Vi gick igenom de nya sidorna med skärmläsare och enbart tangentbord. Här är vad vi hittade.
+
+## Brister
+
+- Den ljusgrå brödtexten har för låg kontrast mot bakgrunden.
+- Bildspelet högst upp rör sig automatiskt och går inte att stoppa.
+- Flera knappar består bara av en ikon och saknar beskrivning, så skärmläsaren säger bara "knapp".
+- Markeringen försvinner när man stänger rutan för nyhetsbrevet.
+
+## Enkla åtgärder
+
+1. Gör brödtexten ett steg mörkare.
+2. Visa tydliga fokusramar i stället för att ta bort dem.
+3. Ge alla ikonknappar en beskrivande text.
+
+## Större förändringar
+
+- Byt bildspelet mot en fast bild, eller lägg till en pausknapp.
+- Testa formulären så att felmeddelanden läses upp.
+
+Vi lägger till en automatisk kontroll i bygget och gör en manuell genomgång före varje release.
+"##,
+    ),
+    (
+        "Semesterplanering i teamet",
+        r##"# Semesterplanering i teamet
+
+Sommaren närmar sig och vi behöver se till att någon alltid finns på plats för kunderna.
+
+## Önskemål hittills
+
+- Anna vill ha veckorna 28 till 31.
+- Erik tar helst ledigt i juni och första veckan i juli.
+- Sara är flexibel men vill ha minst tre veckor i följd.
+
+## Regler
+
+Minst två personer ska vara i tjänst varje vecka, och en av dem måste kunna hantera driftstörningar. Jouren roterar som vanligt men med längre pass, eftersom färre delar på den.
+
+## Kundkontakt
+
+Vi meddelar alla kunder i god tid vilka veckor svarstiderna blir längre. Akuta ärenden går till jourtelefonen.
+
+- [ ] Lägg in allas önskemål i kalendern senast den sista april.
+- [ ] Stäm av överlappningar på nästa teammöte.
+- [ ] Skicka information till kunderna i maj.
+"##,
+    ),
+    (
+        "Summer leave and on-call cover",
+        r##"# Summer leave and on-call cover
+
+Planning holidays so customers always have someone to talk to.
+
+## Requests so far
+
+- Anna wants weeks 28 to 31 off.
+- Erik prefers June plus the first week of July.
+- Sara is flexible but wants at least three weeks in a row.
+
+## Rules
+
+At least two people work every week, and one of them must be able to handle incidents. The on-call rota keeps rotating, but shifts get longer because fewer people share them.
+
+## Telling customers
+
+Everyone gets a note well in advance about which weeks response times will be slower. Urgent issues go to the on-call phone, which is forwarded to whoever holds the rota that week.
+
+- [ ] Put everyone's requests in the shared calendar by the end of April.
+- [ ] Resolve overlaps at the next team meeting.
+- [ ] Send the customer notice in May.
+"##,
+    ),
+    (
+        "Kardemummabullar",
+        r##"# Kardemummabullar
+
+Ett recept som räcker till ungefär trettio bullar, perfekt till fredagsfikat.
+
+## Deg
+
+- 50 g jäst
+- 5 dl mjölk
+- 150 g smör
+- 1 dl socker
+- 2 tsk nystött kardemumma
+- en nypa salt
+- cirka 13 dl vetemjöl
+
+## Fyllning
+
+- 150 g rumsvarmt smör
+- 1 dl socker
+- 1 msk kardemumma
+
+## Gör så här
+
+1. Smält smöret, häll i mjölken och värm till fingervarmt.
+2. Rör ut jästen i lite av vätskan och blanda sedan i resten.
+3. Tillsätt socker, salt, kardemumma och det mesta av mjölet. Knåda i tio minuter.
+4. Låt jäsa under bakduk i en timme.
+5. Kavla ut, bred på fyllningen, vik och skär remsor som du knyter till knutar.
+6. Låt jäsa igen, pensla med ägg och strö över pärlsocker.
+7. Grädda mitt i ugnen på 225 grader i cirka tio minuter.
+"##,
+    ),
+    (
+        "Half marathon training plan",
+        r##"# Half marathon training plan
+
+Twelve weeks from now there is a race, and the goal is simply to finish under two hours without getting injured.
+
+## Weekly structure
+
+- Monday: rest or a gentle walk.
+- Tuesday: intervals, for example six times 800 metres at a hard but controlled pace.
+- Thursday: an easy run of 45 minutes where talking is still possible.
+- Saturday: the long run, adding about one kilometre each week up to 18.
+- Sunday: mobility and strength work for hips and calves.
+
+## Rules for myself
+
+1. Never increase total weekly distance by more than ten percent.
+2. Every fourth week is lighter so the body can recover.
+3. Practise drinking and eating during the long runs, not on race day.
+
+## Gear
+
+The current shoes have more than 700 kilometres on them, so new ones should be bought now and broken in before the longest runs.
+"##,
+    ),
+];
+
+#[cfg(debug_assertions)]
+const SAMPLES_FOLDER: &str = "Samples";
+
+/// Adds [`SAMPLE_NOTES`] to a root `Samples` folder, skipping titles that already exist, so the
+/// Seed button also fills a dev database that already has notes. Returns how many were added.
+#[cfg(debug_assertions)]
+async fn seed_sample_notes(pool: &Pool<Sqlite>) -> Result<u64, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let mut missing = Vec::new();
+    for (title, body) in SAMPLE_NOTES {
+        let exists: Option<i64> =
+            sqlx::query_scalar("SELECT id FROM notes WHERE Title = ? COLLATE NOCASE")
+                .bind(title)
+                .fetch_optional(&mut *tx)
+                .await?;
+        if exists.is_none() {
+            missing.push((title, body));
+        }
+    }
+    if missing.is_empty() {
+        return Ok(0);
+    }
+
+    let existing_folder: Option<i64> = sqlx::query_scalar(
+        "SELECT id FROM folders WHERE ParentId IS NULL AND Name = ? COLLATE NOCASE",
+    )
+    .bind(SAMPLES_FOLDER)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let folder_id =
+        match existing_folder {
+            Some(id) => id,
+            None => sqlx::query_scalar(
+                "INSERT INTO folders (ParentId, Name, Position) VALUES (NULL, ?, 0) RETURNING id",
+            )
+            .bind(SAMPLES_FOLDER)
+            .fetch_one(&mut *tx)
+            .await?,
+        };
+
+    let now = Local::now();
+    for (age, (title, body)) in (1_i64..).zip(&missing) {
+        let ts = (now - Duration::hours(age * 13))
+            .format("%Y-%m-%dT%H:%M:%S%.3f")
+            .to_string();
+        sqlx::query(
+            "INSERT INTO notes (FolderId, Title, Body, Pinned, CreatedAt, UpdatedAt) \
+             VALUES (?, ?, ?, 0, ?, ?)",
+        )
+        .bind(folder_id)
+        .bind(title)
+        .bind(body)
+        .bind(&ts)
+        .bind(&ts)
+        .execute(&mut *tx)
+        .await?;
+    }
+    crate::commands::notes::rebuild_index(&mut tx).await?;
+
+    tx.commit().await?;
+    Ok(missing.len() as u64)
+}
+
 #[cfg(debug_assertions)]
 pub async fn seed_test_data_if_empty(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
     seed_test_data_if_empty_with_anchor(pool, Utc::now().date_naive()).await
@@ -447,7 +932,8 @@ pub async fn seed_test_data_if_empty(pool: &Pool<Sqlite>) -> Result<(), sqlx::Er
 #[cfg(debug_assertions)]
 pub async fn inner_seed_database(pool: &Pool<Sqlite>) -> Result<String, AppError> {
     seed_test_data_if_empty(pool).await?;
-    Ok("Seed complete".to_string())
+    let added = seed_sample_notes(pool).await?;
+    Ok(format!("Seed complete ({added} sample notes added)"))
 }
 
 #[cfg(debug_assertions)]
@@ -665,6 +1151,67 @@ mod tests {
         let pool = crate::test_db().await;
         let result = inner_seed_database(&pool).await;
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "Seed complete");
+        assert_eq!(result.unwrap(), "Seed complete (16 sample notes added)");
+    }
+
+    #[tokio::test]
+    async fn test_sample_notes_fill_a_samples_folder_and_are_indexed() {
+        let pool = crate::test_db().await;
+        sqlx::query("INSERT INTO notes (Title, CreatedAt, UpdatedAt) VALUES ('Mine', 'x', 'x')")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(seed_sample_notes(&pool).await.unwrap(), 16);
+
+        let in_samples: Vec<(String, String)> = sqlx::query_as(
+            "SELECT n.Title, n.Body FROM notes n JOIN folders f ON f.id = n.FolderId \
+             WHERE f.Name = 'Samples' AND f.ParentId IS NULL",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(in_samples.len(), 16);
+        for (title, body) in &in_samples {
+            let words = body.split_whitespace().count();
+            assert!((100..=200).contains(&words), "{title}: {words} words");
+        }
+        let swedish = in_samples
+            .iter()
+            .filter(|(_, body)| body.contains(['å', 'ä', 'ö']))
+            .count();
+        assert!(
+            swedish >= 7,
+            "expected Swedish and English notes, got {swedish} Swedish"
+        );
+        assert_eq!(
+            count(&pool, "notes_fts").await,
+            17,
+            "sample notes are searchable"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sample_notes_skip_existing_titles_and_reseed_idempotently() {
+        let pool = crate::test_db().await;
+        sqlx::query(
+            "INSERT INTO notes (Title, Body, CreatedAt, UpdatedAt) \
+             VALUES ('kardemummabullar', 'my own recipe', 'x', 'x')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(seed_sample_notes(&pool).await.unwrap(), 15);
+        assert_eq!(seed_sample_notes(&pool).await.unwrap(), 0);
+
+        assert_eq!(count(&pool, "notes").await, 16);
+        assert_eq!(count(&pool, "folders").await, 1);
+        let mine: (String,) =
+            sqlx::query_as("SELECT Body FROM notes WHERE Title = 'kardemummabullar'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(mine.0, "my own recipe");
     }
 }

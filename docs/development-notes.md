@@ -34,6 +34,8 @@ The seed workflow populates sample customers, projects, issues, and time entries
 
 Notes and folders are seeded separately: whenever the `notes` table is empty, the seed adds sample notes covering every live-preview element plus a `Projects / Archive` folder pair holding one note. This happens even if the customer seed is skipped because customers already exist, so older dev databases get notes too.
 
+The Seed button (Settings › Dev) also adds 16 bilingual sample notes (100–200 words each) to a root `Samples` folder for trying semantic search: Swedish/English pairs on the same topic in different words (budget, release date, onboarding, invoice dispute, backups, accessibility, summer leave) plus two unrelated decoys. Titles that already exist are skipped, so it works on a dev database that already has notes and is safe to click again.
+
 ## Semantic search tests
 
 Unit tests never download or load the embedding model. Embedding sits behind the `Embedder` trait and tests use `FakeEmbedder` (deterministic vectors, a word-count token counter); `semantic::index::tests::ready_state` builds a ready `SemanticState` around one. Download tests run against a local fake source, not the network.

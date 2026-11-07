@@ -336,13 +336,19 @@ pub(crate) async fn rewrite_tag_refs(
 }
 
 /// Inserts a note without the Rust-side duplicate check; the unique index is the backstop.
-async fn insert_note(title: &str, pool: &Pool<Sqlite>) -> Result<i64, AppError> {
+async fn insert_note(
+    title: &str,
+    folder_id: Option<i64>,
+    pool: &Pool<Sqlite>,
+) -> Result<i64, AppError> {
     let ts = now();
     let mut tx = pool.begin().await?;
+    super::folders::ensure_folder_exists(folder_id, &mut *tx).await?;
     let row: (i64,) = sqlx::query_as(
-        "INSERT INTO notes (Title, Body, Pinned, CreatedAt, UpdatedAt) \
-         VALUES (?, '', 0, ?, ?) RETURNING id",
+        "INSERT INTO notes (FolderId, Title, Body, Pinned, CreatedAt, UpdatedAt) \
+         VALUES (?, ?, '', 0, ?, ?) RETURNING id",
     )
+    .bind(folder_id)
     .bind(title)
     .bind(&ts)
     .bind(&ts)
@@ -376,15 +382,24 @@ async fn get_summary(id: i64, pool: &Pool<Sqlite>) -> Result<NoteSummary, AppErr
     inner_get_note(id, pool).await.map(NoteSummary::from)
 }
 
-/// Creates an empty note titled with the first free `Untitled[ n]`.
-pub async fn inner_create_note(pool: &Pool<Sqlite>) -> Result<Note, AppError> {
+/// Creates an empty note in `folder_id` (root = None) titled with the first free
+/// `Untitled[ n]`.
+pub async fn inner_create_note(
+    folder_id: Option<i64>,
+    pool: &Pool<Sqlite>,
+) -> Result<Note, AppError> {
     let title = first_free_untitled(&lowercase_titles(None, pool).await?);
-    let id = insert_note(&title, pool).await?;
+    let id = insert_note(&title, folder_id, pool).await?;
     inner_get_note(id, pool).await
 }
 
-/// Creates an empty note with `title` (following an unresolved `[[wikilink]]`).
-pub async fn inner_create_note_titled(title: &str, pool: &Pool<Sqlite>) -> Result<Note, AppError> {
+/// Creates an empty note with `title` in `folder_id` (following an unresolved
+/// `[[wikilink]]`; the frontend passes the linking note's folder).
+pub async fn inner_create_note_titled(
+    title: &str,
+    folder_id: Option<i64>,
+    pool: &Pool<Sqlite>,
+) -> Result<Note, AppError> {
     let title = clean_title(title)?;
     if lowercase_titles(None, pool)
         .await?
@@ -392,7 +407,7 @@ pub async fn inner_create_note_titled(title: &str, pool: &Pool<Sqlite>) -> Resul
     {
         return Err(duplicate(&title));
     }
-    let id = insert_note(&title, pool).await?;
+    let id = insert_note(&title, folder_id, pool).await?;
     inner_get_note(id, pool).await
 }
 
@@ -1036,16 +1051,20 @@ pub async fn get_note(id: i64, pool: State<'_, Pool<Sqlite>>) -> Result<Note, Ap
 }
 
 #[tauri::command]
-pub async fn create_note(pool: State<'_, Pool<Sqlite>>) -> Result<Note, AppError> {
-    inner_create_note(pool.inner()).await
+pub async fn create_note(
+    folder_id: Option<i64>,
+    pool: State<'_, Pool<Sqlite>>,
+) -> Result<Note, AppError> {
+    inner_create_note(folder_id, pool.inner()).await
 }
 
 #[tauri::command]
 pub async fn create_note_titled(
     title: String,
+    folder_id: Option<i64>,
     pool: State<'_, Pool<Sqlite>>,
 ) -> Result<Note, AppError> {
-    inner_create_note_titled(&title, pool.inner()).await
+    inner_create_note_titled(&title, folder_id, pool.inner()).await
 }
 
 #[tauri::command]
@@ -1154,7 +1173,7 @@ mod tests {
     }
 
     async fn note_titled(title: &str, pool: &Pool<Sqlite>) -> Note {
-        let n = inner_create_note(pool).await.unwrap();
+        let n = inner_create_note(None, pool).await.unwrap();
         inner_rename_note(n.id, title, pool).await.unwrap();
         inner_get_note(n.id, pool).await.unwrap()
     }
@@ -1162,9 +1181,9 @@ mod tests {
     #[tokio::test]
     async fn create_numbers_untitled_and_refills_gaps() {
         let pool = crate::test_db().await;
-        let a = inner_create_note(&pool).await.unwrap();
-        let b = inner_create_note(&pool).await.unwrap();
-        let c = inner_create_note(&pool).await.unwrap();
+        let a = inner_create_note(None, &pool).await.unwrap();
+        let b = inner_create_note(None, &pool).await.unwrap();
+        let c = inner_create_note(None, &pool).await.unwrap();
         assert_eq!(
             (a.title.as_str(), b.title.as_str(), c.title.as_str()),
             ("Untitled", "Untitled 2", "Untitled 3")
@@ -1176,21 +1195,21 @@ mod tests {
         assert_eq!(a.created_at.len(), "2026-01-01T00:00:00.000".len());
 
         inner_delete_note(b.id, &pool).await.unwrap();
-        let d = inner_create_note(&pool).await.unwrap();
+        let d = inner_create_note(None, &pool).await.unwrap();
         assert_eq!(d.title, "Untitled 2", "first free number is reused");
 
         // case-insensitive: a note named "untitled 4" blocks "Untitled 4"
         inner_rename_note(d.id, "untitled 4", &pool).await.unwrap();
-        let e = inner_create_note(&pool).await.unwrap();
+        let e = inner_create_note(None, &pool).await.unwrap();
         assert_eq!(e.title, "Untitled 2");
-        let f = inner_create_note(&pool).await.unwrap();
+        let f = inner_create_note(None, &pool).await.unwrap();
         assert_eq!(f.title, "Untitled 5");
     }
 
     #[tokio::test]
     async fn rename_validates_title() {
         let pool = crate::test_db().await;
-        let n = inner_create_note(&pool).await.unwrap();
+        let n = inner_create_note(None, &pool).await.unwrap();
         let rename = |t: String| {
             let pool = pool.clone();
             async move { inner_rename_note(n.id, &t, &pool).await }
@@ -1217,7 +1236,7 @@ mod tests {
         let pool = crate::test_db().await;
         note_titled("Åsa", &pool).await;
         note_titled("Plan", &pool).await;
-        let n = inner_create_note(&pool).await.unwrap();
+        let n = inner_create_note(None, &pool).await.unwrap();
 
         assert_eq!(
             err_msg(inner_rename_note(n.id, "åsa", &pool).await),
@@ -1248,7 +1267,7 @@ mod tests {
     async fn unique_violation_race_maps_to_duplicate_message() {
         let pool = crate::test_db().await;
         let a = note_titled("Plan", &pool).await;
-        let b = inner_create_note(&pool).await.unwrap();
+        let b = inner_create_note(None, &pool).await.unwrap();
 
         // Skip the Rust-side check, as a concurrent writer would: the index catches it.
         assert_eq!(
@@ -1256,7 +1275,7 @@ mod tests {
             "A note named \"plan\" already exists"
         );
         assert_eq!(
-            err_msg(insert_note("PLAN", &pool).await),
+            err_msg(insert_note("PLAN", None, &pool).await),
             "A note named \"PLAN\" already exists"
         );
         assert_eq!(inner_get_note(a.id, &pool).await.unwrap().title, "Plan");
@@ -1265,7 +1284,7 @@ mod tests {
     #[tokio::test]
     async fn update_body_bumps_updated_at_and_returns_excerpt() {
         let pool = crate::test_db().await;
-        let n = inner_create_note(&pool).await.unwrap();
+        let n = inner_create_note(None, &pool).await.unwrap();
         set_updated_at(n.id, OLD, &pool).await;
 
         let s = inner_update_note_body(n.id, "\n\n  # Hello *world*\nmore", &pool)
@@ -1283,7 +1302,7 @@ mod tests {
     #[tokio::test]
     async fn identical_body_leaves_updated_at() {
         let pool = crate::test_db().await;
-        let n = inner_create_note(&pool).await.unwrap();
+        let n = inner_create_note(None, &pool).await.unwrap();
         inner_update_note_body(n.id, "same", &pool).await.unwrap();
         set_updated_at(n.id, OLD, &pool).await;
 
@@ -1295,7 +1314,7 @@ mod tests {
     #[tokio::test]
     async fn pinning_does_not_bump_updated_at() {
         let pool = crate::test_db().await;
-        let n = inner_create_note(&pool).await.unwrap();
+        let n = inner_create_note(None, &pool).await.unwrap();
         set_updated_at(n.id, OLD, &pool).await;
 
         let s = inner_set_note_pinned(n.id, true, &pool).await.unwrap();
@@ -1338,7 +1357,7 @@ mod tests {
     #[tokio::test]
     async fn delete_removes_note() {
         let pool = crate::test_db().await;
-        let n = inner_create_note(&pool).await.unwrap();
+        let n = inner_create_note(None, &pool).await.unwrap();
         inner_delete_note(n.id, &pool).await.unwrap();
         assert!(inner_list_notes(&pool).await.unwrap().is_empty());
     }
@@ -1449,7 +1468,7 @@ mod tests {
     #[tokio::test]
     async fn search_follows_create_rename_update_and_delete() {
         let pool = crate::test_db().await;
-        let n = inner_create_note(&pool).await.unwrap();
+        let n = inner_create_note(None, &pool).await.unwrap();
         assert_eq!(hit_ids("untitled", &pool).await, vec![n.id]);
 
         inner_rename_note(n.id, "Kickoff", &pool).await.unwrap();
@@ -1822,21 +1841,21 @@ mod tests {
     async fn create_note_titled_validates_and_rejects_duplicates() {
         let pool = crate::test_db().await;
         note_titled("Åsa", &pool).await;
-        let n = inner_create_note_titled("  New idea ", &pool)
+        let n = inner_create_note_titled("  New idea ", None, &pool)
             .await
             .unwrap();
         assert_eq!((n.title.as_str(), n.body.as_str()), ("New idea", ""));
         assert_eq!(hit_ids("idea", &pool).await, vec![n.id]);
         assert_eq!(
-            err_msg(inner_create_note_titled("åsa", &pool).await),
+            err_msg(inner_create_note_titled("åsa", None, &pool).await),
             "A note named \"åsa\" already exists"
         );
         assert_eq!(
-            err_msg(inner_create_note_titled("a|b", &pool).await),
+            err_msg(inner_create_note_titled("a|b", None, &pool).await),
             "Title can't contain [ ] | # or `"
         );
         assert_eq!(
-            err_msg(inner_create_note_titled(" ", &pool).await),
+            err_msg(inner_create_note_titled(" ", None, &pool).await),
             "Title is required"
         );
     }

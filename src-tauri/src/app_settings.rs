@@ -1,4 +1,4 @@
-use sqlx::{Pool, Sqlite};
+use sqlx::{Pool, Sqlite, SqliteConnection};
 
 use crate::AppError;
 
@@ -15,6 +15,8 @@ const MAX_SHORTCUT_LEN: usize = 64;
 pub const DAILY_TARGET_KEY: &str = "daily_target";
 pub const DEFAULT_DAILY_TARGET: f64 = 8.0;
 const MAX_DAILY_TARGET: f64 = 24.0;
+/// JSON array of the folder ids expanded in the notes tree.
+pub const EXPANDED_FOLDERS_KEY: &str = "notes_expanded_folders";
 
 /// Command palette preferences. Last-used ids may point at deleted rows;
 /// the frontend falls back when they do.
@@ -203,13 +205,84 @@ pub async fn set_daily_target(pool: &Pool<Sqlite>, target: f64) -> Result<f64, A
     Ok(target)
 }
 
+/// Parses a stored id list; anything unparseable reads as empty.
+fn parse_folder_ids(value: Option<String>) -> Vec<i64> {
+    value
+        .and_then(|v| serde_json::from_str::<Vec<i64>>(&v).ok())
+        .unwrap_or_default()
+}
+
+/// `ids` without duplicates and without ids that are not (or no longer) folders, in order.
+async fn existing_folder_ids(
+    ids: Vec<i64>,
+    conn: &mut SqliteConnection,
+) -> Result<Vec<i64>, AppError> {
+    let existing: std::collections::HashSet<i64> = sqlx::query_scalar("SELECT id FROM folders")
+        .fetch_all(conn)
+        .await?
+        .into_iter()
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    Ok(ids
+        .into_iter()
+        .filter(|id| existing.contains(id) && seen.insert(*id))
+        .collect())
+}
+
+/// Returns the expanded notes-tree folder ids; stale ids (deleted folders) are skipped.
+pub async fn get_expanded_folders(pool: &Pool<Sqlite>) -> Result<Vec<i64>, AppError> {
+    let mut conn = pool.acquire().await?;
+    let stored = parse_folder_ids(
+        sqlx::query_scalar::<_, String>("SELECT Value FROM app_settings WHERE Key = ?")
+            .bind(EXPANDED_FOLDERS_KEY)
+            .fetch_optional(&mut *conn)
+            .await?,
+    );
+    existing_folder_ids(stored, &mut conn).await
+}
+
+/// Stores the expanded folder ids (unknown ids and duplicates dropped) and returns them.
+pub async fn set_expanded_folders(
+    pool: &Pool<Sqlite>,
+    ids: Vec<i64>,
+) -> Result<Vec<i64>, AppError> {
+    let mut tx = pool.begin().await?;
+    let ids = existing_folder_ids(ids, &mut tx).await?;
+    let json = serde_json::to_string(&ids).map_err(|e| AppError::Custom(e.to_string()))?;
+    set_value(&mut *tx, EXPANDED_FOLDERS_KEY, &json).await?;
+    tx.commit().await?;
+    Ok(ids)
+}
+
+/// Drops a (deleted) folder id from the stored expanded set; part of the caller's
+/// transaction.
+pub(crate) async fn forget_expanded_folder(
+    id: i64,
+    conn: &mut SqliteConnection,
+) -> Result<(), AppError> {
+    let Some(value) =
+        sqlx::query_scalar::<_, String>("SELECT Value FROM app_settings WHERE Key = ?")
+            .bind(EXPANDED_FOLDERS_KEY)
+            .fetch_optional(&mut *conn)
+            .await?
+    else {
+        return Ok(());
+    };
+    let ids: Vec<i64> = parse_folder_ids(Some(value))
+        .into_iter()
+        .filter(|stored| *stored != id)
+        .collect();
+    let json = serde_json::to_string(&ids).map_err(|e| AppError::Custom(e.to_string()))?;
+    set_value(conn, EXPANDED_FOLDERS_KEY, &json).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        get_daily_target, get_palette_settings, get_startup_backup_retention, get_theme,
-        set_daily_target, set_palette_last_used, set_palette_shortcut,
-        set_startup_backup_retention, set_theme, DEFAULT_DAILY_TARGET, DEFAULT_PALETTE_SHORTCUT,
-        DEFAULT_STARTUP_BACKUP_RETENTION,
+        get_daily_target, get_expanded_folders, get_palette_settings, get_startup_backup_retention,
+        get_theme, set_daily_target, set_expanded_folders, set_palette_last_used,
+        set_palette_shortcut, set_startup_backup_retention, set_theme, DEFAULT_DAILY_TARGET,
+        DEFAULT_PALETTE_SHORTCUT, DEFAULT_STARTUP_BACKUP_RETENTION,
     };
 
     #[tokio::test]
@@ -483,5 +556,86 @@ mod tests {
             .expect("invalid theme row should insert");
 
         assert_eq!(get_theme(&pool).await.expect("theme should load"), "system");
+    }
+    async fn insert_folders(pool: &sqlx::SqlitePool, ids: &[i64]) {
+        for id in ids {
+            sqlx::query("INSERT INTO folders (id, Name) VALUES (?, ?)")
+                .bind(id)
+                .bind(format!("F{id}"))
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn expanded_folders_default_to_empty_and_round_trip() {
+        let pool = crate::test_db().await;
+        insert_folders(&pool, &[1, 2, 3]).await;
+
+        assert_eq!(
+            get_expanded_folders(&pool).await.unwrap(),
+            Vec::<i64>::new()
+        );
+        assert_eq!(
+            set_expanded_folders(&pool, vec![3, 1]).await.unwrap(),
+            vec![3, 1]
+        );
+        assert_eq!(get_expanded_folders(&pool).await.unwrap(), vec![3, 1]);
+        assert_eq!(
+            set_expanded_folders(&pool, vec![]).await.unwrap(),
+            Vec::<i64>::new()
+        );
+        assert_eq!(
+            get_expanded_folders(&pool).await.unwrap(),
+            Vec::<i64>::new()
+        );
+    }
+
+    #[tokio::test]
+    async fn expanded_folders_ignore_stale_unknown_and_duplicate_ids() {
+        let pool = crate::test_db().await;
+        insert_folders(&pool, &[1, 2, 3]).await;
+
+        assert_eq!(
+            set_expanded_folders(&pool, vec![2, 99, 2, 1])
+                .await
+                .unwrap(),
+            vec![2, 1],
+            "unknown and duplicate ids are not stored"
+        );
+        sqlx::query("DELETE FROM folders WHERE id = 2")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            get_expanded_folders(&pool).await.unwrap(),
+            vec![1],
+            "a folder deleted behind the setting's back is skipped"
+        );
+    }
+
+    #[tokio::test]
+    async fn expanded_folders_fall_back_to_empty_for_invalid_stored_value() {
+        let pool = crate::test_db().await;
+        insert_folders(&pool, &[1]).await;
+
+        for stored in ["", "nope", "{\"a\":1}", "[1,\"x\"]"] {
+            sqlx::query(
+                "INSERT INTO app_settings (Key, Value) VALUES (?, ?)
+                 ON CONFLICT(Key) DO UPDATE SET Value = excluded.Value",
+            )
+            .bind(super::EXPANDED_FOLDERS_KEY)
+            .bind(stored)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            assert_eq!(
+                get_expanded_folders(&pool).await.unwrap(),
+                Vec::<i64>::new(),
+                "stored value {stored:?} should read as empty"
+            );
+        }
     }
 }

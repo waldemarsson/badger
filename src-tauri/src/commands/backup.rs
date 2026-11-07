@@ -94,6 +94,9 @@ pub struct BackupNote {
 /// Shown when a restored folder or note points at a folder that is not in the backup.
 const INVALID_FOLDER_REF: &str = "Backup is invalid: a folder or note refers to a missing folder";
 
+/// Shown when restored folders are their own ancestors.
+const FOLDER_CYCLE: &str = "Backup is invalid: folders form a cycle";
+
 /// Shown when two restored notes have titles that differ only in case.
 const DUPLICATE_NOTE_TITLE: &str = "Backup is invalid: duplicate note title";
 
@@ -190,9 +193,11 @@ pub async fn inner_backup_data(pool: &Pool<Sqlite>) -> Result<String, AppError> 
 /// Deletes everything first (customers cascade via FK; todos, travel, notes and
 /// folders are cleared explicitly), then re-inserts the backup in one transaction.
 pub async fn inner_restore_data(json: &str, pool: &Pool<Sqlite>) -> Result<(), AppError> {
-    let data: BackupData = serde_json::from_str(json)
+    let mut data: BackupData = serde_json::from_str(json)
         .map_err(|e| AppError::Custom(format!("Invalid backup JSON: {}", e)))?;
     check_note_titles(&data.notes)?;
+    check_folder_tree(&data.folders)?;
+    suffix_duplicate_folder_names(&mut data.folders);
 
     let mut tx = pool.begin().await?;
 
@@ -269,6 +274,54 @@ fn check_note_titles(notes: &[BackupNote]) -> Result<(), AppError> {
         Ok(())
     } else {
         Err(AppError::Custom(DUPLICATE_NOTE_TITLE.to_string()))
+    }
+}
+
+/// Rejects folders that are their own ancestor (a self-parent included). A parent that is
+/// not in the backup ends the walk; the deferred FK check rejects it at commit.
+fn check_folder_tree(folders: &[BackupFolder]) -> Result<(), AppError> {
+    let parents: std::collections::HashMap<i64, Option<i64>> =
+        folders.iter().map(|f| (f.id, f.parent_id)).collect();
+    for f in folders {
+        // A walk longer than the folder count must have revisited a folder.
+        let mut current = f.parent_id;
+        let mut steps = 0;
+        while let Some(id) = current {
+            steps += 1;
+            if id == f.id || steps > parents.len() {
+                return Err(AppError::Custom(FOLDER_CYCLE.to_string()));
+            }
+            current = parents.get(&id).copied().flatten();
+        }
+    }
+    Ok(())
+}
+
+/// Makes sibling folder names unique case-insensitively, like the folder commands
+/// require: in id order the first folder keeps a name and later duplicates get the
+/// first ` 2`, ` 3`, … suffix free among all of their siblings' names.
+fn suffix_duplicate_folder_names(folders: &mut [BackupFolder]) {
+    use std::collections::{HashMap, HashSet};
+    let mut taken: HashMap<Option<i64>, HashSet<String>> = HashMap::new();
+    for f in folders.iter() {
+        taken
+            .entry(f.parent_id)
+            .or_default()
+            .insert(f.name.to_lowercase());
+    }
+    let mut order: Vec<usize> = (0..folders.len()).collect();
+    order.sort_by_key(|&i| folders[i].id);
+    let mut kept: HashMap<Option<i64>, HashSet<String>> = HashMap::new();
+    for i in order {
+        let f = &mut folders[i];
+        let kept = kept.entry(f.parent_id).or_default();
+        if kept.insert(f.name.to_lowercase()) {
+            continue;
+        }
+        let taken = taken.entry(f.parent_id).or_default();
+        f.name = crate::commands::folders::first_free_name(&f.name, taken);
+        taken.insert(f.name.to_lowercase());
+        kept.insert(f.name.to_lowercase());
     }
 }
 
@@ -577,7 +630,7 @@ mod tests {
                 .map(|h| h.note.id)
                 .collect::<Vec<i64>>()
         };
-        let extra = crate::commands::notes::inner_create_note(&pool)
+        let extra = crate::commands::notes::inner_create_note(None, &pool)
             .await
             .unwrap();
         crate::commands::notes::inner_rename_note(extra.id, "Stray", &pool)
@@ -652,6 +705,96 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(fk.0, 0, "deferral must not leak past the transaction");
+    }
+
+    fn folders_backup(folders: &str) -> String {
+        format!(
+            r#"{{"customers":[],"projects":[],"issues":[],"time_entries":[],"folders":[{folders}],"notes":[]}}"#
+        )
+    }
+
+    #[tokio::test]
+    async fn test_restore_folder_cycle_is_rejected() {
+        let pool = crate::test_db().await;
+        seed_notes(&pool).await;
+        let self_parent = folders_backup(r#"{"id":1,"parent_id":1,"name":"Loop","position":0}"#);
+        let two_cycle = folders_backup(
+            r#"{"id":1,"parent_id":2,"name":"A","position":0},
+               {"id":2,"parent_id":1,"name":"B","position":0}"#,
+        );
+        let into_cycle = folders_backup(
+            r#"{"id":1,"parent_id":null,"name":"Root","position":0},
+               {"id":2,"parent_id":3,"name":"Hangs off","position":0},
+               {"id":3,"parent_id":4,"name":"C","position":0},
+               {"id":4,"parent_id":3,"name":"D","position":0}"#,
+        );
+
+        for json in [self_parent, two_cycle, into_cycle] {
+            let err = inner_restore_data(&json, &pool).await.unwrap_err();
+            assert_eq!(err.to_string(), FOLDER_CYCLE, "{json}");
+        }
+
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM folders")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count.0, 2, "rejected restore leaves the data alone");
+    }
+
+    #[test]
+    fn check_folder_tree_accepts_trees_and_leaves_missing_parents_to_the_fk() {
+        let folder = |id, parent_id| BackupFolder {
+            id,
+            parent_id,
+            name: format!("F{id}"),
+            position: 0,
+        };
+        // Child before parent, a deep chain and a missing parent are not cycles.
+        let ok = vec![
+            folder(1, Some(5)),
+            folder(5, None),
+            folder(2, Some(1)),
+            folder(3, Some(2)),
+            folder(4, Some(99)),
+        ];
+        assert!(check_folder_tree(&ok).is_ok());
+        assert!(check_folder_tree(&[]).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_restore_suffixes_duplicate_sibling_folder_names_in_id_order() {
+        let pool = crate::test_db().await;
+        let json = folders_backup(
+            r#"{"id":3,"parent_id":null,"name":"Work","position":0},
+               {"id":1,"parent_id":null,"name":"work","position":0},
+               {"id":5,"parent_id":null,"name":"Work 2","position":0},
+               {"id":7,"parent_id":3,"name":"Åsa","position":0},
+               {"id":6,"parent_id":3,"name":"ÅSA","position":0},
+               {"id":8,"parent_id":1,"name":"Åsa","position":0},
+               {"id":9,"parent_id":null,"name":"Plain/Name","position":2}"#,
+        );
+
+        inner_restore_data(&json, &pool).await.unwrap();
+
+        let result: BackupData =
+            serde_json::from_str(&inner_backup_data(&pool).await.unwrap()).unwrap();
+        let names: Vec<(i64, Option<i64>, &str, i64)> = result
+            .folders
+            .iter()
+            .map(|f| (f.id, f.parent_id, f.name.as_str(), f.position))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                (1, None, "work", 0),
+                (3, None, "Work 3", 0),
+                (5, None, "Work 2", 0),
+                (6, Some(3), "ÅSA", 0),
+                (7, Some(3), "Åsa 2", 0),
+                (8, Some(1), "Åsa", 0),
+                (9, None, "Plain/Name", 2),
+            ]
+        );
     }
 
     #[tokio::test]

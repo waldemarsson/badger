@@ -11,14 +11,20 @@
 	import { registerFlushHandler } from '#lib/flush-guard.js';
 	import { splitSearchQuery, type LinkFollow } from '#lib/note-links.js';
 	import { linkData } from '#lib/editor/links.js';
-	import type { Backlink, LinkTargets, Note, NoteHit, NoteSummary, RenamedNote, RenderMode, TagSuggestion } from '#lib/types.js';
+	import { buildTree, folderChain, folderPath, moveTargets, noteNeighbour, sameIds, targetFolderId, visibleRows, type DragItem } from '#lib/folders.js';
+	import type { Backlink, Folder, LinkTargets, Note, NoteHit, NoteSummary, RenamedNote, RenderMode, TagSuggestion } from '#lib/types.js';
 	import NoteEditor from '#lib/components/NoteEditor.svelte';
 	import NoteReader from '#lib/components/NoteReader.svelte';
+	import NoteTree from '#lib/components/NoteTree.svelte';
+	import MoveToDialog from '#lib/components/MoveToDialog.svelte';
 	import BookOpen from 'lucide-svelte/icons/book-open';
 	import Check from 'lucide-svelte/icons/check';
 	import ChevronRight from 'lucide-svelte/icons/chevron-right';
 	import CircleAlert from 'lucide-svelte/icons/circle-alert';
 	import Copy from 'lucide-svelte/icons/copy';
+	import FolderIcon from 'lucide-svelte/icons/folder';
+	import FolderInput from 'lucide-svelte/icons/folder-input';
+	import FolderPlus from 'lucide-svelte/icons/folder-plus';
 	import NotebookPen from 'lucide-svelte/icons/notebook-pen';
 	import PencilLine from 'lucide-svelte/icons/pencil-line';
 	import Pin from 'lucide-svelte/icons/pin';
@@ -31,6 +37,7 @@
 	const NOT_FOUND = 'Note not found';
 
 	let notes = $state<NoteSummary[]>([]);
+	let folders = $state<Folder[]>([]);
 	let loaded = $state(false);
 	let loadError = $state('');
 	let loadSeq = 0;
@@ -213,11 +220,12 @@
 	/** An unresolved wikilink was followed: create the note with that title and open it. */
 	async function createTitled(title: string): Promise<void> {
 		actionError = '';
+		const folderId = current?.folder_id ?? null; // the linking note's folder
 		try {
 			const seq = ++selectSeq;
 			await commitTitle(true);
 			await queue.flush();
-			const note = await invoke<Note>('create_note_titled', { title });
+			const note = await invoke<Note>('create_note_titled', { title, folderId });
 			notes = upsertNote(notes, summaryOf(note));
 			if (seq !== selectSeq) return;
 			reading = false; // a new note is for writing
@@ -286,6 +294,7 @@
 	});
 
 	const visible = $derived(searchTerm ? searchRows(notes, hits) : plainRows(notes));
+	const tree = $derived(buildTree(folders, notes));
 	/** The `#tag` terms of the search, shown above the results. */
 	const tagFilter = $derived(splitSearchQuery(searchTerm));
 	const searching = $derived(searchTerm !== '' && hitsFor !== searchTerm && !searchError);
@@ -293,9 +302,13 @@
 	async function load(): Promise<void> {
 		const seq = ++loadSeq;
 		try {
-			const rows = await invoke<NoteSummary[]>('list_notes');
+			const [rows, folderRows] = await Promise.all([invoke<NoteSummary[]>('list_notes'), invoke<Folder[]>('list_folders')]);
 			if (seq !== loadSeq) return;
 			notes = sortNotes(rows);
+			folders = folderRows;
+			// A move or folder delete may have changed the open note's folder.
+			const open = current && rows.find((n) => n.id === current?.id);
+			if (current && open && open.folder_id !== current.folder_id) current = { ...current, folder_id: open.folder_id };
 			loadError = '';
 			loaded = true;
 		} catch (e) {
@@ -308,7 +321,8 @@
 	function applySummary(summary: NoteSummary): void {
 		notes = upsertNote(notes, summary);
 		if (current?.id === summary.id) {
-			current = { ...current, title: summary.title, pinned: summary.pinned, updated_at: summary.updated_at };
+			const { title, pinned, updated_at, folder_id } = summary;
+			current = { ...current, title, pinned, updated_at, folder_id };
 		}
 	}
 
@@ -316,6 +330,171 @@
 	function summaryOf(note: Note): NoteSummary {
 		const { id, folder_id, title, pinned, created_at, updated_at } = note;
 		return { id, folder_id, title, excerpt: '', pinned, created_at, updated_at };
+	}
+
+	// ── Folders ───────────────────────────────────────────────────────────────────
+
+	const EXPANDED_SAVE_MS = 500;
+	let expanded = $state<ReadonlySet<number>>(new Set());
+	let storedExpanded: number[] = []; // what app_settings holds; writes are skipped when unchanged
+	let expandedReady = false; // get_expanded_folders settled: no write may clobber the stored set before
+	let expandedTimer: ReturnType<typeof setTimeout> | undefined;
+	let currentFolderId = $state<number | null>(null); // new notes and folders go here (root: null)
+	let renamingFolderId = $state<number | null>(null);
+
+	/** The current folder, or root once it no longer exists. */
+	const currentFolder = $derived(currentFolderId !== null && tree.byId.has(currentFolderId) ? currentFolderId : null);
+	const currentFolderName = $derived(currentFolder === null ? null : (tree.byId.get(currentFolder)?.name ?? null));
+	const treeRows = $derived(visibleRows(tree, expanded));
+
+	async function loadExpanded(): Promise<void> {
+		try {
+			const ids = await invoke<number[]>('get_expanded_folders');
+			storedExpanded = ids;
+			expanded = new Set([...ids, ...expanded]); // keep folders opened meanwhile
+		} catch {
+			// Starts collapsed; the next toggle writes the set again.
+		}
+		expandedReady = true;
+		if (!sameIds(expanded, storedExpanded)) scheduleSaveExpanded(); // folders opened meanwhile
+	}
+
+	function scheduleSaveExpanded(): void {
+		clearTimeout(expandedTimer);
+		expandedTimer = setTimeout(() => void saveExpanded(), EXPANDED_SAVE_MS);
+	}
+
+	function setExpanded(ids: number[], open: boolean): void {
+		const next = new Set(open ? [...expanded, ...ids] : [...expanded].filter((id) => !ids.includes(id)));
+		if (sameIds(next, expanded)) return;
+		expanded = next;
+		scheduleSaveExpanded();
+	}
+
+	async function saveExpanded(): Promise<void> {
+		clearTimeout(expandedTimer);
+		expandedTimer = undefined;
+		if (!loaded || !expandedReady) return; // loadExpanded schedules the write once it settles
+		const ids = [...expanded].filter((id) => tree.byId.has(id)).sort((a, b) => a - b);
+		if (sameIds(ids, storedExpanded)) return;
+		const previous = storedExpanded;
+		storedExpanded = ids;
+		try {
+			storedExpanded = await invoke<number[]>('set_expanded_folders', { ids });
+		} catch {
+			storedExpanded = previous; // best effort: the next change retries
+		}
+	}
+
+	// The open note's ancestors always expand (once per note and folder chain, so collapsing
+	// them by hand sticks until the note or its place changes).
+	let revealed = '';
+	$effect(() => {
+		const chain = current ? folderChain(tree.byId, current.folder_id) : [];
+		const key = `${current?.id}:${chain.join(',')}`;
+		if (key === revealed) return;
+		revealed = key;
+		if (chain.length) untrack(() => setExpanded(chain, true));
+	});
+
+	function toggleFolder(id: number): void {
+		currentFolderId = id;
+		setExpanded([id], !expanded.has(id));
+	}
+
+	/** Creates "New folder" (Rust picks a free name) and opens it in rename mode. */
+	async function createFolder(parentId: number | null): Promise<void> {
+		actionError = '';
+		query = ''; // the tree, not search hits, shows the new folder
+		try {
+			const folder = await invoke<Folder>('create_folder', { name: null, parentId });
+			folders = [...folders.filter((f) => f.id !== folder.id), folder];
+			if (parentId !== null) setExpanded(folderChain(tree.byId, parentId), true);
+			renamingFolderId = folder.id;
+		} catch (e) {
+			actionError = String(e);
+		}
+	}
+
+	async function renameFolder(id: number, name: string): Promise<void> {
+		const folder = await invoke<Folder>('rename_folder', { id, name });
+		folders = folders.map((f) => (f.id === id ? folder : f));
+	}
+
+	/** Deletes a folder; Rust moves its notes and folders to its parent. */
+	async function deleteFolder(id: number): Promise<void> {
+		const parent = tree.byId.get(id)?.parent_id ?? null;
+		actionError = '';
+		try {
+			await queue.flush(); // no save in flight can report a note's old folder afterwards
+			await invoke('delete_folder', { id });
+		} catch (e) {
+			actionError = String(e);
+			await load();
+			return;
+		}
+		if (currentFolderId === id) currentFolderId = parent;
+		storedExpanded = storedExpanded.filter((x) => x !== id); // Rust dropped it from the stored set
+		setExpanded([id], false);
+		await load();
+	}
+
+	/** Drag and drop or Move to…: moves locally at once, then persists and reloads. */
+	async function moveItem(item: DragItem, folderId: number | null): Promise<void> {
+		actionError = '';
+		await queue.flush(); // a save in flight would report the note's old folder
+		if (item.kind === 'note') {
+			notes = notes.map((n) => (n.id === item.id ? { ...n, folder_id: folderId } : n));
+			if (current?.id === item.id) {
+				current = { ...current, folder_id: folderId };
+				currentFolderId = folderId;
+			}
+		} else {
+			folders = folders.map((f) => (f.id === item.id ? { ...f, parent_id: folderId } : f));
+		}
+		try {
+			if (item.kind === 'note') applySummary(await invoke<NoteSummary>('move_note', { id: item.id, folderId }));
+			else await invoke<Folder>('move_folder', { id: item.id, parentId: folderId });
+		} catch (e) {
+			actionError = String(e);
+		}
+		await load();
+	}
+
+	// "Move to…" picker (editor header for the open note, folder row actions for folders).
+	let moving = $state<{ item: DragItem; name: string } | null>(null);
+	let moveReturnFocus: HTMLElement | null = null;
+
+	function openMove(item: DragItem, name: string): void {
+		moveReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+		moving = { item, name };
+	}
+
+	/** Where the item being moved lives now (root for none or an unknown folder). */
+	const movingFrom = $derived.by(() => {
+		if (!moving) return null;
+		const id = moving.item.kind === 'note' ? moving.item.folderId : moving.item.parentId;
+		return id !== null && tree.byId.has(id) ? id : null;
+	});
+	const moveChoices = $derived(
+		moving
+			? moveTargets(tree, moving.item.kind === 'folder' ? moving.item.id : null).filter(
+					(t) => targetFolderId(String(t.value)) !== movingFrom
+				)
+			: []
+	);
+
+	async function closeMove(): Promise<void> {
+		moving = null;
+		await tick();
+		if (moveReturnFocus?.isConnected) moveReturnFocus.focus();
+		moveReturnFocus = null;
+	}
+
+	function pickMove(folderId: number | null): void {
+		const item = moving?.item;
+		void closeMove();
+		if (item) void moveItem(item, folderId);
 	}
 
 	// ── Selection (lives in ?id=) ─────────────────────────────────────────────────
@@ -335,6 +514,7 @@
 		queue.track(note.id, note.body);
 		selectedId = note.id;
 		current = note;
+		currentFolderId = note.folder_id; // opening a note makes its folder current
 		titleDraft = note.title;
 		titleError = ''; // switching away discards an invalid title
 		lastFailedTitle = null;
@@ -387,8 +567,9 @@
 		}
 	}
 
+	/** Focusable list rows: search hits, or the tree's visible rows. */
 	function rowElements(): HTMLElement[] {
-		return [...(listEl?.querySelectorAll<HTMLElement>('.note-row') ?? [])];
+		return [...(listEl?.querySelectorAll<HTMLElement>('[data-row]') ?? [])];
 	}
 
 	function onRowKeydown(e: KeyboardEvent, id: number): void {
@@ -412,9 +593,12 @@
 		} else if (e.key === 'ArrowDown') {
 			e.preventDefault();
 			rowElements()[0]?.focus();
-		} else if (e.key === 'Enter' && visible.length && !searching) {
+		} else if (e.key === 'Enter' && !searching) {
+			// Open the top match, or the first visible note of the tree.
+			const first = searchTerm ? visible[0]?.note.id : treeRows.find((r) => r.kind === 'note')?.note.id;
+			if (first === undefined) return;
 			e.preventDefault();
-			void select(visible[0].note.id); // open the top match
+			void select(first);
 		}
 	}
 
@@ -448,7 +632,7 @@
 			const seq = ++selectSeq;
 			await commitTitle(true); // ⌘N while renaming keeps the rename; an invalid title is discarded
 			await queue.flush();
-			const note = await invoke<Note>('create_note');
+			const note = await invoke<Note>('create_note', { folderId: currentFolder });
 			notes = upsertNote(notes, summaryOf(note));
 			query = '';
 			if (seq === selectSeq) {
@@ -557,7 +741,7 @@
 	async function deleteCurrent(): Promise<void> {
 		if (!current) return;
 		const id = current.id;
-		const next = neighborAfterRemoval(visible.map((r) => r.note.id), id);
+		const next = searchTerm ? neighborAfterRemoval(visible.map((r) => r.note.id), id) : noteNeighbour(tree, id);
 		confirmingDelete = false;
 		actionError = '';
 		queue.pause(); // no autosave races the delete; the body stays dirty in case it fails
@@ -636,6 +820,7 @@
 
 	onMount(() => {
 		void load();
+		void loadExpanded();
 		void refreshLinks();
 		// Title and body are written concurrently so a slow rename can't eat the quit budget.
 		const unregister = registerFlushHandler(async () => {
@@ -645,6 +830,7 @@
 		return () => {
 			unregister();
 			clearTimeout(copiedTimer);
+			if (expandedTimer !== undefined) void saveExpanded();
 			void queue.flush();
 		};
 	});
@@ -721,7 +907,22 @@
 							</button>
 						{/if}
 					</label>
-					<button type="button" class="btn-icon-secondary" title="New note (⌘N)" aria-label="New note" onclick={requestCreate}>
+					<button
+						type="button"
+						class="btn-icon-secondary"
+						title={currentFolderName ? `New folder in “${currentFolderName}”` : 'New folder'}
+						aria-label="New folder"
+						onclick={() => void createFolder(currentFolder)}
+					>
+						<FolderPlus size={16} />
+					</button>
+					<button
+						type="button"
+						class="btn-icon-secondary"
+						title={currentFolderName ? `New note in “${currentFolderName}” (⌘N)` : 'New note (⌘N)'}
+						aria-label="New note"
+						onclick={requestCreate}
+					>
 						<Plus size={16} />
 					</button>
 				</div>
@@ -730,77 +931,102 @@
 					<div class="px-3 pt-3">{@render dismissible(actionError, () => (actionError = ''))}</div>
 				{/if}
 
-				<div bind:this={listEl} class="min-h-0 flex-1 overflow-y-auto p-2" role="list" aria-label="Notes">
+				<div bind:this={listEl} class="min-h-0 flex-1 overflow-y-auto p-2">
 					{#if !loaded && !loadError}
 						<p class="px-3 py-6 text-center text-sm text-slate-400 dark:text-neutral-500">Loading…</p>
-					{:else if notes.length === 0}
+					{:else if notes.length === 0 && folders.length === 0}
 						<div class="notes-empty" in:fade={{ duration: 150 }}>
 							<NotebookPen size={22} class="text-slate-300 dark:text-neutral-600" />
 							<p class="font-medium text-slate-600 dark:text-neutral-300">No notes yet</p>
 							<p class="text-xs">Create one to start writing.</p>
 						</div>
-					{:else if searchError}
-						<div class="notes-inline-error mx-1" role="alert">
-							<CircleAlert size={14} class="mt-0.5 shrink-0" />
-							<span class="min-w-0 flex-1">Search failed: {searchError}</span>
-						</div>
-					{:else if visible.length === 0 && !searching}
-						<div class="notes-empty" in:fade={{ duration: 150 }}>
-							<Search size={20} class="text-slate-300 dark:text-neutral-600" />
-							<p class="font-medium text-slate-600 dark:text-neutral-300">No matches</p>
-							{#if tagFilter.tags.length && !tagFilter.text}
-								<p class="text-xs">No notes are tagged {tagFilter.tags.map((t) => `#${t}`).join(' and ')}.</p>
-							{:else}
-								<p class="text-xs">Nothing matches “{searchTerm}”.</p>
-							{/if}
-						</div>
-					{:else if tagFilter.tags.length && visible.length}
-						<p class="notes-filter-hint" in:fade={{ duration: 150 }}>
-							<span>{visible.length} {visible.length === 1 ? 'note' : 'notes'} tagged</span>
-							{#each tagFilter.tags as tag (tag)}<span class="note-tag">#{tag}</span>{/each}
-							{#if tagFilter.text}<span>with “{tagFilter.text}”</span>{/if}
-						</p>
-					{/if}
-					{#each visible as { note: n, title, snippet } (n.id)}
-						<div
-							role="listitem"
-							class="group relative"
-							animate:flip={{ duration: 180 }}
-						>
-							<div
-								role="button"
-								tabindex="0"
-								class="note-row"
-								class:note-row-active={n.id === selectedId}
-								aria-current={n.id === selectedId ? 'true' : undefined}
-								onclick={() => void select(n.id)}
-								onkeydown={(e) => onRowKeydown(e, n.id)}
-							>
-								<p class="note-row-title pr-6">{@render marked(title)}</p>
-								{#if snippet}
-									<p class="note-row-snippet">{@render marked(snippet)}</p>
-								{:else if n.excerpt}
-									<p class="note-row-excerpt">{n.excerpt}</p>
+					{:else if !searchTerm}
+						<NoteTree
+							{tree}
+							{expanded}
+							{selectedId}
+							currentFolderId={currentFolder}
+							bind:renamingId={renamingFolderId}
+							scrollEl={listEl}
+							onopen={(id) => void select(id)}
+							ontoggle={toggleFolder}
+							onexpand={setExpanded}
+							oncurrent={(id) => (currentFolderId = id)}
+							onpin={(n) => void togglePin(n)}
+							onnewfolder={(id) => void createFolder(id)}
+							onrename={renameFolder}
+							ondelete={deleteFolder}
+							onmoveto={(f) => openMove({ kind: 'folder', id: f.id, parentId: f.parent_id }, f.name)}
+							onmove={(item, folderId) => void moveItem(item, folderId)}
+							onexit={() => searchInput?.focus()}
+						/>
+					{:else}
+						{#if searchError}
+							<div class="notes-inline-error mx-1" role="alert">
+								<CircleAlert size={14} class="mt-0.5 shrink-0" />
+								<span class="min-w-0 flex-1">Search failed: {searchError}</span>
+							</div>
+						{:else if visible.length === 0 && !searching}
+							<div class="notes-empty" in:fade={{ duration: 150 }}>
+								<Search size={20} class="text-slate-300 dark:text-neutral-600" />
+								<p class="font-medium text-slate-600 dark:text-neutral-300">No matches</p>
+								{#if tagFilter.tags.length && !tagFilter.text}
+									<p class="text-xs">No notes are tagged {tagFilter.tags.map((t) => `#${t}`).join(' and ')}.</p>
+								{:else}
+									<p class="text-xs">Nothing matches “{searchTerm}”.</p>
 								{/if}
 							</div>
-							<button
-								type="button"
-								class="note-row-pin"
-								class:note-row-pin-on={n.pinned}
-								title={n.pinned ? 'Unpin' : 'Pin to top'}
-								aria-label={n.pinned ? `Unpin ${n.title}` : `Pin ${n.title}`}
-								onclick={() => void togglePin(n)}
-							>
-								{#if n.pinned}
-									<!-- Pinned: a filled pin; hovering the row offers unpin. -->
-									<Pin size={13} class="fill-current group-hover:hidden" />
-									<PinOff size={13} class="hidden group-hover:block" />
-								{:else}
-									<Pin size={13} />
-								{/if}
-							</button>
+						{:else if tagFilter.tags.length && visible.length}
+							<p class="notes-filter-hint" in:fade={{ duration: 150 }}>
+								<span>{visible.length} {visible.length === 1 ? 'note' : 'notes'} tagged</span>
+								{#each tagFilter.tags as tag (tag)}<span class="note-tag">#{tag}</span>{/each}
+								{#if tagFilter.text}<span>with “{tagFilter.text}”</span>{/if}
+							</p>
+						{/if}
+						<div role="list" aria-label="Search results">
+							{#each visible as { note: n, title, snippet } (n.id)}
+								{@const path = folderPath(tree.byId, n.folder_id)}
+								<div role="listitem" class="group relative" animate:flip={{ duration: 180 }}>
+									<div
+										role="button"
+										tabindex="0"
+										class="note-row"
+										class:note-row-active={n.id === selectedId}
+										aria-current={n.id === selectedId ? 'true' : undefined}
+										data-row
+										onclick={() => void select(n.id)}
+										onkeydown={(e) => onRowKeydown(e, n.id)}
+									>
+										<p class="note-row-title pr-6">{@render marked(title)}</p>
+										{#if path}
+											<p class="note-row-path"><FolderIcon size={11} class="shrink-0" /><span class="truncate">{path}</span></p>
+										{/if}
+										{#if snippet}
+											<p class="note-row-snippet">{@render marked(snippet)}</p>
+										{:else if n.excerpt}
+											<p class="note-row-excerpt">{n.excerpt}</p>
+										{/if}
+									</div>
+									<button
+										type="button"
+										class="note-row-pin"
+										class:note-row-pin-on={n.pinned}
+										title={n.pinned ? 'Unpin' : 'Pin to top'}
+										aria-label={n.pinned ? `Unpin ${n.title}` : `Pin ${n.title}`}
+										onclick={() => void togglePin(n)}
+									>
+										{#if n.pinned}
+											<!-- Pinned: a filled pin; hovering the row offers unpin. -->
+											<Pin size={13} class="fill-current group-hover:hidden" />
+											<PinOff size={13} class="hidden group-hover:block" />
+										{:else}
+											<Pin size={13} />
+										{/if}
+									</button>
+								</div>
+							{/each}
 						</div>
-					{/each}
+					{/if}
 				</div>
 			</aside>
 
@@ -870,6 +1096,15 @@
 										onclick={() => void toggleReading()}
 									>
 										{#if reading}<PencilLine size={16} />{:else}<BookOpen size={16} />{/if}
+									</button>
+									<button
+										type="button"
+										class="btn-icon-ghost"
+										title={current.folder_id !== null && tree.byId.has(current.folder_id) ? `Move to… (in ${folderPath(tree.byId, current.folder_id)})` : 'Move to…'}
+										aria-label="Move note to…"
+										onclick={() => current && openMove({ kind: 'note', id: current.id, folderId: current.folder_id }, current.title)}
+									>
+										<FolderInput size={16} />
 									</button>
 									<button
 										type="button"
@@ -977,3 +1212,13 @@
 		</div>
 	</div>
 </div>
+
+{#if moving}
+	<MoveToDialog
+		name={moving.name}
+		location={movingFrom === null ? '' : folderPath(tree.byId, movingFrom)}
+		targets={moveChoices}
+		onpick={pickMove}
+		onclose={() => void closeMove()}
+	/>
+{/if}

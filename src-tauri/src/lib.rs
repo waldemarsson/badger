@@ -193,6 +193,12 @@ pub fn run() {
                     commands::notes::list_tag_suggestions,
                     commands::notes::get_link_targets,
                     commands::notes::list_backlinks,
+                    commands::folders::list_folders,
+                    commands::folders::create_folder,
+                    commands::folders::rename_folder,
+                    commands::folders::move_folder,
+                    commands::folders::delete_folder,
+                    commands::folders::move_note,
                     commands::markdown::render_markdown,
                     // Backup (BE-07)
                     commands::backup::backup_data_to_file,
@@ -209,6 +215,8 @@ pub fn run() {
                     commands::settings::set_palette_last_used,
                     commands::settings::get_daily_target,
                     commands::settings::set_daily_target,
+                    commands::settings::get_expanded_folders,
+                    commands::settings::set_expanded_folders,
                     // Quit/close flush guard
                     flush_guard::flush_done,
                     // Dev-only
@@ -271,6 +279,12 @@ pub fn run() {
                     commands::notes::list_tag_suggestions,
                     commands::notes::get_link_targets,
                     commands::notes::list_backlinks,
+                    commands::folders::list_folders,
+                    commands::folders::create_folder,
+                    commands::folders::rename_folder,
+                    commands::folders::move_folder,
+                    commands::folders::delete_folder,
+                    commands::folders::move_note,
                     commands::markdown::render_markdown,
                     // Backup (BE-07)
                     commands::backup::backup_data_to_file,
@@ -287,6 +301,8 @@ pub fn run() {
                     commands::settings::set_palette_last_used,
                     commands::settings::get_daily_target,
                     commands::settings::set_daily_target,
+                    commands::settings::get_expanded_folders,
+                    commands::settings::set_expanded_folders,
                     // Quit/close flush guard
                     flush_guard::flush_done,
                 ]

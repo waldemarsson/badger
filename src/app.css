@@ -582,6 +582,128 @@
     @apply text-amber-500 opacity-100 hover:text-amber-600 dark:text-amber-400 dark:hover:text-amber-300;
   }
 
+  /* Folder path under a search hit ("Projects / Archive"). */
+  .note-row-path {
+    @apply mt-0.5 flex min-w-0 items-center gap-1 text-xs text-slate-400 dark:text-neutral-500;
+  }
+
+  /* Notes folder tree (NoteTree.svelte): one flat list of rows, indented per level. */
+  .tree {
+    @apply min-h-full;
+  }
+
+  .tree-root {
+    @apply mb-0.5 flex w-full items-center rounded-lg px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-400 transition-colors duration-150 hover:text-slate-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-400 dark:text-neutral-500 dark:hover:text-neutral-300;
+  }
+
+  /* Root is the current folder (like .tree-folder-icon-current on folder rows). */
+  .tree-root-current {
+    @apply text-sky-600 hover:text-sky-700 dark:text-sky-400 dark:hover:text-sky-300;
+  }
+
+  .tree-row {
+    @apply relative w-full cursor-pointer select-none rounded-lg pr-2 text-left transition duration-150 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-400 dark:hover:bg-neutral-800/60;
+  }
+
+  .tree-folder {
+    @apply flex min-h-8 flex-wrap items-center py-1;
+  }
+
+  /* Inline rename keeps the row height (24px input in a 32px row). */
+  .tree-folder .name-input {
+    @apply py-0 leading-[22px];
+  }
+
+  .tree-note {
+    @apply block py-2;
+  }
+
+  /* Chevron and icon stay on the first line (rename errors and the delete confirm add lines). */
+  .tree-chevron {
+    @apply mt-[5px] w-3.5 shrink-0 self-start text-slate-400 transition-transform duration-150 dark:text-neutral-500;
+  }
+
+  .tree-folder-icon {
+    @apply ml-1 mr-1.5 mt-[4.5px] inline-flex shrink-0 self-start text-slate-400 dark:text-neutral-500;
+  }
+
+  /* The current folder (where ⌘N and the folder-plus button create). */
+  .tree-folder-icon-current {
+    @apply text-sky-500 dark:text-sky-400;
+  }
+
+  .tree-folder-name {
+    @apply min-w-0 flex-1 truncate text-sm font-medium text-slate-700 dark:text-neutral-200;
+  }
+
+  .tree-row-actions {
+    @apply ml-1 hidden shrink-0 items-center gap-0.5 group-focus-within:flex group-hover:flex;
+  }
+
+  body.is-dragging .tree-row .tree-row-actions {
+    @apply hidden;
+  }
+
+  body.is-dragging .tree-row .note-row-pin:not(.note-row-pin-on) {
+    @apply opacity-0;
+  }
+
+  .tree-folder-confirm {
+    @apply bg-red-50 hover:bg-red-50 dark:bg-red-500/10 dark:hover:bg-red-500/10;
+  }
+
+  /* Second line under the folder name: "Delete? Contents move to …" [Delete] [Cancel]. */
+  .tree-folder-confirm-bar {
+    @apply flex basis-full flex-wrap items-center justify-end gap-x-2 gap-y-1.5 pb-1 pl-[39px] pt-1.5 text-xs text-slate-600 dark:text-neutral-300;
+  }
+
+  .tree-empty {
+    @apply select-none py-1 pr-2 text-xs italic text-slate-400 dark:text-neutral-500;
+  }
+
+  /* Drag and drop: the valid target folder (or root) and the rows inside it. */
+  .tree-row-drop {
+    @apply bg-sky-50 text-sky-700 ring-1 ring-inset ring-sky-300 hover:bg-sky-50 dark:bg-sky-500/15 dark:text-sky-300 dark:ring-sky-500/40 dark:hover:bg-sky-500/15;
+  }
+
+  .tree-row-drop .tree-folder-name {
+    @apply text-sky-800 dark:text-sky-200;
+  }
+
+  .tree-row-drop .tree-folder-icon {
+    @apply text-sky-500 dark:text-sky-400;
+  }
+
+  .tree-row-drop-zone {
+    @apply rounded-none bg-sky-50/60 hover:bg-sky-50/60 dark:bg-sky-500/5 dark:hover:bg-sky-500/5;
+  }
+
+  .tree-row-dragging {
+    @apply opacity-40;
+  }
+
+  /* While dragging, only valid drop targets light up. */
+  body.is-dragging .tree-row:hover:not(.tree-row-drop, .tree-row-drop-zone, .note-row-active) {
+    background-color: transparent;
+  }
+
+  /* The folder a drop just moved something into. */
+  .tree-row-flash {
+    animation: tree-flash 600ms ease-out;
+  }
+
+  .dark .tree-row-flash {
+    animation-name: tree-flash-dark;
+  }
+
+  .tree-drag-ghost {
+    @apply flex flex-col gap-0.5 rounded-lg bg-white px-2.5 py-1.5 text-sm font-medium text-slate-800 shadow-lg ring-1 ring-slate-200 dark:bg-neutral-800 dark:text-neutral-100 dark:shadow-black/40 dark:ring-neutral-700;
+  }
+
+  .tree-drag-ghost-target {
+    @apply text-xs font-normal text-sky-600 dark:text-sky-400;
+  }
+
   .note-title-input {
     @apply -mx-2 min-w-0 flex-1 rounded-lg border border-transparent bg-transparent px-2 py-0.5 text-xl font-semibold tracking-tight text-slate-950 outline-none transition placeholder:text-slate-300 hover:border-slate-200 focus:border-sky-300 focus:ring-4 focus:ring-sky-100 dark:text-neutral-100 dark:placeholder:text-neutral-600 dark:hover:border-neutral-700 dark:focus:border-sky-500/60 dark:focus:ring-sky-500/10;
   }
@@ -934,5 +1056,17 @@
   }
   to {
     transform: rotate(2.5deg) scale(1.04);
+  }
+}
+
+@keyframes tree-flash {
+  from {
+    background-color: rgb(186 230 253 / 0.8);
+  }
+}
+
+@keyframes tree-flash-dark {
+  from {
+    background-color: rgb(14 165 233 / 0.3);
   }
 }

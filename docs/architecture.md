@@ -20,7 +20,7 @@ The main user-facing areas are:
 - `/todos` — kanban board of standalone todos (drag cards between status columns), optionally linked to an issue
 - `/reports/weekly` — ISO-week report view
 - `/reports/monthly` — month report view with expandable grouping, the month's travel, and a copy-month text export
-- `/notes` — note list (pinned first, then most recently updated; search via the `search_notes` command, ranked by relevance with highlighted title and snippet) on the left and a markdown live-preview editor on the right; the selected note lives in the URL (`?id=12`)
+- `/notes` — a folder tree of notes on the left (folders first A–Z, then notes pinned first, then most recently updated; see Notes folders) that becomes a flat list of ranked hits with highlighted title, snippet and folder path while searching via the `search_notes` command, and a markdown live-preview editor on the right; the selected note lives in the URL (`?id=12`)
 - `/travel` — month-scoped list of business trips (date, from/to, optional km and kr) with inline add, edit, repeat, and delete
 - `/settings` — customer and project management (cards with inline add, rename, default, and delete), preferences (System/Light/Dark appearance), backup/restore, and dev-only seed tooling
 
@@ -37,12 +37,13 @@ The backend is organized around command modules:
 - `issues` and `time_entries` for core timesheet operations
 - `todos` for standalone todos and their optional issue link
 - `travel` for business trips, listed per month
+- `folders` for note folders (`list_folders`, `create_folder`, `rename_folder`, `move_folder`, `delete_folder`) and `move_note`; see Notes folders
 - `notes` for markdown notes (create, rename, body save, pin, delete), the list excerpt, which is computed in Rust, full-text search (`search_notes`, `search_index_stats`, `rebuild_search_index`), and links (`create_note_titled`, `list_tag_suggestions`, `get_link_targets`, `list_backlinks`)
 - `markdown` for `render_markdown`, which turns note markdown into safe HTML (read view, copy as HTML)
 - `note_links` (a top-level module, not a command module) for the `#tag` / `[[wikilink]]` extractor and entity slugs; see Notes links
 - `reports` for weekly and monthly rollups
 - `backup` for JSON export and import
-- `settings` for app preferences (theme, daily hours target, command palette shortcut and last-used project/issue) stored in `app_settings`
+- `settings` for app preferences (theme, daily hours target, command palette shortcut and last-used project/issue, expanded note folders) stored in `app_settings`
 - `startup_backup` for automatic daily backups on application startup
 - `flush_guard` for the quit/close guard (see Notes editor)
 - `dev_seed` for debug-only sample data
@@ -111,6 +112,14 @@ Renames rewrite bodies in the same transaction: a note rename retargets `[[Old]]
 
 `search_notes` treats each `#term` in the query as a tag filter (AND, prefix-nested) and the rest as the text search; a tag-only query lists every tagged note (the note list and ⌘K both). In the editor, resolution data (note titles, entity names, todo status) sits in a CodeMirror `StateField` the page fills from `get_link_targets` and `list_tag_suggestions` (`src/lib/editor/links.ts`); ⌘-click follows (a wikilink opens its note, creating it first through `create_note_titled` when unresolved; a tag or chip filters the list). The read view follows on a plain click through `data-tag` / `data-note` attributes on the rendered anchors, checked before the external-URL path. A collapsible "Linked mentions" strip under the note lists the notes linking to it (`list_backlinks`, one-line snippet, no unlinked mentions).
 
+### Notes folders
+
+Rules and data semantics (name validation, suffixing on clashes, delete-to-parent, restore) are in `docs/data-and-backup.md`. Rust owns them in `src-tauri/src/commands/folders.rs`; the frontend only builds the view.
+
+Pure tree logic lives in `src/lib/folders.ts` (tested in `tests/folders.test.mjs`): building the tree from the flat `list_folders` and note summaries, ordering, flattening to the visible rows, folder paths, descendant sets, valid move targets, the keyboard action table and drag-and-drop helpers. `src/lib/components/NoteTree.svelte` renders one flat keyed `{#each}` over the visible rows (keys `f:<id>`/`n:<id>`, indentation per row, so `animate:flip` works across levels), with ARIA `tree` roles and keyboard navigation (↑/↓, →/←, Enter/Space, F2 to rename). Drag and drop uses pointer events with a 5 px threshold, like the todos board, not HTML5 DnD; drop targets are found with `elementFromPoint` and `[data-drop-folder]`. A collapsed folder under the pointer auto-expands after 600 ms (reverted if the drag is cancelled), the list auto-scrolls near its edges, Esc cancels, and dragging is off while searching. `src/lib/components/MoveToDialog.svelte` is the keyboard alternative: a folder picker (every valid destination by full path, excluding the item's own subtree) opened from the editor header or a folder row. The notes page owns the current folder (the last clicked folder or the open note's folder): ⌘N, `+` and `create_note_titled` create there, and the list reloads from the backend after every move or delete.
+
+The expanded set is persisted through `get_expanded_folders`/`set_expanded_folders` (debounced; ancestors of the open note always expand).
+
 ## Storage model
 
 TimeTracker keeps runtime files in different locations by build type:
@@ -140,7 +149,7 @@ The schema is created on startup if it does not exist. The main tables are:
 - `todos`
 - `travel`
 - `notes`
-- `folders` (schema only; no commands or UI yet)
+- `folders` (note folders, see Notes folders)
 - `note_refs` (derived link index, see Notes links; not in backups)
 
 Foreign keys are enabled, and cascading deletes are used to keep related records consistent.

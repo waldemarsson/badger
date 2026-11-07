@@ -1,6 +1,7 @@
 // src-tauri/src/commands/mod.rs
 pub mod backup;
 pub mod customers;
+pub mod folders;
 pub mod issues;
 pub mod markdown;
 pub mod notes;

@@ -5,6 +5,7 @@
   import type { MonthlyReportRow, TravelRow } from '#lib/types.js';
   import { MONTH_NAMES, formatNumber, monthReportText, tripTotals } from '#lib/travel.js';
   import MonthNav from '#lib/components/MonthNav.svelte';
+  import ReportSwitch from '#lib/components/ReportSwitch.svelte';
   import Copy from '@lucide/svelte/icons/copy';
   import ClipboardList from '@lucide/svelte/icons/clipboard-list';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
@@ -157,6 +158,7 @@
     <div class="table-card">
       <!-- Month navigator toolbar -->
       <div class="table-toolbar flex items-center justify-between gap-3">
+        <ReportSwitch />
         <MonthNav bind:year bind:month disabled={loading} onchange={loadMonth} />
         <button class="btn-secondary-sm ml-auto gap-1.5" onclick={() => void copyMonth()} title="Copy hours and travel as text">
           <ClipboardList size={14} />

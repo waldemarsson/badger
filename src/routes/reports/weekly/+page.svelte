@@ -11,6 +11,7 @@
   } from '#lib/weekly-report.js';
   import ChevronLeft  from '@lucide/svelte/icons/chevron-left';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import ReportSwitch from '#lib/components/ReportSwitch.svelte';
 
   // ── Hours display ──────────────────────────────────────────────────────
   function formatHours(h: number): string {
@@ -124,6 +125,7 @@
     <div class="table-card">
       <!-- Week navigator toolbar -->
       <div class="table-toolbar flex items-center gap-3">
+        <ReportSwitch />
         <button class="btn-icon-secondary" onclick={prevWeek} disabled={loading} title="Previous week">
           <ChevronLeft size={16} />
         </button>

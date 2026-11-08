@@ -5,11 +5,11 @@
 	import type { TravelRow } from '#lib/types.js';
 	import { MONTH_NAMES, formatNumber, tripTotals } from '#lib/travel.js';
 	import MonthNav from '#lib/components/MonthNav.svelte';
-	import Check from 'lucide-svelte/icons/check';
-	import X from 'lucide-svelte/icons/x';
-	import Pencil from 'lucide-svelte/icons/pencil';
-	import Trash2 from 'lucide-svelte/icons/trash-2';
-	import Repeat from 'lucide-svelte/icons/repeat';
+	import Check from '@lucide/svelte/icons/check';
+	import X from '@lucide/svelte/icons/x';
+	import Pencil from '@lucide/svelte/icons/pencil';
+	import Trash2 from '@lucide/svelte/icons/trash';
+	import Repeat from '@lucide/svelte/icons/repeat';
 
 	// Number inputs bind to undefined/null when empty.
 	type Draft = { date: string; from: string; to: string; km: number | null | undefined; amount: number | null | undefined };

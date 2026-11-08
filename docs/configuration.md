@@ -46,6 +46,10 @@ In development, `.timetracker-dev/` lives at the repo root. The database file is
 
 That means the Vite output directory and the Tauri config have to stay aligned.
 
+### Content Security Policy
+
+`app.security.csp` (release) and `app.security.devCsp` (debug, adds the Vite HMR websocket) allow only the app's own scripts, styles, fonts and images (plus `data:` images for the inline SVG icons in CSS) and only Tauri IPC connections (`ipc:`, `http://ipc.localhost`). Tauri hashes the inline scripts in `index.html` (the theme script in `src/app.html` and SvelteKit's bootstrap) into `script-src` at build time. `dangerousDisableAssetCspModification: ["style-src"]` stops Tauri adding style nonces, which would make browsers ignore `'unsafe-inline'` and break the inline styles that Svelte and CodeMirror set. Loading anything new (a remote font, image or API) needs a CSP change.
+
 ### SvelteKit is configured for a desktop SPA
 
 The `sveltekit()` plugin in `vite.config.ts` uses `@sveltejs/adapter-static` with an `index.html` fallback. Combined with `src/routes/+layout.ts` setting `ssr = false`, this keeps the frontend compatible with the Tauri WebView runtime.

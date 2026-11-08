@@ -9,8 +9,8 @@
     isoWeekToMonday,
     weekLabel
   } from '#lib/weekly-report.js';
-  import ChevronLeft  from 'lucide-svelte/icons/chevron-left';
-  import ChevronRight from 'lucide-svelte/icons/chevron-right';
+  import ChevronLeft  from '@lucide/svelte/icons/chevron-left';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
 
   // ── Hours display ──────────────────────────────────────────────────────
   function formatHours(h: number): string {

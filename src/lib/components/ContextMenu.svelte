@@ -1,5 +1,5 @@
 <script module lang="ts">
-	import type Circle from 'lucide-svelte/icons/circle';
+	import type Circle from '@lucide/svelte/icons/circle';
 
 	export interface MenuItem {
 		label: string;

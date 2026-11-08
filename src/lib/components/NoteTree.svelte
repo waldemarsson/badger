@@ -18,17 +18,17 @@
 	import type { Folder, NoteSummary } from '#lib/types.js';
 	import NameInput from '#lib/components/NameInput.svelte';
 	import ContextMenu, { type MenuItem } from '#lib/components/ContextMenu.svelte';
-	import ChevronRight from 'lucide-svelte/icons/chevron-right';
-	import FilePlus from 'lucide-svelte/icons/file-plus';
-	import FileText from 'lucide-svelte/icons/file-text';
-	import FolderIcon from 'lucide-svelte/icons/folder';
-	import FolderInput from 'lucide-svelte/icons/folder-input';
-	import FolderOpen from 'lucide-svelte/icons/folder-open';
-	import FolderPlus from 'lucide-svelte/icons/folder-plus';
-	import PencilLine from 'lucide-svelte/icons/pencil-line';
-	import Pin from 'lucide-svelte/icons/pin';
-	import PinOff from 'lucide-svelte/icons/pin-off';
-	import Trash2 from 'lucide-svelte/icons/trash-2';
+	import ChevronRight from '@lucide/svelte/icons/chevron-right';
+	import FilePlus from '@lucide/svelte/icons/file-plus';
+	import FileText from '@lucide/svelte/icons/file-text';
+	import FolderIcon from '@lucide/svelte/icons/folder';
+	import FolderInput from '@lucide/svelte/icons/folder-input';
+	import FolderOpen from '@lucide/svelte/icons/folder-open';
+	import FolderPlus from '@lucide/svelte/icons/folder-plus';
+	import PencilLine from '@lucide/svelte/icons/pencil-line';
+	import Pin from '@lucide/svelte/icons/pin';
+	import PinOff from '@lucide/svelte/icons/pin-off';
+	import Trash2 from '@lucide/svelte/icons/trash';
 
 	// The notes folder tree: one flat keyed list of visible rows (so `animate:flip` works
 	// across levels), ARIA tree keyboard navigation, inline folder rename/delete, a

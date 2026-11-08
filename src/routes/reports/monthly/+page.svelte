@@ -5,11 +5,11 @@
   import type { MonthlyReportRow, TravelRow } from '#lib/types.js';
   import { MONTH_NAMES, formatNumber, monthReportText, tripTotals } from '#lib/travel.js';
   import MonthNav from '#lib/components/MonthNav.svelte';
-  import Copy from 'lucide-svelte/icons/copy';
-  import ClipboardList from 'lucide-svelte/icons/clipboard-list';
-  import ChevronRight from 'lucide-svelte/icons/chevron-right';
-  import ChevronDown  from 'lucide-svelte/icons/chevron-down';
-  import Hash from 'lucide-svelte/icons/hash';
+  import Copy from '@lucide/svelte/icons/copy';
+  import ClipboardList from '@lucide/svelte/icons/clipboard-list';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import ChevronDown  from '@lucide/svelte/icons/chevron-down';
+  import Hash from '@lucide/svelte/icons/hash';
 
   // ── Utilities ──────────────────────────────────────────────────────────
 

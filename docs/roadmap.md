@@ -18,6 +18,18 @@ Markdown notes stored in SQLite, written in Obsidian-compatible markdown so note
 
 ## 3. Encrypted backups
 
+## 4. Release pipeline hardening
+
+`release.yml` publishes a release on every push to `main` without running the gates. Add a gate job (`cargo test`, `cargo clippy --all -- -D warnings`, `cargo fmt --check`, `npm run check`, `npm run lint`, `node --test tests/*.mjs`) that the release job `needs:`; pin third-party actions (`actions/*`, `dtolnay/rust-toolchain`, `swatinem/rust-cache`, `tauri-apps/tauri-action`) to commit SHAs; default the workflow to `permissions: contents: read` and grant `contents: write` only to the release job.
+
+## 5. Dependency monitoring
+
+Dependabot for npm, cargo and GitHub Actions (grouped weekly updates), plus a `cargo deny check advisories` (or `cargo audit`) step and `npm audit --omit=dev` in the gate job.
+
+## 6. Major dependency upgrades
+
+Each on its own branch: `sqlx` 0.9, `sha2` 0.11, `tokenizers` 0.23 first; then `typescript` 7, `prettier-plugin-svelte` 4, `@types/node` 26 and `tailwind-merge` 3; Tailwind 4 last (touches all styling and `app.css`).
+
 ## Done
 
 - Notes semantic search — opt-in in Settings › Preferences (downloads a ~350 MB multilingual Granite embedding model on click, then indexes your notes in the background); the notes list and ⌘K merge meaning-based hits into the keyword results (Reciprocal Rank Fusion), marked "related" when the note has no keyword match, so a Swedish query finds English notes and vice versa; search stays keyword-only until the model is ready; the index is derived, not in backups, and rebuilt after restore

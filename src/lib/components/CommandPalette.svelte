@@ -4,16 +4,16 @@
 	import { resolve } from '$app/paths';
 	import { onMount, tick, untrack } from 'svelte';
 	import { fade, scale } from 'svelte/transition';
-	import Search from 'lucide-svelte/icons/search';
-	import ListTodo from 'lucide-svelte/icons/list-todo';
-	import Clock from 'lucide-svelte/icons/clock';
-	import ArrowRight from 'lucide-svelte/icons/arrow-right';
-	import Plus from 'lucide-svelte/icons/plus';
-	import Calendar from 'lucide-svelte/icons/calendar';
-	import ChevronRight from 'lucide-svelte/icons/chevron-right';
-	import NotebookPen from 'lucide-svelte/icons/notebook-pen';
-	import FileText from 'lucide-svelte/icons/file-text';
-	import Sparkles from 'lucide-svelte/icons/sparkles';
+	import Search from '@lucide/svelte/icons/search';
+	import ListTodo from '@lucide/svelte/icons/list-todo';
+	import Clock from '@lucide/svelte/icons/clock';
+	import ArrowRight from '@lucide/svelte/icons/arrow-right';
+	import Plus from '@lucide/svelte/icons/plus';
+	import Calendar from '@lucide/svelte/icons/calendar';
+	import ChevronRight from '@lucide/svelte/icons/chevron-right';
+	import NotebookPen from '@lucide/svelte/icons/notebook-pen';
+	import FileText from '@lucide/svelte/icons/file-text';
+	import Sparkles from '@lucide/svelte/icons/sparkles';
 	import { today } from '#lib/date-ranges.js';
 	import {
 		filterItems,

@@ -8,10 +8,10 @@ import { loadInitialTimesheetData } from '#lib/timesheet-startup.js';
 import type { Customer, Project, Issue, TimeEntryRow } from '#lib/types.js';
 import Combobox from '#lib/components/Combobox.svelte';
 import { changes } from '#lib/palette-state.svelte.js';
-import Pencil from 'lucide-svelte/icons/pencil';
-import Trash2 from 'lucide-svelte/icons/trash-2';
-import Check from 'lucide-svelte/icons/check';
-import X from 'lucide-svelte/icons/x';
+import Pencil from '@lucide/svelte/icons/pencil';
+import Trash2 from '@lucide/svelte/icons/trash';
+import Check from '@lucide/svelte/icons/check';
+import X from '@lucide/svelte/icons/x';
 
 // DATA
 let customers = $state<Customer[]>([]);

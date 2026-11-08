@@ -62,7 +62,7 @@ Gotchas:
 - **Pure helpers** go in `src/lib/*.ts`; test them with `node:test` under `tests/`.
 - **Styles:** use Tailwind utilities in markup. Shared or `@apply` classes go in `src/app.css` under `@layer components`, not in component `<style>` blocks, because svelte-check warns about `@apply` there.
 - **Dynamic classes:** Tailwind only emits `app.css` component classes whose full name appears literally in `src/**` (`content` scan). Write out `cm-link-kind-todo-in_progress` in full; never build it as `` `cm-link-kind-${x}` ``.
-- **Icons:** `lucide-svelte`, imported per icon (`import X from 'lucide-svelte/icons/x'`).
+- **Icons:** `@lucide/svelte`, imported per icon (`import X from '@lucide/svelte/icons/x'`).
 - **Routes:** add new pages to `navLinks` in `src/routes/+layout.svelte`. The list is `as const` so `resolve()` stays type-checked.
 - **Pickers:** reuse `src/lib/components/Combobox.svelte` for customer, project, and issue selection.
 - **Menus:** reuse `src/lib/components/ContextMenu.svelte` (items `{label, icon, hint, danger, run}`) for popup action menus; position with `placeMenu` in `src/lib/context-menu.ts`.

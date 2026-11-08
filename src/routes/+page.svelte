@@ -22,12 +22,12 @@
 	import { formatDue } from '#lib/todos.js';
 	import type { TimeEntryRow, TodoRow } from '#lib/types.js';
 	import TodoModal from '#lib/components/TodoModal.svelte';
-	import Check from 'lucide-svelte/icons/check';
-	import Clock from 'lucide-svelte/icons/clock';
-	import Link2 from 'lucide-svelte/icons/link-2';
-	import Plus from 'lucide-svelte/icons/plus';
-	import CalendarDays from 'lucide-svelte/icons/calendar-days';
-	import X from 'lucide-svelte/icons/x';
+	import Check from '@lucide/svelte/icons/check';
+	import Clock from '@lucide/svelte/icons/clock';
+	import Link2 from '@lucide/svelte/icons/link-2';
+	import Plus from '@lucide/svelte/icons/plus';
+	import CalendarDays from '@lucide/svelte/icons/calendar-days';
+	import X from '@lucide/svelte/icons/x';
 
 	const WORKDAYS = 5;
 

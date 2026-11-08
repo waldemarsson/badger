@@ -7,10 +7,10 @@ import type { TodoRow, TodoStatus } from '#lib/types.js';
 import { COLUMNS, columnCards, dueState, formatDue } from '#lib/todos.js';
 import TodoModal from '#lib/components/TodoModal.svelte';
 import { changes } from '#lib/palette-state.svelte.js';
-import Plus from 'lucide-svelte/icons/plus';
-import X from 'lucide-svelte/icons/x';
-import CalendarDays from 'lucide-svelte/icons/calendar-days';
-import Link2 from 'lucide-svelte/icons/link-2';
+import Plus from '@lucide/svelte/icons/plus';
+import X from '@lucide/svelte/icons/x';
+import CalendarDays from '@lucide/svelte/icons/calendar-days';
+import Link2 from '@lucide/svelte/icons/link-2';
 
 const DRAG_THRESHOLD = 5; // px of movement before a press becomes a drag
 

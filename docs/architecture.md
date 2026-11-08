@@ -21,6 +21,7 @@ The main user-facing areas are:
 - `/reports/weekly` — ISO-week report view
 - `/reports/monthly` — month report view with expandable grouping, the month's travel, and a copy-month text export
 - `/notes` — a folder tree of notes on the left (folders first A–Z, then notes pinned first, then most recently updated; see Notes folders) that becomes a flat list of ranked hits with highlighted title, snippet and folder path while searching via the `search_notes` command, and a markdown live-preview editor on the right; the selected note lives in the URL (`?id=12`)
+- `/reminders` — reminders grouped Overdue / Today / Tomorrow / Later, plus a collapsed Done group (latest 50); create, edit, snooze, complete and delete
 - `/travel` — month-scoped list of business trips (date, from/to, optional km and kr) with inline add, edit, repeat, and delete
 - `/settings` — customer and project management (cards with inline add, rename, default, and delete), preferences (System/Light/Dark appearance), backup/restore, and dev-only seed tooling
 
@@ -37,6 +38,7 @@ The backend is organized around command modules:
 - `issues` and `time_entries` for core timesheet operations
 - `todos` for standalone todos and their optional issue link
 - `travel` for business trips, listed per month
+- `reminders` for reminders (create, update, delete, snooze, complete, list); `reminders_scheduler` (a top-level module, not a command module) fires them; see Reminders
 - `folders` for note folders (`list_folders`, `create_folder`, `rename_folder`, `move_folder`, `delete_folder`) and `move_note`; see Notes folders
 - `notes` for markdown notes (create, rename, body save, pin, delete), the list excerpt, which is computed in Rust, full-text search (`search_notes`, `search_index_stats`, `rebuild_search_index`), and links (`create_note_titled`, `list_tag_suggestions`, `get_link_targets`, `list_backlinks`)
 - `semantic` for semantic note search: the lifecycle commands (`get_semantic_status`, `enable_semantic_search`, `cancel_semantic_download`, `remove_semantic_model`, `rebuild_semantic_index`) live in `commands/semantic.rs`; the engine is the top-level `semantic/` module (not a command module); see Semantic search
@@ -71,7 +73,7 @@ Dark mode uses Tailwind's `darkMode: "class"`: a `dark` class on `<html>` activa
 
 ### Today
 
-Today (`src/routes/+page.svelte`) aggregates in the frontend: it loads the current week's `list_time_entries`, `list_todos` and the daily target, and the pure selection, ordering and totals helpers live in `src/lib/today.ts` (tested in `tests/today.test.mjs`). There are no dedicated list/report commands. Needs attention is non-done todos due today or earlier; In progress is the remaining `in_progress` todos, so no todo appears twice. The week runs Monday–Sunday and the weekly target is 5 × the daily target. The daily target is stored in `app_settings` via `get_daily_target`/`set_daily_target` (default 8, range 0–24, 0 turns the progress UI off, an invalid stored value falls back to 8), edited in Settings › Preferences, and is not part of backups. The page reloads when the palette bumps `changes`.
+Today (`src/routes/+page.svelte`) aggregates in the frontend: it loads the current week's `list_time_entries`, `list_todos` and the daily target, and the pure selection, ordering and totals helpers live in `src/lib/today.ts` (tested in `tests/today.test.mjs`). There are no dedicated list/report commands. Needs attention is non-done todos due today or earlier; In progress is the remaining `in_progress` todos, so no todo appears twice. The week runs Monday–Sunday and the weekly target is 5 × the daily target. The daily target is stored in `app_settings` via `get_daily_target`/`set_daily_target` (default 8, range 0–24, 0 turns the progress UI off, an invalid stored value falls back to 8), edited in Settings › Preferences, and is not part of backups. The page reloads when the palette bumps `changes`. A Reminders card (overdue plus the rest of today) reads the shared list from `src/lib/reminders-state.svelte.ts`; see Reminders.
 
 ### Notes editor
 
@@ -143,6 +145,32 @@ Pure tree logic lives in `src/lib/folders.ts` (tested in `tests/folders.test.mjs
 
 The expanded set is persisted through `get_expanded_folders`/`set_expanded_folders` (debounced; ancestors of the open note always expand).
 
+### Reminders
+
+Slack-style reminders: a text, a time, an optional repeat and an optional link to one todo or one note. Rust owns all state transitions and recurrence math (`src-tauri/src/commands/reminders.rs`); the frontend parses typed input for the live preview (`src/lib/reminders.ts`, English and Swedish, tested in `tests/reminders.test.mjs`), but Rust validates and recomputes everything it stores. Table and backup details are in `docs/data-and-backup.md`.
+
+**Time model.** Times are naive local wall-clock strings (`%Y-%m-%dT%H:%M:%S%.3f`), so string comparison orders them and "09:00" stays 09:00 across DST and time-zone changes. A time that does not exist locally (DST gap) fires at the first valid minute after. `RemindAt` is the current occurrence; `TimeOfDay` is the anchor every recurring occurrence returns to, so snoozing one occurrence does not shift the series.
+
+**States.** `pending` (waiting) -> `fired` (notified; the UI calls it overdue) -> `done`. Every transition is a conditional `UPDATE` on `State`, so a UI action and a scheduler fire cannot overwrite each other; Done or Snooze on an already-done row is a no-op success, and on a missing row answers "Reminder not found". Recurrence is none, daily, weekdays (Mon-Fri), weekly on chosen weekdays, or monthly on a day 1-31 (a shorter month fires on its last day and returns to the day the next month). Done on a recurring reminder moves it to the first rule match strictly after the later of now and `RemindAt`, back to pending; missed occurrences collapse into one. Snooze moves only the current occurrence. Done on a one-off keeps the row as done; delete ends a series. Editing the time or rule reschedules (back to pending, must be in the future); a text- or link-only edit keeps time and state; done rows can't be edited. Moving a todo to done (inside `inner_move_todo`'s transaction) marks its pending and fired reminders done, recurring series included; reopening does not restore them.
+
+**Scheduler.** `reminders_scheduler::run` is spawned in `setup` (like the semantic worker) and ticks every 30 s, the first tick immediately, so reminders that came due while the app was closed fire as a catch-up. Each tick calls `inner_fire_due`: one conditional `UPDATE ... SET State = 'fired' WHERE State = 'pending' AND RemindAt <= now RETURNING`, plus a re-fire of fired recurring rows whose next occurrence has come due (an ignored series never stalls; the old occurrence is replaced, not duplicated). Only returned rows are notified: one row gets its own notification ("Reminder", the text, and "Todo: <title>" / "Note: <title>" when linked); two or more (launch catch-up, sleep/wake, restore) are batched into one ("3 reminders: A, B, ..."). Delivery is at-most-once and there is no re-nag: a failed send still counts as fired. The native notification is skipped while the main window is focused, because the toast covers it. Errors are logged and the loop continues (no `?` exit, no `unwrap`; release is `panic = "abort"`). The tick is unit-tested through the `ReminderSink` trait (`tick` against a fake sink); the real notification, click, focus check and badge are not tested.
+
+**Events.** Rust emits two events:
+
+- `reminders-changed` (no payload): the scheduler on every fire, and every command wrapper that changes reminders, directly or by cascade or hook, through `reminders_scheduler::reminders_changed(&app, pool)`: the reminder commands, `update_todo`, `move_todo` (to done), `delete_todo`, `rename_note`, `delete_note`, and restore. That helper also recomputes the dock badge (count of fired reminders). A new write path that can change, cascade-delete or complete reminders must call it, or the UI and badge go stale until the next tick.
+- `reminders-open` (payload `{ id: number | null }`): a notification click. Rust shows, unminimizes and focuses the window; the root layout then navigates to `/reminders` and highlights the row (`null` for a batch).
+
+**Frontend.** `src/lib/reminders-state.svelte.ts` holds the shared list, re-read on `reminders-changed` (bursts coalesce) and on window focus. The toast stack (`src/lib/components/ReminderToasts.svelte`, mounted in the root layout; the older `Toast.svelte` stays for plain messages) is derived from the fired rows, not from transient events, so catch-up and reloads are not lost: up to 3 toasts with Done, a Snooze menu and an x that hides one for the session, then "+N more" linking to `/reminders`. The same list feeds the Today card, the `/reminders` page, TodoModal's reminders list, the bell on todo cards, and a count on the Reminders nav tab. Creation paths: ⌘K `remind ...` / `påminn ...` with a live parsed preview (no recognised time opens the form prefilled), the `+ Reminder` form, "Remind me..." in the note row context menu, and TodoModal.
+
+**Notifications plugin.** `tauri-plugin-notification` is a Rust-only dependency: there is no `@tauri-apps/plugin-notification` package, notifications are sent and clicks handled in Rust, and the dock badge is set from Rust (`WebviewWindow::set_badge_count`). The only capability entry is the read-only `notification:allow-is-permission-granted`, which silences a rejection from the plugin's JS shim; JS still cannot send notifications.
+
+**Caveats.**
+
+- Reminders fire only while the app runs. Closing the window quits (see Quit/close flush guard); the launch catch-up covers what was missed. There is no menu bar or close-to-hide mode.
+- Notification permission cannot be detected or requested on desktop: the plugin's `request_permission` always reports granted, so a user who denied notifications in macOS System Settings gets no error, only silence (the toast and badge still work). Release builds are ad-hoc signed (`signingIdentity: "-"`), so macOS may treat each update as a new app and reset the notification permission; dev builds are attributed to Terminal.
+- The scheduler's click handler must be installed before the first notification is shown, or the plugin does not report clicks on it (`install_click_handler`, called in `setup` before the spawn).
+- Native notifications, notification click, focus suppression and the dock badge have not been verified in the real macOS app: only the logic around them is unit-tested, and the UI was checked as mocked renders.
+
 ## Storage model
 
 TimeTracker keeps runtime files in different locations by build type:
@@ -175,6 +203,7 @@ The schema is created on startup if it does not exist. The main tables are:
 - `travel`
 - `notes`
 - `folders` (note folders, see Notes folders)
+- `reminders` (see Reminders)
 - `note_refs` (derived link index, see Notes links; not in backups)
 - `note_embeddings` (derived semantic index, see Semantic search; not in backups)
 

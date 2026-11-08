@@ -22,12 +22,16 @@
 	import { formatDue } from '#lib/todos.js';
 	import type { TimeEntryRow, TodoRow } from '#lib/types.js';
 	import TodoModal from '#lib/components/TodoModal.svelte';
+	import ReminderRow from '#lib/components/ReminderRow.svelte';
+	import { groupReminders } from '#lib/reminders.js';
+	import { clock, reminders } from '#lib/reminders-state.svelte.js';
 	import Check from '@lucide/svelte/icons/check';
 	import Clock from '@lucide/svelte/icons/clock';
 	import Link2 from '@lucide/svelte/icons/link-2';
 	import Plus from '@lucide/svelte/icons/plus';
 	import CalendarDays from '@lucide/svelte/icons/calendar-days';
 	import X from '@lucide/svelte/icons/x';
+	import ArrowRight from '@lucide/svelte/icons/arrow-right';
 
 	const WORKDAYS = 5;
 
@@ -85,6 +89,11 @@
 	const loggedHours = $derived(sumHours(logged));
 
 	const dateHeading = $derived(formatDayLabel(todayIso));
+
+	// Reminders card: overdue (fired) plus the rest of today.
+	const now = $derived(new Date(clock.ms));
+	const reminderGroups = $derived(groupReminders(reminders.list, now));
+	const todayReminders = $derived([...reminderGroups.overdue, ...reminderGroups.today]);
 
 	function weekdayShort(ymd: string): string {
 		const [y, m, d] = ymd.split('-').map(Number);
@@ -297,6 +306,31 @@
 						</div>
 					{/if}
 					{@render todoSection('Needs attention', 'bg-red-500 dark:bg-red-400', attention, 'Nothing overdue or due today')}
+					<section class="today-section">
+						<header class="today-section-header">
+							<span class="h-2.5 w-2.5 rounded-full {reminderGroups.overdue.length ? 'bg-red-500 dark:bg-red-400' : 'bg-amber-500 dark:bg-amber-400'}"></span>
+							<h2 class="today-section-title">Reminders</h2>
+							{#if todayReminders.length}
+								<span class="today-count">{todayReminders.length}</span>
+							{/if}
+							<a href="{resolve('/reminders')}?new=1" class="btn-icon-ghost ml-auto -my-1" title="New reminder" aria-label="New reminder"><Plus size={15} /></a>
+							<a href={resolve('/reminders')} class="-my-1 inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-xs font-medium text-slate-500 transition hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200">
+								All <ArrowRight size={12} />
+							</a>
+						</header>
+						<div class="divide-y divide-slate-100 dark:divide-neutral-800">
+							{#each todayReminders as r (r.id)}
+								<div animate:flip={{ duration: 200 }} out:fade={{ duration: 150 }}>
+									<ReminderRow {r} {now} compact />
+								</div>
+							{/each}
+						</div>
+						{#if todayReminders.length === 0}
+							<p class="today-empty" in:fade={{ delay: 150, duration: 150 }}>
+								{reminderGroups.tomorrow.length + reminderGroups.later.length ? 'No more reminders today' : 'No reminders'}
+							</p>
+						{/if}
+					</section>
 					{@render todoSection('In progress', 'bg-sky-500 dark:bg-sky-400', active, 'Nothing in progress')}
 				</div>
 

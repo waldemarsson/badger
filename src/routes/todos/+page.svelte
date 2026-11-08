@@ -11,10 +11,17 @@ import Plus from '@lucide/svelte/icons/plus';
 import X from '@lucide/svelte/icons/x';
 import CalendarDays from '@lucide/svelte/icons/calendar-days';
 import Link2 from '@lucide/svelte/icons/link-2';
+import Bell from '@lucide/svelte/icons/bell';
+import BellRing from '@lucide/svelte/icons/bell-ring';
+import { formatRemindAt, todoBells } from '#lib/reminders.js';
+import { clock, reminders } from '#lib/reminders-state.svelte.js';
 
 const DRAG_THRESHOLD = 5; // px of movement before a press becomes a drag
 
 let todos = $state<TodoRow[]>([]);
+// Per card: its fired reminder, else the next pending one (shared list, refreshed on `reminders-changed`).
+const bells = $derived(todoBells(reminders.list));
+const now = $derived(new Date(clock.ms));
 let error = $state('');
 let selected = $state<TodoRow | null>(null);
 
@@ -203,8 +210,15 @@ void load();
 {#if t.notes}
 <p class="mt-1 line-clamp-2 text-xs leading-relaxed text-slate-500 dark:text-neutral-400">{t.notes}</p>
 {/if}
-{#if t.due_date || t.issue_title}
+{@const bell = bells.get(t.id)}
+{#if t.due_date || t.issue_title || bell}
 <div class="mt-2.5 flex flex-wrap items-center gap-1.5">
+{#if bell}
+<span class="kanban-badge {bell.state === 'fired' ? dueClasses.overdue : 'bg-sky-50 dark:bg-sky-500/10 text-sky-700 dark:text-sky-300 ring-sky-200 dark:ring-sky-500/30'}" title="{bell.state === 'fired' ? 'Overdue reminder' : 'Reminder'}: {bell.text}">
+{#if bell.state === 'fired'}<BellRing size={12} />{:else}<Bell size={12} />{/if}
+{formatRemindAt(bell.remind_at, now)}
+</span>
+{/if}
 {#if t.due_date}
 <span class="kanban-badge {dueClasses[dueState(t)]}">
 <CalendarDays size={12} />

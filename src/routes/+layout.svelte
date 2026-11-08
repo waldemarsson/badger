@@ -12,9 +12,11 @@
   import { palette } from '#lib/palette-state.svelte.js';
   import { FLUSH_REQUEST_EVENT, runFlushHandlers } from '#lib/flush-guard.js';
   import { watchSemanticStatus } from '#lib/semantic-state.svelte.js';
+  import { reminders, requestHighlight, watchReminders } from '#lib/reminders-state.svelte.js';
   import type { PaletteSettings } from '#lib/types.js';
   import CommandPalette from '#lib/components/CommandPalette.svelte';
   import Toast from '#lib/components/Toast.svelte';
+  import ReminderToasts from '#lib/components/ReminderToasts.svelte';
 
   let { children } = $props();
 
@@ -23,6 +25,7 @@
     { href: '/timesheet', label: 'Timesheet' },
     { href: '/todos', label: 'Todos' },
     { href: '/notes', label: 'Notes' },
+    { href: '/reminders', label: 'Reminders' },
     { href: '/reports/weekly', label: 'Weekly' },
     { href: '/reports/monthly', label: 'Monthly' },
     { href: '/travel', label: 'Travel' },
@@ -49,12 +52,20 @@
       .then((stop) => (disposed ? stop() : (unlisten = stop)))
       .catch(() => {});
     const stopSemantic = watchSemanticStatus();
+    // Notification click (Rust already focused the window): open the row on /reminders.
+    const stopReminders = watchReminders((id) => {
+      requestHighlight(id);
+      if (page.url.pathname !== '/reminders') void goto(resolve('/reminders'));
+    });
     return () => {
       disposed = true;
       unlisten?.();
       stopSemantic();
+      stopReminders();
     };
   });
+
+  const overdue = $derived(reminders.list.filter((r) => r.state === 'fired').length);
 
   function navigate(href: (typeof navLinks)[number]['href']) {
     void goto(resolve(href));
@@ -70,7 +81,7 @@
           href={resolve(link.href)}
           class="nav-link"
           class:nav-link-active={page.url.pathname === link.href}
-        >{link.label}</a>
+        >{link.label}{#if link.href === '/reminders' && overdue > 0}<span class="nav-count" title="{overdue} overdue">{overdue}</span>{/if}</a>
       {/each}
     </div>
   </div>
@@ -79,4 +90,5 @@
 {@render children()}
 
 <CommandPalette pages={navLinks} {navigate} />
+<ReminderToasts />
 <Toast />

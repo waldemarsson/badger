@@ -6,6 +6,7 @@ pub mod error;
 pub mod flush_guard;
 pub mod logger;
 pub mod note_links;
+pub mod reminders_scheduler;
 pub mod runtime_paths;
 pub mod semantic;
 pub mod startup_backup;
@@ -88,6 +89,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(flush_guard::FlushGuard::default())
         .on_menu_event(|app, event| {
             if event.id() == flush_guard::QUIT_MENU_ID {
@@ -120,6 +122,7 @@ pub fn run() {
             // Non-blocking: spawns onto Tauri's async runtime, logs any errors.
             let db_path_for_backup = runtime_paths.db_path.clone();
             let pool_for_backup = pool.clone();
+            let pool_for_reminders = pool.clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = run_startup_backup(&db_path_for_backup, &pool_for_backup).await {
                     // Individual step errors already logged in run_startup_backup
@@ -155,6 +158,16 @@ pub fn run() {
                     tracing::error!("Semantic search: startup failed: {}", e);
                 }
             });
+
+            // ── Reminders ────────────────────────────────────────────────────
+            // The click handler must exist before the first notification is shown. The
+            // scheduler ticks every 30 s; its first tick catches up on reminders that came
+            // due while the app was closed.
+            reminders_scheduler::install_click_handler(app.handle());
+            tauri::async_runtime::spawn(reminders_scheduler::run(
+                app.handle().clone(),
+                pool_for_reminders,
+            ));
 
             // ── Quit/close flush guard ───────────────────────────────────────
             // ⌘Q must reach RunEvent::ExitRequested so unsaved notes get flushed.
@@ -202,6 +215,13 @@ pub fn run() {
                     commands::todos::move_todo,
                     commands::todos::delete_todo,
                     commands::todos::create_issue_for_todo,
+                    // Reminders
+                    commands::reminders::list_reminders,
+                    commands::reminders::create_reminder,
+                    commands::reminders::update_reminder,
+                    commands::reminders::delete_reminder,
+                    commands::reminders::snooze_reminder,
+                    commands::reminders::complete_reminder,
                     // Travel
                     commands::travel::list_travel,
                     commands::travel::create_travel,
@@ -294,6 +314,13 @@ pub fn run() {
                     commands::todos::move_todo,
                     commands::todos::delete_todo,
                     commands::todos::create_issue_for_todo,
+                    // Reminders
+                    commands::reminders::list_reminders,
+                    commands::reminders::create_reminder,
+                    commands::reminders::update_reminder,
+                    commands::reminders::delete_reminder,
+                    commands::reminders::snooze_reminder,
+                    commands::reminders::complete_reminder,
                     // Travel
                     commands::travel::list_travel,
                     commands::travel::create_travel,

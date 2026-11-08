@@ -197,3 +197,38 @@ export interface Note {
 	created_at: string;
 	updated_at: string;
 }
+
+export type ReminderRepeat = 'none' | 'daily' | 'weekdays' | 'weekly' | 'monthly';
+export type ReminderState = 'pending' | 'fired' | 'done';
+
+/** A reminder (list_reminders and the reminder commands); times are naive local
+ *  `YYYY-MM-DDTHH:MM:SS.mmm`. Link fields are null when unlinked. */
+export interface Reminder {
+	id: number;
+	text: string;
+	remind_at: string; // current occurrence
+	time_of_day: string; // HH:MM recurrence anchor
+	repeat: ReminderRepeat;
+	weekdays: number[]; // ISO 1=Mon … 7=Sun; weekly only
+	month_day: number | null; // 1–31; monthly only
+	state: ReminderState; // fired = overdue
+	todo_id: number | null;
+	note_id: number | null;
+	todo_title: string | null;
+	todo_status: TodoStatus | null;
+	note_title: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
+/** create_reminder / update_reminder argument (`invoke(cmd, { input })`, camelCase).
+ *  remindAt is a local timestamp (`YYYY-MM-DDTHH:MM`, seconds optional). */
+export interface ReminderInput {
+	text: string;
+	remindAt: string;
+	repeat: ReminderRepeat;
+	weekdays: number[];
+	monthDay: number | null;
+	todoId: number | null;
+	noteId: number | null;
+}

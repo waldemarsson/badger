@@ -18,6 +18,7 @@
 	import type { Folder, NoteSummary } from '#lib/types.js';
 	import NameInput from '#lib/components/NameInput.svelte';
 	import ContextMenu, { type MenuItem } from '#lib/components/ContextMenu.svelte';
+	import Bell from '@lucide/svelte/icons/bell';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import FilePlus from '@lucide/svelte/icons/file-plus';
 	import FileText from '@lucide/svelte/icons/file-text';
@@ -61,6 +62,7 @@
 		ondeletenote,
 		onmoveto,
 		onmove,
+		onremind,
 		onexit
 	}: {
 		tree: FolderTree;
@@ -92,6 +94,8 @@
 		/** Opens the "Move to…" picker for a folder or note. */
 		onmoveto: (item: DragItem, name: string) => void;
 		onmove: (item: DragItem, folderId: number | null) => void;
+		/** Context menu "Remind me…" on a note (omitted: no item). */
+		onremind?: (note: NoteSummary) => void;
 		/** ↑ on the "Notes" root row (↑ on the first tree row focuses the root row). */
 		onexit: () => void;
 	} = $props();
@@ -359,6 +363,7 @@
 				label: `Actions for ${n.title}`,
 				items: [
 					{ label: n.pinned ? 'Unpin' : 'Pin', icon: n.pinned ? PinOff : Pin, run: () => onpin(n) },
+					...(onremind ? [{ label: 'Remind me…', icon: Bell, run: () => onremind(n) }] : []),
 					{ label: 'Move to…', icon: FolderInput, run: () => onmoveto({ kind: 'note', id: n.id, folderId: row.parentId }, n.title) },
 					{ label: 'Delete', icon: Trash2, danger: true, run: () => askDeleteNote(n.id) }
 				]

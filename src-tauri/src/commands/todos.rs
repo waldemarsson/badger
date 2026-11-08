@@ -4,6 +4,7 @@ use sqlx::{FromRow, Pool, Sqlite};
 use tauri::State;
 
 use super::issues::inner_resolve_issue;
+use crate::reminders_scheduler::reminders_changed;
 
 /// Kanban column values stored in `todos.Status`.
 pub const STATUSES: [&str; 3] = ["not_started", "in_progress", "done"];
@@ -186,13 +187,13 @@ pub async fn inner_move_todo(
     check_status(status)?;
     let mut tx = pool.begin().await?;
 
-    let exists: Option<(i64,)> = sqlx::query_as("SELECT id FROM todos WHERE id = ?")
+    let previous: Option<(String,)> = sqlx::query_as("SELECT Status FROM todos WHERE id = ?")
         .bind(id)
         .fetch_optional(&mut *tx)
         .await?;
-    if exists.is_none() {
+    let Some((previous_status,)) = previous else {
         return Err(not_found());
-    }
+    };
 
     let mut ids: Vec<i64> = sqlx::query_as::<_, (i64,)>(
         "SELECT id FROM todos WHERE Status = ? AND id != ? ORDER BY Position, id",
@@ -218,6 +219,10 @@ pub async fn inner_move_todo(
             .bind(todo_id)
             .execute(&mut *tx)
             .await?;
+    }
+    // Finishing a todo finishes its reminders (reopening doesn't bring them back).
+    if status == "done" && previous_status != "done" {
+        crate::commands::reminders::complete_for_todo(id, &mut tx).await?;
     }
     tx.commit().await?;
 
@@ -286,9 +291,10 @@ pub async fn update_todo(
     notes: Option<String>,
     due_date: Option<String>,
     issue_id: Option<i64>,
+    app: tauri::AppHandle,
     pool: State<'_, Pool<Sqlite>>,
 ) -> Result<TodoRow, AppError> {
-    inner_update_todo(
+    let todo = inner_update_todo(
         id,
         &title,
         notes.as_deref(),
@@ -296,7 +302,9 @@ pub async fn update_todo(
         issue_id,
         pool.inner(),
     )
-    .await
+    .await?;
+    reminders_changed(&app, pool.inner()).await; // linked reminders show the todo's title
+    Ok(todo)
 }
 
 #[tauri::command]
@@ -304,14 +312,26 @@ pub async fn move_todo(
     id: i64,
     status: String,
     index: i64,
+    app: tauri::AppHandle,
     pool: State<'_, Pool<Sqlite>>,
 ) -> Result<TodoRow, AppError> {
-    inner_move_todo(id, &status, index, pool.inner()).await
+    let todo = inner_move_todo(id, &status, index, pool.inner()).await?;
+    // Moving to done may have completed reminders.
+    if status == "done" {
+        reminders_changed(&app, pool.inner()).await;
+    }
+    Ok(todo)
 }
 
 #[tauri::command]
-pub async fn delete_todo(id: i64, pool: State<'_, Pool<Sqlite>>) -> Result<(), AppError> {
-    inner_delete_todo(id, pool.inner()).await
+pub async fn delete_todo(
+    id: i64,
+    app: tauri::AppHandle,
+    pool: State<'_, Pool<Sqlite>>,
+) -> Result<(), AppError> {
+    inner_delete_todo(id, pool.inner()).await?;
+    reminders_changed(&app, pool.inner()).await; // its reminders cascade away
+    Ok(())
 }
 
 #[tauri::command]

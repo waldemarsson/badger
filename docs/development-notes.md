@@ -36,6 +36,8 @@ Notes and folders are seeded separately: whenever the `notes` table is empty, th
 
 The Seed button (Settings › Dev) also adds 16 bilingual sample notes (100–200 words each) to a root `Samples` folder for trying semantic search: Swedish/English pairs on the same topic in different words (budget, release date, onboarding, invoice dispute, backups, accessibility, summer leave) plus two unrelated decoys. Titles that already exist are skipped, so it works on a dev database that already has notes and is safe to click again.
 
+Reminders are seeded too, whenever the `reminders` table is empty (also when customers or notes already exist): six samples anchored to now, namely an overdue one (fired), one for in three hours linked to the "Weekly sync" note when that note exists, one tomorrow at 14:00, a weekday "Standup" at 09:00, a monthly "Pay rent" on the 25th, and a done one. The overdue row shows up in the Overdue group, the Today card, a toast, and the nav count straight away. Seeded times are relative to the moment you click Seed, so a row can already be overdue by the time you look.
+
 ## Semantic search tests
 
 Unit tests never download or load the embedding model. Embedding sits behind the `Embedder` trait and tests use `FakeEmbedder` (deterministic vectors, a word-count token counter); `semantic::index::tests::ready_state` builds a ready `SemanticState` around one. Download tests run against a local fake source, not the network.

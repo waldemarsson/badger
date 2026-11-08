@@ -9,6 +9,7 @@ TimeTracker stores its working data in a local SQLite database. The schema is in
 - `issues` — project-owned work items, identified by title
 - `time_entries` — dated hour records linked to issues
 - `todos` — standalone kanban todos (`Status`: not started / in progress / done, ordered by `Position`) with an optional link to an issue
+- `reminders` — Slack-style reminders: `Text` (trimmed, 1–500 characters), `RemindAt` (the current occurrence, naive local time `%Y-%m-%dT%H:%M:%S%.3f`), `TimeOfDay` (`HH:MM` recurrence anchor), `Repeat` (`none`/`daily`/`weekdays`/`weekly`/`monthly`), `Weekdays` (ISO numbers as text, e.g. `1,4` for Mon and Thu), `MonthDay` (1–31, monthly only), `State` (`pending`/`fired`/`done`), and an optional `TodoId` or `NoteId`. Both links are `ON DELETE CASCADE`, so deleting a todo or note deletes its reminders (unlike issue links, which only clear), and a `CHECK` allows at most one link. Created by `SCHEMA_SQL` with no migration. Semantics are in `docs/architecture.md` (Reminders)
 - `travel` — standalone business trips: date, from/to place, and optional km and amount (kr), stored as NULL when not entered
 - `notes` — markdown notes: unique `Title` (case-insensitive, via a `COLLATE NOCASE` unique index), `Body`, `Pinned`, `CreatedAt`/`UpdatedAt`, and an optional `FolderId`
 - `folders` — nestable note folders (`ParentId`, root = NULL, `Name`, `Position`). `Position` is unused: the tree sorts folders by name in the frontend. Names are trimmed, 1–100 characters, may not contain `/`, and are unique among siblings ignoring case (Rust `to_lowercase()`, like note titles)
@@ -88,7 +89,7 @@ Startup backup creation, trimming, and listing are handled entirely in Rust and 
 
 ## Backup format
 
-Backup export writes a JSON document containing eight arrays:
+Backup export writes a JSON document containing nine arrays:
 
 - `customers`
 - `projects`
@@ -98,6 +99,7 @@ Backup export writes a JSON document containing eight arrays:
 - `travel` (optional on import, so backups made before travel existed still restore)
 - `folders` (optional on import, so backups made before notes existed still restore)
 - `notes` (optional on import, same reason)
+- `reminders` (optional on import, so backups made before reminders existed still restore)
 
 The backup commands preserve record identifiers so a restore can rebuild the same relationships between records.
 
@@ -106,14 +108,16 @@ The backup commands preserve record identifiers so a restore can rebuild the sam
 Restore always overwrites. In one transaction it:
 
 - deletes all customers, which cascades to projects, issues, and time entries
-- clears todos, travel, notes and folders explicitly (the cascade does not reach them)
-- re-inserts the full backup, folders before notes
+- clears reminders, todos, travel, notes and folders explicitly (the cascade does not reach them)
+- re-inserts the full backup, folders before notes, and reminders last (after todos and notes, so their links resolve)
 - rebuilds the notes search and link indexes (`notes_fts`, `note_refs`) from the restored notes, in the same transaction
 - after the transaction commits, drops in-flight semantic work and queues every restored note for re-embedding (the delete cascaded away the old vectors; `note_embeddings` is not in the backup)
 
-Data not in the backup is lost, so restoring a backup made before notes existed leaves zero notes. If the backup file is invalid, nothing is changed.
+Data not in the backup is lost, so restoring a backup made before notes existed leaves zero notes (and one made before reminders existed leaves zero reminders). If the backup file is invalid, nothing is changed.
 
 Folders and notes are inserted with `PRAGMA defer_foreign_keys = ON` inside the transaction, so a child folder may appear before its parent (a lower id) in the file. Foreign keys are checked at commit. A dangling folder reference (for example in a hand-edited file) fails with "Backup is invalid: a folder or note refers to a missing folder", and two notes whose titles differ only in case fail with "Backup is invalid: duplicate note title". Both roll back everything. Before inserting, restore also rejects folders that form a cycle (including a folder that is its own parent) with "Backup is invalid: folders form a cycle", checked in Rust code rather than by the database, and renames duplicate sibling folder names (case-insensitive) to the first free ` 2`, ` 3`, … suffix in id order, so such a backup still restores. Names over 100 characters or containing `/` are restored as they are (tolerance for existing data, as with note titles); a `/` in a name makes the displayed folder path ambiguous. Folder ids are preserved, so a stored expanded-folders set still applies where the folders match.
+
+A reminder whose `TodoId` or `NoteId` is not in the backup is rejected before anything changes with "Backup is invalid: a reminder refers to a missing todo or note" (foreign keys are deferred during restore, so the commit error would otherwise blame folders). After a restore the app emits `reminders-changed` and recomputes the dock badge; restored pending reminders that are already past due fire together as one batch on the next scheduler tick.
 
 There is no merge mode. It was removed because `INSERT OR REPLACE` deletes and re-inserts rows, which cascaded to local time entries and cleared todo links.
 

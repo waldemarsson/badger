@@ -466,6 +466,11 @@
     @apply bg-slate-950 text-white shadow-sm hover:bg-slate-900 hover:text-white dark:bg-neutral-100 dark:text-neutral-950 dark:hover:bg-white dark:hover:text-neutral-950;
   }
 
+  /* Separates nav tab groups. */
+  .nav-divider {
+    @apply mx-1.5 h-5 w-px bg-slate-200 dark:bg-neutral-800;
+  }
+
   /* Overdue reminders on the Reminders tab (mirrors the dock badge). */
   .nav-count {
     @apply ml-1.5 inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-red-500 px-1.5 py-px text-[11px] font-semibold tabular-nums leading-4 text-white dark:bg-red-500 dark:text-white;

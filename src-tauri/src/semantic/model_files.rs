@@ -133,7 +133,7 @@ impl HttpSource {
             .https_only(true)
             .connect_timeout(std::time::Duration::from_secs(20))
             .read_timeout(std::time::Duration::from_secs(60))
-            .user_agent(concat!("TimeTracker/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("Badger/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| format!("Couldn't start the download: {e}"))?;
         Ok(HttpSource { client })
@@ -322,8 +322,8 @@ pub(crate) mod tests {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
                 .unwrap_or(0);
-            let dir = std::env::temp_dir()
-                .join(format!("timetracker-{tag}-{}-{nanos}", std::process::id()));
+            let dir =
+                std::env::temp_dir().join(format!("badger-{tag}-{}-{nanos}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
             TempDir(dir)
         }
@@ -620,13 +620,13 @@ pub(crate) mod tests {
     }
 
     /// Opt-in, needs network: GETs the pinned files from Hugging Face into
-    /// `TIMETRACKER_DOWNLOAD_DIR` and verifies them (redirects, TLS, hashes).
-    /// `TIMETRACKER_DOWNLOAD_DIR=/tmp/x cargo test -p time-tracker real_download -- --ignored`
+    /// `BADGER_DOWNLOAD_DIR` and verifies them (redirects, TLS, hashes).
+    /// `BADGER_DOWNLOAD_DIR=/tmp/x cargo test -p badger real_download -- --ignored`
     #[tokio::test]
     #[ignore = "downloads ~296 MB; see doc comment"]
     async fn real_download_from_hugging_face() {
         let dir = PathBuf::from(
-            std::env::var_os("TIMETRACKER_DOWNLOAD_DIR").expect("set TIMETRACKER_DOWNLOAD_DIR"),
+            std::env::var_os("BADGER_DOWNLOAD_DIR").expect("set BADGER_DOWNLOAD_DIR"),
         );
         let source = HttpSource::new().unwrap();
         download(&source, &FILES, &dir, &AtomicBool::new(false), &|_, _| {})

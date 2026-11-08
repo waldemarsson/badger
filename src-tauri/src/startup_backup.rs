@@ -136,18 +136,18 @@ mod tests {
 
     #[test]
     fn startup_backup_root_is_sibling_of_database_file() {
-        let db_path = Path::new("/workspace/.timetracker-dev/timetracker.db");
+        let db_path = Path::new("/workspace/.badger-dev/badger.db");
 
         assert_eq!(
             backup_root_dir(db_path),
-            Path::new("/workspace/.timetracker-dev/backups")
+            Path::new("/workspace/.badger-dev/backups")
         );
     }
 
     #[test]
     fn startup_backup_overwrites_same_day_backup_file() {
         let test_dir = unique_test_dir("startup-backup-overwrite");
-        let db_path = test_dir.join("timetracker.db");
+        let db_path = test_dir.join("badger.db");
 
         let first_path = write_daily_backup(&db_path, "2026-05-09", r#"{"version":1}"#)
             .expect("first backup write should succeed");
@@ -166,7 +166,7 @@ mod tests {
     #[test]
     fn startup_backup_trims_old_backups_to_newest_days() {
         let test_dir = unique_test_dir("startup-backup-trim");
-        let db_path = test_dir.join("timetracker.db");
+        let db_path = test_dir.join("badger.db");
 
         write_daily_backup(&db_path, "2026-05-07", r#"{"day":"oldest"}"#)
             .expect("oldest backup write should succeed");
@@ -198,7 +198,7 @@ mod tests {
     #[test]
     fn startup_backup_trim_ignores_dated_directories_without_backup_file() {
         let test_dir = unique_test_dir("startup-backup-trim-ignores-empty-dates");
-        let db_path = test_dir.join("timetracker.db");
+        let db_path = test_dir.join("badger.db");
         let backup_root = backup_root_dir(&db_path);
 
         write_daily_backup(&db_path, "2026-05-08", r#"{"day":"older"}"#)
@@ -225,7 +225,7 @@ mod tests {
     #[test]
     fn startup_backup_trim_with_zero_keeps_no_backups() {
         let test_dir = unique_test_dir("startup-backup-trim-zero");
-        let db_path = test_dir.join("timetracker.db");
+        let db_path = test_dir.join("badger.db");
 
         write_daily_backup(&db_path, "2026-05-08", r#"{"day":"older"}"#)
             .expect("older backup write should succeed");
@@ -246,7 +246,7 @@ mod tests {
     #[test]
     fn startup_backup_listing_is_empty_when_directory_is_missing() {
         let test_dir = unique_test_dir("startup-backup-empty-list");
-        let db_path = test_dir.join("timetracker.db");
+        let db_path = test_dir.join("badger.db");
 
         assert!(list_startup_backups(&db_path)
             .expect("listing missing backups directory should succeed")
@@ -260,7 +260,7 @@ mod tests {
     #[test]
     fn startup_backup_atomic_write_leaves_no_temp_file() {
         let test_dir = unique_test_dir("startup-backup-atomic");
-        let db_path = test_dir.join("timetracker.db");
+        let db_path = test_dir.join("badger.db");
 
         write_daily_backup(&db_path, "2026-05-09", r#"{"version":1}"#)
             .expect("backup write should succeed");
@@ -283,7 +283,7 @@ mod tests {
     #[test]
     fn startup_backup_overwrite_preserves_file_on_same_day() {
         let test_dir = unique_test_dir("startup-backup-preserve");
-        let db_path = test_dir.join("timetracker.db");
+        let db_path = test_dir.join("badger.db");
 
         // Write first backup
         write_daily_backup(&db_path, "2026-05-09", r#"{"version":1}"#)

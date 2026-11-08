@@ -6,7 +6,7 @@ test('ESLint ignores generated Rust build output under target/', async () => {
 	const eslint = new ESLint();
 
 	const ignored = await eslint.isPathIgnored(
-		'target/release/build/time-tracker-example/out/__global-api-script.js'
+		'target/release/build/badger-example/out/__global-api-script.js'
 	);
 
 	assert.equal(ignored, true);

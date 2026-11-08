@@ -409,7 +409,7 @@ disabled={!newProjectId}
 <td colspan="7">
 <div class="empty-state">
 <p class="font-semibold">Loading entries…</p>
-<p>Please wait while TimeTracker loads your timesheet.</p>
+<p>Please wait while Badger loads your timesheet.</p>
 </div>
 </td>
 </tr>

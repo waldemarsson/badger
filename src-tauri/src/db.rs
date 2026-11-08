@@ -139,7 +139,7 @@ CREATE TABLE IF NOT EXISTS note_embeddings (
 /// Opens (or creates) the SQLite database at `db_path` with WAL mode and FK enforcement,
 /// then runs `SCHEMA_SQL` to create all tables idempotently.
 pub async fn init_db(db_path: &Path) -> Result<Pool<Sqlite>, sqlx::Error> {
-    // Ensure ~/.timetracker/ directory exists
+    // Ensure ~/.badger/ directory exists
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent)?; // sqlx::Error::Io via From impl
     }
@@ -295,7 +295,7 @@ mod tests {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
-            let name = format!("timetracker-{tag}-{}-{nanos}.db", std::process::id());
+            let name = format!("badger-{tag}-{}-{nanos}.db", std::process::id());
             TempDb(std::env::temp_dir().join(name))
         }
     }

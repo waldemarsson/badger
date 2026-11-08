@@ -1,12 +1,12 @@
-# TimeTracker — macOS build and install targets
+# Badger — macOS build and install targets
 #
 # Usage:
-#   make build    — compile release bundle (produces target/release/bundle/macos/TimeTracker.app)
+#   make build    — compile release bundle (produces target/release/bundle/macos/Badger.app)
 #   make install  — copy .app to /Applications (requires build to have run first)
 
 .PHONY: build install
 
-APP_NAME    := TimeTracker
+APP_NAME    := Badger
 APP_BUNDLE  := target/release/bundle/macos/$(APP_NAME).app
 INSTALL_DIR := /Applications
 

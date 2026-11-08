@@ -15,7 +15,7 @@ WixTools*/
 
 # sqlx offline artifacts
 .sqlx/
-.timetracker-dev/
+.badger-dev/
 
 # Environment
 .env

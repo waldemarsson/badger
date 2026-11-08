@@ -2,7 +2,7 @@
 
 ## Data model
 
-TimeTracker stores its working data in a local SQLite database. The schema is intentionally small and centered on the time-entry workflow:
+Badger stores its working data in a local SQLite database. The schema is intentionally small and centered on the time-entry workflow:
 
 - `customers` — top-level client records, including a single default marker
 - `projects` — customer-owned projects, also with a default marker
@@ -38,13 +38,13 @@ The database location depends on the build type:
 Development (`npm run dev` / debug builds):
 
 ```text
-.timetracker-dev/timetracker.db
+.badger-dev/badger.db
 ```
 
 Installed and other non-debug builds:
 
 ```text
-~/.timetracker/timetracker.db
+~/.badger/badger.db
 ```
 
 ## Semantic search model files
@@ -52,8 +52,8 @@ Installed and other non-debug builds:
 Enabling semantic search downloads the embedding model (about 350 MB) into a `models/<model-id>/` directory beside the database:
 
 ```text
-.timetracker-dev/models/granite-embedding-311m-multilingual-r2-int8/    (debug builds)
-~/.timetracker/models/granite-embedding-311m-multilingual-r2-int8/      (non-debug builds)
+.badger-dev/models/granite-embedding-311m-multilingual-r2-int8/    (debug builds)
+~/.badger/models/granite-embedding-311m-multilingual-r2-int8/      (non-debug builds)
 ```
 
 The files are not part of backups. The `semantic_search_enabled` setting in `app_settings` is `true` only after the download is verified; like other settings it is not in backups either, so a restored database keeps this machine's value. Downloads stream to `<file>.part` and are renamed only after the SHA-256 matches; stale `.part` files are deleted at startup. Remove model deletes the files and all vectors and turns the setting off. If the setting is on but the files are gone, the Settings section shows an error with a Download button.
@@ -62,7 +62,7 @@ Downgrading to a build without semantic search leaves the `note_embeddings` tabl
 
 ## Automatic startup backups
 
-TimeTracker automatically creates a backup on each application startup. This behavior is controlled by the startup backup retention setting, which defaults to `3`:
+Badger automatically creates a backup on each application startup. This behavior is controlled by the startup backup retention setting, which defaults to `3`:
 
 - **Retention > 0**: A backup is written to `backups/YYYY-MM-DD/backup.json` beside the active database, overwriting any existing backup for today. After creation, old backups are automatically trimmed to keep only the most recent `N` backups.
 - **Retention = 0**: Automatic startup backups are disabled entirely.
@@ -76,13 +76,13 @@ The backup root directory is determined by the database location:
 Development (`npm run dev` / debug builds):
 
 ```text
-.timetracker-dev/backups/YYYY-MM-DD/backup.json
+.badger-dev/backups/YYYY-MM-DD/backup.json
 ```
 
 Installed and other non-debug builds:
 
 ```text
-~/.timetracker/backups/YYYY-MM-DD/backup.json
+~/.badger/backups/YYYY-MM-DD/backup.json
 ```
 
 Startup backup creation, trimming, and listing are handled entirely in Rust and do not involve the frontend beyond displaying the available backups and retention setting in the UI.

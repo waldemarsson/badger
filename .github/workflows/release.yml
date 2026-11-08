@@ -46,6 +46,6 @@ jobs:
         with:
           args: --target aarch64-apple-darwin
           tagName: v__VERSION__-${{ github.run_number }}
-          releaseName: TimeTracker v__VERSION__-${{ github.run_number }}
+          releaseName: Badger v__VERSION__-${{ github.run_number }}
           releaseDraft: false
           prerelease: false

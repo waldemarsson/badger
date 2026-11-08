@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "TimeTracker",
+  "productName": "Badger",
   "version": "1.0.0",
-  "identifier": "com.timetracker.app",
+  "identifier": "io.github.narvallabs.badger",
   "build": {
     "beforeDevCommand": "npm run vite:dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "TimeTracker",
+        "title": "Badger",
         "width": 1280,
         "height": 800
       }

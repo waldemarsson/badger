@@ -106,7 +106,7 @@
 
 <nav class="border-b border-slate-100 dark:border-neutral-800/60 bg-white dark:bg-neutral-900">
   <div class="nav-shell">
-    <span class="nav-brand">TimeTracker</span>
+    <span class="nav-brand">Badger</span>
     <div class="flex flex-wrap items-center gap-1">
       {#each navGroups as group, i (i)}
         {#if i > 0}<span class="nav-divider" aria-hidden="true"></span>{/if}

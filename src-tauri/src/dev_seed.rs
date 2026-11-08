@@ -234,7 +234,7 @@ async fn seed_core_data(pool: &Pool<Sqlite>, today: NaiveDate) -> Result<(), sql
         "INSERT INTO projects (CustomerId, Name, UseAsDefault) VALUES (?, ?, ?) RETURNING id",
     )
     .bind(northwind_customer_id)
-    .bind("TimeTracker Desktop")
+    .bind("Badger Desktop")
     .bind(1_i64)
     .fetch_one(&mut *tx)
     .await?;

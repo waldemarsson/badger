@@ -347,7 +347,7 @@
     try {
       const today = new Date().toISOString().slice(0, 10);
       const path = await save({
-        defaultPath: `TimeTracker-backup-${today}.json`,
+        defaultPath: `badger-backup-${today}.json`,
         filters: [{ name: 'JSON', extensions: ['json'] }],
       });
       if (!path) { backupState = 'idle'; return; }
@@ -370,7 +370,7 @@
       const json = await invoke<string>('read_backup_file', { path });
       const preview = parseBackupPreview(json);
       if (!preview) {
-        restoreParseError = 'Could not read backup file. Make sure it is a valid TimeTracker backup.';
+        restoreParseError = 'Could not read backup file. Make sure it is a valid Badger backup.';
         return;
       }
       currentNoteCount = preview.notes === 0

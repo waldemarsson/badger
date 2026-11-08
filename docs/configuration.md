@@ -2,27 +2,27 @@
 
 ## Runtime locations
 
-TimeTracker uses different runtime roots depending on how the app is started:
+Badger uses different runtime roots depending on how the app is started:
 
 Development (`npm run dev` / debug builds):
 
 ```text
-.timetracker-dev/timetracker.db
-.timetracker-dev/logs/
-.timetracker-dev/backups/
-.timetracker-dev/models/
+.badger-dev/badger.db
+.badger-dev/logs/
+.badger-dev/backups/
+.badger-dev/models/
 ```
 
 Non-debug builds (installed app / release bundle):
 
 ```text
-~/.timetracker/timetracker.db
-~/.timetracker/logs/
-~/.timetracker/backups/
-~/.timetracker/models/
+~/.badger/badger.db
+~/.badger/logs/
+~/.badger/backups/
+~/.badger/models/
 ```
 
-In development, `.timetracker-dev/` lives at the repo root. The database file is created on startup if it does not exist, and log files are written with daily rotation. Automatic startup backups are stored in the `backups/` subdirectory when enabled. `models/` holds the semantic search model once the user enables it (see `docs/architecture.md`, Semantic search); it is created on first download.
+In development, `.badger-dev/` lives at the repo root. The database file is created on startup if it does not exist, and log files are written with daily rotation. Automatic startup backups are stored in the `backups/` subdirectory when enabled. `models/` holds the semantic search model once the user enables it (see `docs/architecture.md`, Semantic search); it is created on first download.
 
 ## Key configuration files
 
@@ -71,7 +71,7 @@ The logger uses `tracing_subscriber::EnvFilter::try_from_default_env()` and fall
 
 ### Startup backup retention
 
-TimeTracker automatically creates a backup on each application startup. The retention setting controls how many recent backups are kept:
+Badger automatically creates a backup on each application startup. The retention setting controls how many recent backups are kept:
 
 - **Default**: 3 backups
 - **Retention > 0**: Backup is created on each startup (overwriting any existing backup for today) and old backups are trimmed to keep the specified number of recent backups

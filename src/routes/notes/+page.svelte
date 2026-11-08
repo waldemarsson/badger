@@ -20,6 +20,9 @@
 	import NoteReader from '#lib/components/NoteReader.svelte';
 	import NoteTree from '#lib/components/NoteTree.svelte';
 	import MoveToDialog from '#lib/components/MoveToDialog.svelte';
+	import ReminderDialog from '#lib/components/ReminderDialog.svelte';
+	import { formatRemindAt } from '#lib/reminders.js';
+	import { showToast } from '#lib/palette-state.svelte.js';
 	import BookOpen from '@lucide/svelte/icons/book-open';
 	import Check from '@lucide/svelte/icons/check';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
@@ -512,6 +515,22 @@
 		await tick();
 		if (moveReturnFocus?.isConnected) moveReturnFocus.focus();
 		moveReturnFocus = null;
+	}
+
+	// "Remind me…" (note row context menu).
+	let reminding = $state<{ id: number; title: string } | null>(null);
+	let remindReturnFocus: HTMLElement | null = null;
+
+	function openRemind(note: NoteSummary): void {
+		remindReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+		reminding = { id: note.id, title: note.title };
+	}
+
+	async function closeRemind(): Promise<void> {
+		reminding = null;
+		await tick();
+		if (remindReturnFocus?.isConnected) remindReturnFocus.focus();
+		remindReturnFocus = null;
 	}
 
 	function pickMove(folderId: number | null): void {
@@ -1028,6 +1047,7 @@
 							ondelete={deleteFolder}
 							ondeletenote={deleteNote}
 							onmoveto={openMove}
+							onremind={openRemind}
 							onmove={(item, folderId) => void moveItem(item, folderId)}
 							onexit={() => searchInput?.focus()}
 						/>
@@ -1292,6 +1312,18 @@
 		</div>
 	</div>
 </div>
+
+{#if reminding}
+	<ReminderDialog
+		noteId={reminding.id}
+		title={reminding.title}
+		onsaved={(r) => {
+			showToast(`Reminder set for ${formatRemindAt(r.remind_at, new Date())}`);
+			void closeRemind();
+		}}
+		onclose={() => void closeRemind()}
+	/>
+{/if}
 
 {#if moving}
 	<MoveToDialog

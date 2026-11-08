@@ -1303,10 +1303,14 @@ pub async fn create_note_titled(
 pub async fn rename_note(
     id: i64,
     title: String,
+    app: tauri::AppHandle,
     pool: State<'_, Pool<Sqlite>>,
     semantic: State<'_, SemanticState>,
 ) -> Result<RenamedNote, AppError> {
-    rename_note_and_queue(id, &title, pool.inner(), semantic.inner()).await
+    let renamed = rename_note_and_queue(id, &title, pool.inner(), semantic.inner()).await?;
+    // Linked reminders show the note's title.
+    crate::reminders_scheduler::reminders_changed(&app, pool.inner()).await;
+    Ok(renamed)
 }
 
 #[tauri::command]
@@ -1331,10 +1335,14 @@ pub async fn set_note_pinned(
 #[tauri::command]
 pub async fn delete_note(
     id: i64,
+    app: tauri::AppHandle,
     pool: State<'_, Pool<Sqlite>>,
     semantic: State<'_, SemanticState>,
 ) -> Result<(), AppError> {
-    delete_note_and_evict(id, pool.inner(), semantic.inner()).await
+    delete_note_and_evict(id, pool.inner(), semantic.inner()).await?;
+    // Its reminders cascade away.
+    crate::reminders_scheduler::reminders_changed(&app, pool.inner()).await;
+    Ok(())
 }
 
 /// `hybrid` (default false) adds semantic hits when semantic search is ready.

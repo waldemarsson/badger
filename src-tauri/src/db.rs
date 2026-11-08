@@ -82,6 +82,29 @@ CREATE TABLE IF NOT EXISTS notes (
     UpdatedAt TEXT    NOT NULL
 );
 
+-- Reminders: the current occurrence (RemindAt, naive local time), the recurrence anchor
+-- (TimeOfDay HH:MM) and rule, an optional link to one todo or one note, and the state.
+CREATE TABLE IF NOT EXISTS reminders (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    Text      TEXT    NOT NULL,
+    RemindAt  TEXT    NOT NULL,
+    TimeOfDay TEXT    NOT NULL,
+    Repeat    TEXT    NOT NULL DEFAULT 'none'
+              CHECK (Repeat IN ('none', 'daily', 'weekdays', 'weekly', 'monthly')),
+    Weekdays  TEXT    NOT NULL DEFAULT '',
+    MonthDay  INTEGER CHECK (MonthDay IS NULL OR MonthDay BETWEEN 1 AND 31),
+    State     TEXT    NOT NULL DEFAULT 'pending'
+              CHECK (State IN ('pending', 'fired', 'done')),
+    TodoId    INTEGER REFERENCES todos(id) ON DELETE CASCADE,
+    NoteId    INTEGER REFERENCES notes(id) ON DELETE CASCADE,
+    CreatedAt TEXT    NOT NULL,
+    UpdatedAt TEXT    NOT NULL,
+    CHECK (TodoId IS NULL OR NoteId IS NULL)
+);
+CREATE INDEX IF NOT EXISTS idx_reminders_state ON reminders(State, RemindAt);
+CREATE INDEX IF NOT EXISTS idx_reminders_todo ON reminders(TodoId);
+CREATE INDEX IF NOT EXISTS idx_reminders_note ON reminders(NoteId);
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_title ON notes(Title COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_notes_folder ON notes(FolderId);
 CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(ParentId);

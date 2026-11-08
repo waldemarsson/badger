@@ -14,6 +14,9 @@
 	import NotebookPen from '@lucide/svelte/icons/notebook-pen';
 	import FileText from '@lucide/svelte/icons/file-text';
 	import Sparkles from '@lucide/svelte/icons/sparkles';
+	import Bell from '@lucide/svelte/icons/bell';
+	import Repeat from '@lucide/svelte/icons/repeat';
+	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 	import { today } from '#lib/date-ranges.js';
 	import {
 		filterItems,
@@ -29,6 +32,8 @@
 	import { splitSearchQuery, tagTerm } from '#lib/note-links.js';
 	import { HYBRID_DEBOUNCE_MS, keepActiveIndex, qualifiesForSemantic, semanticReady, shouldApply, type SearchResponse } from '#lib/semantic.js';
 	import { semantic } from '#lib/semantic-state.svelte.js';
+	import { formatRemindAt, formatRepeat, isPast, parseReminder, type ParseResult } from '#lib/reminders.js';
+	import { saveReminder } from '#lib/reminders-state.svelte.js';
 	import type { Customer, Issue, NoteHit, PaletteSettings, Project, TimeEntryRow } from '#lib/types.js';
 
 	let {
@@ -76,6 +81,7 @@
 		{ id: 'new-todo', label: 'New todo', group: 'Actions', run: () => goTo('todo') },
 		{ id: 'log-time', label: 'Log time', group: 'Actions', run: () => void startLogTime() },
 		{ id: 'new-note', label: 'New note', group: 'Actions', run: createNote },
+		{ id: 'new-reminder', label: 'New reminder', group: 'Actions', run: startRemind },
 		...pages.map((p): Command => ({
 			id: `page:${p.href}`,
 			label: p.label,
@@ -89,6 +95,24 @@
 
 	const filteredCommands = $derived(filterItems(commands, texts.root, (c) => c.label));
 
+	// `remind …` / `påminn …` in the root step: a live parsed preview replaces the list.
+	const remindMode = $derived(step === 'root' && /^(remind|påminn)\s/i.test(texts.root));
+	type RemindPreview =
+		| { kind: 'ok' | 'past'; result: Extract<ParseResult, { remindAt: string }>; now: Date }
+		| { kind: 'hint'; text: string }
+		| { kind: 'no_time'; text: string }
+		| { kind: 'no_text'; text: string };
+	const remindPreview: RemindPreview | null = $derived.by(() => {
+		if (!remindMode) return null;
+		const now = new Date();
+		const result = parseReminder(texts.root, now);
+		if ('error' in result) {
+			const empty = !texts.root.replace(/^\S+\s*/, '').trim();
+			return empty ? { kind: 'hint', text: '' } : { kind: result.error, text: result.text };
+		}
+		return { kind: isPast(result.remindAt, now) ? 'past' : 'ok', result, now };
+	});
+
 	// Notes matching the root query, from the search index; listed after the commands.
 	const NOTE_HIT_LIMIT = 5;
 	// Shorter queries are for commands ("ne" → New note), and would scan every note. A `#tag`
@@ -97,7 +121,7 @@
 	let noteResults = $state<{ term: string; hits: NoteHit[] }>({ term: '', hits: [] });
 	let noteSeq = 0;
 	const noteTerm = $derived.by(() => {
-		const term = open && step === 'root' ? texts.root.trim() : '';
+		const term = open && step === 'root' && !remindMode ? texts.root.trim() : '';
 		return [...term].length >= MIN_NOTE_QUERY_CHARS || term.split(/\s+/).some((t) => tagTerm(t) !== null)
 			? term
 			: '';
@@ -146,7 +170,8 @@
 	});
 
 	const listLength = $derived(
-		step === 'root' ? filteredCommands.length + noteHits.length
+		remindMode ? 1
+		: step === 'root' ? filteredCommands.length + noteHits.length
 		: step === 'project' ? filteredProjects.length
 		: step === 'issue' ? issueOptions.length
 		: 0
@@ -163,7 +188,7 @@
 		}[step]
 	);
 
-	const StepIcon = $derived(step === 'todo' ? ListTodo : step === 'hours' || step === 'notes' ? Clock : Search);
+	const StepIcon = $derived(remindMode ? Bell : step === 'todo' ? ListTodo : step === 'hours' || step === 'notes' ? Clock : Search);
 
 	const dateLabel = $derived(
 		date === today() ? 'Today' : date === shiftDate(today(), -1) ? 'Yesterday' : date
@@ -365,10 +390,53 @@
 		void goto(`${resolve('/notes')}?id=${id}`);
 	}
 
+	// ── New reminder (`remind …`) ──────────────────────────────────────────────────
+
+	async function startRemind(): Promise<void> {
+		texts.root = 'remind ';
+		highlight = 0;
+		error = '';
+		await tick();
+		input?.focus();
+	}
+
+	/** Creates the previewed reminder; without a recognised time, opens the form with the text. */
+	async function submitReminder(): Promise<void> {
+		const preview = remindPreview;
+		if (busy || !preview) return;
+		if (preview.kind === 'no_time') {
+			close();
+			// eslint-disable-next-line svelte/no-navigation-without-resolve -- resolved path plus a query string
+			void goto(`${resolve('/reminders')}?new=1&text=${encodeURIComponent(preview.text)}`);
+			return;
+		}
+		if (preview.kind === 'hint' || preview.kind === 'no_text') {
+			error = 'Type what to be reminded about, and when';
+			return;
+		}
+		if (preview.kind === 'past' || isPast(preview.result.remindAt, new Date())) {
+			error = 'Time is in the past';
+			return;
+		}
+		busy = true;
+		error = '';
+		try {
+			const { text, remindAt, repeat, weekdays, monthDay } = preview.result;
+			const saved = await saveReminder(null, { text, remindAt, repeat, weekdays, monthDay, todoId: null, noteId: null });
+			showToast(`Reminder set for ${formatRemindAt(saved.remind_at, new Date())}`);
+			close();
+		} catch (e) {
+			error = String(e);
+		} finally {
+			busy = false;
+		}
+	}
+
 	// ── Keyboard ───────────────────────────────────────────────────────────────────
 
 	function pick(index: number): void {
-		if (step === 'root') {
+		if (remindMode) void submitReminder();
+		else if (step === 'root') {
 			if (index < filteredCommands.length) filteredCommands[index].run();
 			else if (noteHits[index - filteredCommands.length]) openNote(noteHits[index - filteredCommands.length].id);
 		}
@@ -513,6 +581,51 @@
 	</button>
 {/snippet}
 
+{#snippet remindRow(p: RemindPreview)}
+	<p class="px-3 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400 dark:text-neutral-500">New reminder</p>
+	<button
+		type="button"
+		tabindex="-1"
+		data-active="true"
+		class="flex w-full min-w-0 items-start gap-3 rounded-lg px-3 py-2.5 text-left text-sm transition-colors {p.kind === 'ok'
+			? 'bg-sky-50 text-sky-900 dark:bg-sky-500/10 dark:text-sky-300'
+			: 'bg-slate-50 text-slate-700 dark:bg-neutral-800/60 dark:text-neutral-300'}"
+		onclick={() => void submitReminder()}
+	>
+		<Bell size={16} class="mt-0.5 shrink-0 {p.kind === 'ok' ? 'text-sky-500 dark:text-sky-400' : 'text-slate-400 dark:text-neutral-500'}" />
+		<span class="min-w-0 flex-1">
+			{#if p.kind === 'ok' || p.kind === 'past'}
+				<span class="block truncate font-medium">{p.result.text}</span>
+				<span class="mt-1 flex flex-wrap items-center gap-1.5 text-xs">
+					<span class="kanban-badge {p.kind === 'past'
+						? 'bg-red-50 text-red-700 ring-red-200 dark:bg-red-500/10 dark:text-red-300 dark:ring-red-500/30'
+						: 'bg-white text-slate-700 ring-slate-200 dark:bg-neutral-900 dark:text-neutral-200 dark:ring-neutral-700'}">
+						<Clock size={12} class="shrink-0" />{formatRemindAt(p.result.remindAt, p.now)}
+					</span>
+					{#if p.result.repeat !== 'none'}
+						<span class="kanban-badge bg-white text-slate-700 ring-slate-200 dark:bg-neutral-900 dark:text-neutral-200 dark:ring-neutral-700">
+							<Repeat size={12} class="shrink-0" />{formatRepeat(p.result)}
+						</span>
+					{/if}
+					{#if p.kind === 'past'}
+						<span class="inline-flex items-center gap-1 font-medium text-red-600 dark:text-red-400"><TriangleAlert size={12} />Time is in the past</span>
+					{/if}
+				</span>
+			{:else if p.kind === 'hint'}
+				<span class="block text-slate-500 dark:text-neutral-400">Type what and when</span>
+				<span class="mt-0.5 block truncate font-mono text-xs text-slate-400 dark:text-neutral-500">call Anna in 20 min · standup every weekday 9:00 · pay rent every 25th</span>
+			{:else if p.kind === 'no_time'}
+				<span class="block truncate font-medium">{p.text}</span>
+				<span class="mt-1 inline-flex items-center gap-1 text-xs font-medium text-amber-700 dark:text-amber-400">
+					<TriangleAlert size={12} />No time recognised — <kbd class="palette-kbd">↩</kbd> opens the form
+				</span>
+			{:else}
+				<span class="block text-slate-500 dark:text-neutral-400">What should I remind you about?</span>
+			{/if}
+		</span>
+	</button>
+{/snippet}
+
 {#snippet empty(message: string)}
 	<p class="px-3 py-6 text-center text-sm text-slate-500 dark:text-neutral-400">{message}</p>
 {/snippet}
@@ -588,7 +701,9 @@
 
 			{#if step === 'root' || step === 'project' || step === 'issue'}
 				<div bind:this={list} class="max-h-96 overflow-y-auto border-t border-slate-100 p-2 dark:border-neutral-800">
-					{#if step === 'root'}
+					{#if remindPreview}
+						{@render remindRow(remindPreview)}
+					{:else if step === 'root'}
 						{#if filteredCommands.length === 0 && noteHits.length === 0 && !notesPending}
 							{@render empty('No matching commands or notes')}
 						{/if}
@@ -603,6 +718,7 @@
 										c.id === 'new-todo' ? ListTodo
 										: c.id === 'log-time' ? Clock
 										: c.id === 'new-note' ? NotebookPen
+										: c.id === 'new-reminder' ? Bell
 										: ArrowRight
 									)}
 								{/each}
@@ -648,6 +764,10 @@
 					<span><kbd class="palette-kbd">↩</kbd> next</span>
 				{:else if step === 'todo' || step === 'notes'}
 					<span><kbd class="palette-kbd">↩</kbd> save</span>
+				{:else if remindPreview}
+					{#if remindPreview.kind === 'ok' || remindPreview.kind === 'no_time'}
+						<span><kbd class="palette-kbd">↩</kbd> {remindPreview.kind === 'no_time' ? 'open form' : 'set reminder'}</span>
+					{/if}
 				{:else}
 					<span><kbd class="palette-kbd">↑</kbd><kbd class="palette-kbd">↓</kbd> navigate</span>
 					<span><kbd class="palette-kbd">↩</kbd> select</span>

@@ -6,6 +6,7 @@ pub mod issues;
 pub mod markdown;
 pub mod notes;
 pub mod projects;
+pub mod reminders;
 pub mod reports;
 pub mod semantic;
 pub mod settings;

@@ -76,7 +76,139 @@ pub(crate) async fn seed_test_data_if_empty_with_anchor(
     if existing_customers.0 == 0 {
         seed_core_data(pool, today).await?;
     }
-    seed_notes_if_empty(pool).await
+    seed_notes_if_empty(pool).await?;
+    seed_reminders_if_empty(pool, crate::commands::reminders::local_now()).await
+}
+
+/// A few sample reminders around `now`: overdue, later today, tomorrow, recurring, one
+/// linked to the "Weekly sync" note when it exists, and one done. Runs whenever the
+/// `reminders` table is empty.
+#[cfg(debug_assertions)]
+async fn seed_reminders_if_empty(
+    pool: &Pool<Sqlite>,
+    now: chrono::NaiveDateTime,
+) -> Result<(), sqlx::Error> {
+    use crate::commands::reminders::{
+        first_occurrence, format_time_of_day, format_timestamp, local_exists, Rule,
+    };
+    use chrono::NaiveTime;
+
+    let existing: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM reminders")
+        .fetch_one(pool)
+        .await?;
+    if existing.0 > 0 {
+        return Ok(());
+    }
+    let note_id: Option<i64> = sqlx::query_scalar("SELECT id FROM notes WHERE Title = ?")
+        .bind("Weekly sync")
+        .fetch_optional(pool)
+        .await?;
+
+    let at = |t: chrono::NaiveDateTime| format_timestamp(t);
+    let hm = |h, m| NaiveTime::from_hms_opt(h, m, 0).unwrap_or(NaiveTime::MIN);
+    let tomorrow = now.date() + Duration::days(1);
+    let standup = first_occurrence(&Rule::Weekdays, now, hm(9, 0), local_exists)
+        .unwrap_or(tomorrow.and_time(hm(9, 0)));
+    let rent = first_occurrence(&Rule::Monthly(25), now, hm(8, 0), local_exists)
+        .unwrap_or(tomorrow.and_time(hm(8, 0)));
+    let later = now + Duration::hours(3);
+    let overdue = now - Duration::hours(2);
+    let yesterday = now - Duration::days(1);
+
+    // (text, remind_at, time_of_day, repeat, weekdays, month_day, state, note_id)
+    type Row<'a> = (
+        &'a str,
+        String,
+        String,
+        &'a str,
+        &'a str,
+        Option<i64>,
+        &'a str,
+        Option<i64>,
+    );
+    let rows: [Row; 6] = [
+        (
+            "Send invoice to Northwind",
+            at(overdue),
+            format_time_of_day(overdue.time()),
+            "none",
+            "",
+            None,
+            "fired",
+            None,
+        ),
+        (
+            "Prepare the weekly sync",
+            at(later),
+            format_time_of_day(later.time()),
+            "none",
+            "",
+            None,
+            "pending",
+            note_id,
+        ),
+        (
+            "Call Anna about the release",
+            at(tomorrow.and_time(hm(14, 0))),
+            "14:00".into(),
+            "none",
+            "",
+            None,
+            "pending",
+            None,
+        ),
+        (
+            "Standup",
+            at(standup),
+            "09:00".into(),
+            "weekdays",
+            "",
+            None,
+            "pending",
+            None,
+        ),
+        (
+            "Pay rent",
+            at(rent),
+            "08:00".into(),
+            "monthly",
+            "",
+            Some(25),
+            "pending",
+            None,
+        ),
+        (
+            "Book the dentist",
+            at(yesterday),
+            format_time_of_day(yesterday.time()),
+            "none",
+            "",
+            None,
+            "done",
+            None,
+        ),
+    ];
+    let stamp = at(now);
+    let mut tx = pool.begin().await?;
+    for (text, remind_at, time_of_day, repeat, weekdays, month_day, state, note_id) in rows {
+        sqlx::query(
+            "INSERT INTO reminders (Text, RemindAt, TimeOfDay, Repeat, Weekdays, MonthDay, State, \
+                 NoteId, CreatedAt, UpdatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(text)
+        .bind(remind_at)
+        .bind(time_of_day)
+        .bind(repeat)
+        .bind(weekdays)
+        .bind(month_day)
+        .bind(state)
+        .bind(note_id)
+        .bind(&stamp)
+        .bind(&stamp)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await
 }
 
 /// Customers, projects, issues, time entries, and trips.
@@ -1033,6 +1165,17 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(pinned.0, 1, "expected one pinned note");
+        assert_eq!(
+            count(&pool, "reminders").await,
+            6,
+            "expected seeded reminders"
+        );
+        let linked: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM reminders WHERE NoteId IS NOT NULL")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(linked.0, 1, "expected one reminder linked to a note");
     }
 
     async fn count(pool: &Pool<Sqlite>, table: &str) -> i64 {

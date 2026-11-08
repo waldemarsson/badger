@@ -91,6 +91,26 @@ pub struct BackupNote {
     pub updated_at: String,
 }
 
+/// A reminder as stored in a backup file (`weekdays` as stored, e.g. `"1,4"`).
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow, PartialEq)]
+pub struct BackupReminder {
+    pub id: i64,
+    pub text: String,
+    pub remind_at: String,
+    pub time_of_day: String,
+    pub repeat: String,
+    pub weekdays: String,
+    pub month_day: Option<i64>,
+    pub state: String,
+    pub todo_id: Option<i64>,
+    pub note_id: Option<i64>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Shown when a restored reminder links a todo or note that is not in the backup.
+const INVALID_REMINDER_REF: &str = "Backup is invalid: a reminder refers to a missing todo or note";
+
 /// Shown when a restored folder or note points at a folder that is not in the backup.
 const INVALID_FOLDER_REF: &str = "Backup is invalid: a folder or note refers to a missing folder";
 
@@ -123,6 +143,9 @@ pub struct BackupData {
     /// Absent in backups made before notes existed.
     #[serde(default)]
     pub notes: Vec<BackupNote>,
+    /// Absent in backups made before reminders existed.
+    #[serde(default)]
+    pub reminders: Vec<BackupReminder>,
 }
 
 /// Reads all data from the database and serialises it to a JSON string.
@@ -175,6 +198,12 @@ pub async fn inner_backup_data(pool: &Pool<Sqlite>) -> Result<String, AppError> 
     .fetch_all(pool)
     .await?;
 
+    let reminders = sqlx::query_as::<_, BackupReminder>(
+        "SELECT id, Text as text, RemindAt as remind_at, TimeOfDay as time_of_day, Repeat as repeat, Weekdays as weekdays, MonthDay as month_day, State as state, TodoId as todo_id, NoteId as note_id, CreatedAt as created_at, UpdatedAt as updated_at FROM reminders ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await?;
+
     let backup = BackupData {
         customers,
         projects,
@@ -184,25 +213,30 @@ pub async fn inner_backup_data(pool: &Pool<Sqlite>) -> Result<String, AppError> 
         travel,
         folders,
         notes,
+        reminders,
     };
     serde_json::to_string(&backup).map_err(|e| AppError::Custom(e.to_string()))
 }
 
 /// Replaces all data with the contents of a JSON backup.
 ///
-/// Deletes everything first (customers cascade via FK; todos, travel, notes and
-/// folders are cleared explicitly), then re-inserts the backup in one transaction.
+/// Deletes everything first (customers cascade via FK; reminders, todos, travel, notes
+/// and folders are cleared explicitly), then re-inserts the backup in one transaction.
 pub async fn inner_restore_data(json: &str, pool: &Pool<Sqlite>) -> Result<(), AppError> {
     let mut data: BackupData = serde_json::from_str(json)
         .map_err(|e| AppError::Custom(format!("Invalid backup JSON: {}", e)))?;
     check_note_titles(&data.notes)?;
     check_folder_tree(&data.folders)?;
     suffix_duplicate_folder_names(&mut data.folders);
+    check_reminder_links(&data)?;
 
     let mut tx = pool.begin().await?;
 
     // Single delete cascades to projects → issues → time_entries via ON DELETE CASCADE.
     sqlx::query("DELETE FROM customers")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM reminders")
         .execute(&mut *tx)
         .await?;
     // Todos are not reached by the cascade (their issue link is SET NULL).
@@ -253,6 +287,7 @@ pub async fn inner_restore_data(json: &str, pool: &Pool<Sqlite>) -> Result<(), A
     insert_todos(&data.todos, &mut tx).await?;
     insert_travel(&data.travel, &mut tx).await?;
     insert_folders_and_notes(&data.folders, &data.notes, &mut tx).await?;
+    insert_reminders(&data.reminders, &mut tx).await?;
     // The search and link indexes are derived and not in the backup: rebuild them in the
     // same transaction.
     crate::commands::notes::rebuild_index(&mut tx).await?;
@@ -264,6 +299,23 @@ pub async fn inner_restore_data(json: &str, pool: &Pool<Sqlite>) -> Result<(), A
         _ => AppError::Database(e),
     })?;
     Ok(())
+}
+
+/// Rejects reminders linking a todo or note that is not in the backup (foreign keys are
+/// deferred during restore, so the commit error would blame folders instead).
+fn check_reminder_links(data: &BackupData) -> Result<(), AppError> {
+    use std::collections::HashSet;
+    let todos: HashSet<i64> = data.todos.iter().map(|t| t.id).collect();
+    let notes: HashSet<i64> = data.notes.iter().map(|n| n.id).collect();
+    let dangling = data.reminders.iter().any(|r| {
+        matches!(r.todo_id, Some(id) if !todos.contains(&id))
+            || matches!(r.note_id, Some(id) if !notes.contains(&id))
+    });
+    if !dangling {
+        Ok(())
+    } else {
+        Err(AppError::Custom(INVALID_REMINDER_REF.to_string()))
+    }
 }
 
 /// Rejects case-insensitive duplicate note titles, folding like the notes commands do
@@ -385,6 +437,33 @@ async fn insert_todos(
     Ok(())
 }
 
+/// Inserts reminders. Runs after todos and notes so their links resolve.
+async fn insert_reminders(
+    reminders: &[BackupReminder],
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+) -> Result<(), AppError> {
+    for r in reminders {
+        sqlx::query(
+            "INSERT INTO reminders (id, Text, RemindAt, TimeOfDay, Repeat, Weekdays, MonthDay, State, TodoId, NoteId, CreatedAt, UpdatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(r.id)
+        .bind(&r.text)
+        .bind(&r.remind_at)
+        .bind(&r.time_of_day)
+        .bind(&r.repeat)
+        .bind(&r.weekdays)
+        .bind(r.month_day)
+        .bind(&r.state)
+        .bind(r.todo_id)
+        .bind(r.note_id)
+        .bind(&r.created_at)
+        .bind(&r.updated_at)
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
+}
+
 /// Inserts trips. Travel has no foreign keys, so order does not matter.
 async fn insert_travel(
     travel: &[BackupTravel],
@@ -429,11 +508,13 @@ pub async fn read_backup_file(path: String) -> Result<String, AppError> {
 #[tauri::command]
 pub async fn restore_data(
     json: String,
+    app: tauri::AppHandle,
     pool: State<'_, Pool<Sqlite>>,
     semantic: State<'_, crate::semantic::SemanticState>,
 ) -> Result<(), AppError> {
     inner_restore_data(&json, &pool).await?;
     crate::commands::semantic::after_restore(semantic.inner(), pool.inner()).await;
+    crate::reminders_scheduler::reminders_changed(&app, pool.inner()).await;
     Ok(())
 }
 
@@ -916,6 +997,73 @@ mod tests {
             serde_json::from_str(&inner_backup_data(&pool).await.unwrap()).unwrap();
         assert_eq!(result.issues.len(), 1);
         assert_eq!(result.issues[0].title, "Old issue");
+    }
+
+    async fn seed_reminders(pool: &Pool<Sqlite>) {
+        seed_test_data(pool).await;
+        seed_notes(pool).await;
+        sqlx::query(
+            "INSERT INTO reminders (id, Text, RemindAt, TimeOfDay, Repeat, Weekdays, MonthDay, State, TodoId, NoteId, CreatedAt, UpdatedAt) VALUES \
+             (1, 'Call Anna', '2026-11-09T09:00:00.000', '09:00', 'weekly', '1,4', NULL, 'pending', 1, NULL, '2026-11-01T00:00:00.000', '2026-11-01T00:00:00.000'), \
+             (2, 'Read note', '2026-11-08T10:00:00.000', '10:00', 'monthly', '', 31, 'fired', NULL, 2, '2026-11-01T00:00:00.000', '2026-11-08T10:00:00.000'), \
+             (3, 'Done one', '2026-11-07T08:00:00.000', '08:00', 'none', '', NULL, 'done', NULL, NULL, '2026-11-01T00:00:00.000', '2026-11-07T08:01:00.000')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_backup_restore_roundtrips_reminders_with_links() {
+        let pool = crate::test_db().await;
+        seed_reminders(&pool).await;
+        let json = inner_backup_data(&pool).await.expect("backup failed");
+        let original: BackupData = serde_json::from_str(&json).unwrap();
+        assert_eq!(original.reminders.len(), 3);
+
+        sqlx::query("DELETE FROM reminders")
+            .execute(&pool)
+            .await
+            .unwrap();
+        inner_restore_data(&json, &pool)
+            .await
+            .expect("restore failed");
+        let result: BackupData =
+            serde_json::from_str(&inner_backup_data(&pool).await.unwrap()).unwrap();
+        assert_eq!(result.reminders, original.reminders);
+        assert_eq!(result.reminders[0].todo_id, Some(1));
+        assert_eq!(result.reminders[1].note_id, Some(2));
+        assert_eq!(result.reminders[0].weekdays, "1,4");
+        assert_eq!(result.reminders[1].month_day, Some(31));
+    }
+
+    #[tokio::test]
+    async fn test_restore_without_reminders_field_clears_reminders() {
+        let pool = crate::test_db().await;
+        seed_reminders(&pool).await;
+        let legacy = r#"{"customers":[],"projects":[],"issues":[],"time_entries":[],"todos":[{"id":5,"title":"T","notes":null,"status":"not_started","position":0,"due_date":null,"created_at":"2024-01-01T00:00:00.000","issue_id":null}]}"#;
+        inner_restore_data(legacy, &pool)
+            .await
+            .expect("backup without reminders must restore");
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM reminders")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count.0, 0, "replace clears reminders not in the backup");
+    }
+
+    #[tokio::test]
+    async fn test_restore_reminder_with_missing_link_is_rejected() {
+        let pool = crate::test_db().await;
+        seed_reminders(&pool).await;
+        let json = r#"{"customers":[],"projects":[],"issues":[],"time_entries":[],"reminders":[{"id":1,"text":"x","remind_at":"2026-11-09T09:00:00.000","time_of_day":"09:00","repeat":"none","weekdays":"","month_day":null,"state":"pending","todo_id":7,"note_id":null,"created_at":"c","updated_at":"u"}]}"#;
+        let err = inner_restore_data(json, &pool).await.unwrap_err();
+        assert_eq!(err.to_string(), INVALID_REMINDER_REF);
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM reminders")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count.0, 3, "a rejected restore keeps the existing data");
     }
 
     #[tokio::test]

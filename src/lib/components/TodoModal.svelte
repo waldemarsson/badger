@@ -5,6 +5,11 @@
 	import type { Customer, Issue, Project, TodoRow, TodoStatus } from '#lib/types.js';
 	import { COLUMNS } from '#lib/todos.js';
 	import Combobox from '#lib/components/Combobox.svelte';
+	import ReminderForm from '#lib/components/ReminderForm.svelte';
+	import ReminderRow from '#lib/components/ReminderRow.svelte';
+	import { activeForTodo } from '#lib/reminders.js';
+	import { clock, reminders } from '#lib/reminders-state.svelte.js';
+	import Bell from '@lucide/svelte/icons/bell';
 	import X from '@lucide/svelte/icons/x';
 	import Link2 from '@lucide/svelte/icons/link-2';
 	import Unlink from '@lucide/svelte/icons/unlink';
@@ -37,6 +42,12 @@
 	let customerId = $state('');
 	let projectId = $state('');
 	let issueTitle = $state('');
+
+	// Reminders linked to this todo (pending and fired), from the shared list.
+	const now = $derived(new Date(clock.ms));
+	const todoReminders = $derived(activeForTodo(reminders.list, current.id));
+	let addingReminder = $state(false);
+	let editingReminder = $state<number | null>(null);
 
 	async function save(): Promise<void> {
 		error = '';
@@ -250,6 +261,47 @@
 				</div>
 			</div>
 		{/if}
+
+		<div class="mx-6 mb-5 border-t border-slate-100 pt-4 dark:border-neutral-800">
+			<div class="flex items-center gap-2">
+				<span class="form-label">Reminders</span>
+				{#if todoReminders.length}
+					<span class="today-count">{todoReminders.length}</span>
+				{/if}
+				{#if !addingReminder}
+					<button class="btn-secondary-sm ml-auto gap-1.5" onclick={() => ((addingReminder = true), (editingReminder = null))}>
+						<Bell size={13} /> Remind me…
+					</button>
+				{/if}
+			</div>
+			{#if todoReminders.length}
+				<div class="mt-1 divide-y divide-slate-100 dark:divide-neutral-800">
+					{#each todoReminders as r (r.id)}
+						{#if editingReminder === r.id}
+							<div class="py-2">
+								<ReminderForm reminder={r} showLink={false} onsaved={() => (editingReminder = null)} oncancel={() => (editingReminder = null)} />
+							</div>
+						{:else}
+							<ReminderRow {r} {now} showLink={false} onedit={() => ((editingReminder = r.id), (addingReminder = false))} />
+						{/if}
+					{/each}
+				</div>
+			{:else if !addingReminder}
+				<p class="mt-1.5 text-xs text-slate-400 dark:text-neutral-500">No reminders for this card</p>
+			{/if}
+			{#if addingReminder}
+				<div class="mt-2" transition:fade={{ duration: 120 }}>
+					<ReminderForm
+						text={current.title}
+						todoId={current.id}
+						linkTitle={current.title}
+						showLink={false}
+						onsaved={() => (addingReminder = false)}
+						oncancel={() => (addingReminder = false)}
+					/>
+				</div>
+			{/if}
+		</div>
 
 		{#if error}
 			<p class="mx-6 mb-4 rounded-lg bg-red-50 dark:bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-300 ring-1 ring-red-200 dark:ring-red-500/30">{error}</p>

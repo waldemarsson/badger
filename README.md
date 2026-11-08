@@ -20,7 +20,7 @@ No account, no cloud, no subscription, no telemetry. Everything lives in one SQL
 
 ### Today — start the day here
 
-Overdue and due-today todos, what's in progress, hours logged today, and a Mon–Sun strip showing progress against your daily target. Complete a todo or log time on it in one click.
+Overdue and due-today todos, today's reminders, what's in progress, hours logged today, and a Mon–Sun strip showing progress against your daily target. Complete a todo or log time on it in one click.
 
 | Light | Dark |
 | --- | --- |
@@ -28,7 +28,7 @@ Overdue and due-today todos, what's in progress, hours logged today, and a Mon�
 
 ### Command palette — do anything with ⌘K
 
-Log time, create a todo or note, jump to any page, or search notes without touching the mouse. It remembers your last project and issue, so a time entry is a few keystrokes. The shortcut is configurable.
+Log time, create a todo or note, set a reminder, jump to any page, or search notes without touching the mouse. It remembers your last project and issue, so a time entry is a few keystrokes. The shortcut is configurable.
 
 ![Command palette](docs/screenshots/palette.png)
 
@@ -40,11 +40,19 @@ Add, edit, and delete entries in place, with pickers for customer → project �
 
 ### Todos — a kanban board, not a table
 
-Drag cards between *Not started*, *In progress*, and *Done*. Due dates turn amber for today and red when overdue. Link a todo to an issue (or create the issue from the card) so it's one click from logging time.
+Drag cards between *Not started*, *In progress*, and *Done*. Due dates turn amber for today and red when overdue. Link a todo to an issue (or create the issue from the card) so it's one click from logging time. A bell on the card shows its next reminder; set one with *Remind me…* in the card's editor.
 
 | Light | Dark |
 | --- | --- |
 | ![Todos](docs/screenshots/todos.png) | ![Todos, dark](docs/screenshots/todos-dark.png) |
+
+### Reminders — Slack-style, from anywhere
+
+One-off or recurring reminders: daily, weekdays, weekly, or monthly. Type `remind call Anna in 20 min` (or Swedish `påminn…`) in ⌘K and a live preview shows exactly when it will fire, or set one from a todo or a note. When it's due you get a native macOS notification, or an in-app toast with *Done* and *Snooze* while the app is in front. Overdue reminders are counted on the nav tab and the dock badge, and ones that came due while the app was closed show up on the next launch.
+
+| Light | Dark |
+| --- | --- |
+| ![Reminders](docs/screenshots/reminders.png) | ![Reminders, dark](docs/screenshots/reminders-dark.png) |
 
 ### Notes — markdown with live preview
 

@@ -15,7 +15,7 @@ node --test tests/*.mjs             # frontend unit tests
 
 Prettier is not enforced and many files predate it. Do not reformat files you did not otherwise change.
 
-CI only builds releases: every push to `main` publishes a new macOS release. Nothing runs these gates for you.
+CI only builds releases: pushing a `v*` tag publishes a new macOS release. Nothing runs these gates for you.
 
 ## Ground rules
 

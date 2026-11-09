@@ -2,8 +2,7 @@ name: Release
 
 on:
   push:
-    branches: [main]
-  workflow_dispatch:
+    tags: ['v*']
 
 jobs:
   release-macos:
@@ -13,6 +12,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # The bundle takes its version from tauri.conf.json, so a tag that
+      # disagrees would ship a mislabelled app. Accept v<version> or
+      # v<version>-<suffix> (e.g. v1.0.0, v1.0.0-31).
+      - name: Check tag matches app version
+        run: |
+          version=$(jq -r .version src-tauri/tauri.conf.json)
+          tag="$GITHUB_REF_NAME"
+          if [[ "$tag" != "v$version" && "$tag" != "v$version-"* ]]; then
+            echo "::error::Tag $tag does not match app version $version (expected v$version or v$version-<suffix>)"
+            exit 1
+          fi
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -45,7 +56,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           args: --target aarch64-apple-darwin
-          tagName: v__VERSION__-${{ github.run_number }}
-          releaseName: Badger v__VERSION__-${{ github.run_number }}
+          tagName: ${{ github.ref_name }}
+          releaseName: Badger ${{ github.ref_name }}
           releaseDraft: false
           prerelease: false

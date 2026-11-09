@@ -1,26 +1,39 @@
-// Pure helpers for the notes folder tree: sorting, grouping, the flattened visible rows
-// the list renders and navigates, folder paths, move targets and free-name suffixing.
+// Pure helpers for the notes folder tree: manual order, grouping, the flattened visible
+// rows the list renders and navigates, folder paths, move targets, free-name suffixing,
+// and where a drag or ⌥↑/⌥↓ puts an item.
 import type { Folder, NoteSummary } from '#lib/types.js';
 
 // ── Sorting and grouping ──────────────────────────────────────────────────────
 
-const collator = new Intl.Collator(undefined, { sensitivity: 'accent', numeric: true });
-
-/** A–Z in the user's locale, ignoring case ("Work 2" before "Work 10"), then id. */
+/** Manual order (same as list_folders): position, then id. Names never re-sort. */
 export function compareFolders(a: Folder, b: Folder): number {
-	return collator.compare(a.name, b.name) || a.id - b.id;
+	return a.position - b.position || a.id - b.id;
 }
 
 export function sortFolders(folders: Folder[]): Folder[] {
 	return [...folders].sort(compareFolders);
 }
 
+/**
+ * Mirrors move_folder: puts folder `id` under `parentId` at `index` among its siblings
+ * there (clamped; null: the end) and renumbers them. Rust may also suffix the name on a
+ * clash; the reload that follows picks that up.
+ */
+export function moveFolderLocally(folders: Folder[], id: number, parentId: number | null, index: number | null): Folder[] {
+	const folder = folders.find((f) => f.id === id);
+	if (!folder) return folders;
+	const siblings = sortFolders(folders.filter((f) => f.parent_id === parentId && f.id !== id));
+	siblings.splice(Math.max(0, Math.min(index ?? siblings.length, siblings.length)), 0, { ...folder, parent_id: parentId });
+	const placed = new Map(siblings.map((f, i) => [f.id, { ...f, position: i }]));
+	return folders.map((f) => placed.get(f.id) ?? f);
+}
+
 /** Folders and notes grouped by parent (root = null). */
 export interface FolderTree {
 	byId: Map<number, Folder>;
-	/** Child folders per parent, sorted with `compareFolders`. */
+	/** Child folders per parent, in manual order (`compareFolders`). */
 	folders: Map<number | null, Folder[]>;
-	/** Notes per folder, in input order (pass `sortNotes` output). */
+	/** Notes per folder, in input order (pass `sortNotes` output: pinned first). */
 	notes: Map<number | null, NoteSummary[]>;
 }
 
@@ -272,7 +285,7 @@ export function treeKeyAction(rows: readonly TreeRow[], index: number, key: stri
 }
 
 /**
- * The open note's replacement after deleting it: the next note in the same folder (sorted
+ * The open note's replacement after deleting it: the next note in the same folder (list
  * order), else the previous one there, else none. Collapse state doesn't matter.
  */
 export function noteNeighbour(tree: FolderTree, id: number): number | null {
@@ -290,18 +303,147 @@ export type DragItem =
 	| { kind: 'note'; id: number; folderId: number | null }
 	| { kind: 'folder'; id: number; parentId: number | null };
 
+/** Where a move puts an item: into `folderId` at `index` among its group there (a note's
+ * own pin group, or the subfolders); null: the default (a note at the top of its group, a
+ * folder at the end). The `move_note` / `move_folder` arguments. */
+export interface MovePlan {
+	folderId: number | null;
+	index: number | null;
+}
+
+/** A drop: the move, plus the insertion line to draw (null: highlight the folder instead). */
+export interface DropTarget extends MovePlan {
+	line: { key: string; edge: 'before' | 'after'; depth: number } | null;
+}
+
+/** What is under the pointer: a visible row with the pointer's relative height in it
+ * (0 top … 1 bottom), the "Notes" root row, the empty space below the rows, or nothing. */
+export type DropHover = { index: number; fraction: number } | 'root' | 'end' | null;
+
+/** The dragged note's summary and its siblings (list order) in its folder. */
+function noteContext(tree: FolderTree, item: Extract<DragItem, { kind: 'note' }>) {
+	const list = tree.notes.get(item.folderId) ?? [];
+	const note = list.find((n) => n.id === item.id);
+	if (!note) return null;
+	const group = list.filter((n) => n.pinned === note.pinned);
+	return { note, index: group.indexOf(note) };
+}
+
+/** Moving `item` into `folderId` with the default placement; undefined when it's a no-op
+ * or invalid (unknown folder; a folder into itself, a descendant, or its own parent). */
+function intoTarget(tree: FolderTree, item: DragItem, folderId: number | null): DropTarget | undefined {
+	if (folderId !== null && !tree.byId.has(folderId)) return undefined;
+	if (item.kind === 'note') {
+		// Into its own folder: the top of its group, unless it is already there.
+		if (folderId === item.folderId && (noteContext(tree, item)?.index ?? 0) === 0) return undefined;
+	} else {
+		if (folderId === item.parentId) return undefined;
+		if (folderId !== null && descendantIds(tree, item.id).has(folderId)) return undefined;
+	}
+	return { folderId, index: null, line: null };
+}
+
+/** A note dropped at the `edge` of note row `row`: snapped into the dragged note's own pin
+ * group in that folder. */
+function noteSlot(tree: FolderTree, item: Extract<DragItem, { kind: 'note' }>, row: NoteRow, edge: 'before' | 'after'): DropTarget | undefined {
+	const ctx = noteContext(tree, item);
+	if (!ctx) return undefined;
+	const list = tree.notes.get(row.parentId) ?? [];
+	const gap = list.indexOf(row.note) + (edge === 'after' ? 1 : 0);
+	const others = list.filter((n) => n.id !== item.id);
+	if (!others.length) return undefined;
+	const pinnedCount = others.filter((n) => n.pinned).length;
+	const [lo, hi] = ctx.note.pinned ? [0, pinnedCount] : [pinnedCount, others.length];
+	const at = Math.max(lo, Math.min(hi, list.slice(0, gap).filter((n) => n.id !== item.id).length));
+	const index = at - lo;
+	if (row.parentId === item.folderId && index === ctx.index) return undefined;
+	const line =
+		at < others.length
+			? { key: `n:${others[at].id}`, edge: 'before' as const, depth: row.depth }
+			: { key: `n:${others[others.length - 1].id}`, edge: 'after' as const, depth: row.depth };
+	return { folderId: row.parentId, index, line };
+}
+
+/** A folder dropped into `parentId` at sibling gap `gap` (counted with itself). */
+function folderSlot(
+	tree: FolderTree,
+	item: Extract<DragItem, { kind: 'folder' }>,
+	parentId: number | null,
+	gap: number,
+	line: DropTarget['line']
+): DropTarget | undefined {
+	if (parentId !== null && (!tree.byId.has(parentId) || descendantIds(tree, item.id).has(parentId))) return undefined;
+	const siblings = tree.folders.get(parentId) ?? [];
+	const index = siblings.slice(0, gap).filter((f) => f.id !== item.id).length;
+	if (parentId === item.parentId && index === siblings.findIndex((f) => f.id === item.id)) return undefined;
+	return { folderId: parentId, index, line };
+}
+
 /**
- * The folder a drop moves `item` into (null: root), or undefined when the drop would do
- * nothing: no target, an unknown folder, where it already is, or (for a folder) itself
- * or one of its descendants. Only defined results are highlighted.
+ * Where dropping `item` at `hover` puts it, or undefined when that would do nothing.
+ * Notes: a note row's upper/lower half inserts before/after it, snapped into the dragged
+ * note's pin group; a folder row (or its "Empty" placeholder, or the root) moves it into
+ * that folder. Folders: a folder row's top/bottom quarter inserts before/after it (the
+ * bottom of an expanded folder is the start of its children), the middle moves it into
+ * it; over notes it goes to the end of their folder's subfolders (into another folder, or
+ * a reorder with a line when that folder is its own parent). Empty space below the rows
+ * is the root for notes, and the end of the root folders for folders.
  */
-export function dropFolder(tree: FolderTree, item: DragItem, target: number | null | undefined): number | null | undefined {
-	if (target === undefined) return undefined;
-	if (target !== null && !tree.byId.has(target)) return undefined;
-	if (item.kind === 'note') return target === item.folderId ? undefined : target;
-	if (target === item.parentId) return undefined;
-	if (target !== null && descendantIds(tree, item.id).has(target)) return undefined;
-	return target;
+export function dropTarget(tree: FolderTree, rows: readonly TreeRow[], item: DragItem, hover: DropHover): DropTarget | undefined {
+	if (hover === null) return undefined;
+	if (hover === 'root') return intoTarget(tree, item, null);
+	if (hover === 'end') {
+		if (item.kind === 'note') return intoTarget(tree, item, null);
+		// The line closes the root folders' block: above the first root note, else after
+		// the last row (the last root folder's subtree when it is expanded).
+		const first = tree.notes.get(null)?.[0];
+		const last = rows.at(-1);
+		const line: DropTarget['line'] = first
+			? { key: `n:${first.id}`, edge: 'before', depth: 0 }
+			: last
+				? { key: last.key, edge: 'after', depth: 0 }
+				: null;
+		return folderSlot(tree, item, null, (tree.folders.get(null) ?? []).length, line);
+	}
+	const row = rows[hover.index];
+	if (!row) return undefined;
+	if (row.kind === 'empty') return intoTarget(tree, item, row.parentId);
+	if (item.kind === 'note') {
+		if (row.kind === 'folder') return intoTarget(tree, item, row.folder.id);
+		return noteSlot(tree, item, row, hover.fraction < 0.5 ? 'before' : 'after');
+	}
+	if (row.kind === 'note') {
+		if (row.parentId !== item.parentId) return intoTarget(tree, item, row.parentId);
+		// Its own parent: a reorder to the end of the subfolders. The line goes above the
+		// folder's first note, i.e. below the last subfolder and everything shown under it.
+		const siblings = tree.folders.get(row.parentId) ?? [];
+		const first = tree.notes.get(row.parentId)?.[0] ?? row.note;
+		return folderSlot(tree, item, row.parentId, siblings.length, { key: `n:${first.id}`, edge: 'before', depth: row.depth });
+	}
+	const siblings = tree.folders.get(row.parentId) ?? [];
+	const at = siblings.findIndex((f) => f.id === row.folder.id);
+	if (hover.fraction < 0.25) return folderSlot(tree, item, row.parentId, at, { key: row.key, edge: 'before', depth: row.depth });
+	if (hover.fraction >= 0.75) {
+		if (row.expanded) return folderSlot(tree, item, row.folder.id, 0, { key: row.key, edge: 'after', depth: row.depth + 1 });
+		return folderSlot(tree, item, row.parentId, at + 1, { key: row.key, edge: 'after', depth: row.depth });
+	}
+	return intoTarget(tree, item, row.folder.id);
+}
+
+/** ⌥↑ (-1) / ⌥↓ (+1): one step among the item's siblings (a note within its pin group);
+ * null at the group's edge. */
+export function keyboardMove(tree: FolderTree, item: DragItem, step: -1 | 1): MovePlan | null {
+	if (item.kind === 'note') {
+		const ctx = noteContext(tree, item);
+		if (!ctx) return null;
+		const size = (tree.notes.get(item.folderId) ?? []).filter((n) => n.pinned === ctx.note.pinned).length;
+		const index = ctx.index + step;
+		return index < 0 || index >= size ? null : { folderId: item.folderId, index };
+	}
+	const siblings = tree.folders.get(item.parentId) ?? [];
+	const index = siblings.findIndex((f) => f.id === item.id) + step;
+	if (index - step === -1 || index < 0 || index >= siblings.length) return null;
+	return { folderId: item.parentId, index };
 }
 
 /**

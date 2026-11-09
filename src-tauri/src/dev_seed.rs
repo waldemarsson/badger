@@ -501,6 +501,7 @@ async fn seed_folders(tx: &mut sqlx::Transaction<'_, Sqlite>) -> Result<Option<i
         .await;
     }
 
+    // No folders yet: both are first among their siblings (Position 0).
     let projects_folder_id: i64 = sqlx::query_scalar(
         "INSERT INTO folders (ParentId, Name, Position) VALUES (NULL, ?, 0) RETURNING id",
     )
@@ -547,13 +548,15 @@ async fn seed_notes_if_empty(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
         (None, "Long note", &long_note, false),
         (archive_folder_id, "Old roadmap", SEED_NOTE_ARCHIVED, false),
     ];
+    // Listed top to bottom per folder (the pinned note first), so the position is the index.
     for (age_hours, (folder_id, title, body, pinned)) in (0_i64..).zip(notes) {
         let ts = (now - Duration::hours(age_hours * 7))
             .format("%Y-%m-%dT%H:%M:%S%.3f")
             .to_string();
         sqlx::query(
-            "INSERT INTO notes (FolderId, Title, Body, Pinned, CreatedAt, UpdatedAt) \
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO notes (FolderId, Title, Body, Pinned, CreatedAt, UpdatedAt, Position) \
+             VALUES (?, ?, ?, ?, ?, ?, \
+                     (SELECT COUNT(*) FROM notes WHERE FolderId IS ?))",
         )
         .bind(folder_id)
         .bind(title)
@@ -561,6 +564,7 @@ async fn seed_notes_if_empty(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
         .bind(pinned)
         .bind(&ts)
         .bind(&ts)
+        .bind(folder_id)
         .execute(&mut *tx)
         .await?;
     }
@@ -1021,31 +1025,37 @@ pub(crate) async fn seed_sample_notes(pool: &Pool<Sqlite>) -> Result<u64, sqlx::
     .bind(SAMPLES_FOLDER)
     .fetch_optional(&mut *tx)
     .await?;
-    let folder_id =
-        match existing_folder {
-            Some(id) => id,
-            None => sqlx::query_scalar(
-                "INSERT INTO folders (ParentId, Name, Position) VALUES (NULL, ?, 0) RETURNING id",
+    let folder_id = match existing_folder {
+        Some(id) => id,
+        None => {
+            sqlx::query_scalar(
+                "INSERT INTO folders (ParentId, Name, Position) VALUES (NULL, ?, \
+                 (SELECT COALESCE(MAX(Position) + 1, 0) FROM folders WHERE ParentId IS NULL)) \
+                 RETURNING id",
             )
             .bind(SAMPLES_FOLDER)
             .fetch_one(&mut *tx)
-            .await?,
-        };
+            .await?
+        }
+    };
 
     let now = Local::now();
     for (age, (title, body)) in (1_i64..).zip(&missing) {
         let ts = (now - Duration::hours(age * 13))
             .format("%Y-%m-%dT%H:%M:%S%.3f")
             .to_string();
+        // Appended below the folder's existing notes, in list order.
         sqlx::query(
-            "INSERT INTO notes (FolderId, Title, Body, Pinned, CreatedAt, UpdatedAt) \
-             VALUES (?, ?, ?, 0, ?, ?)",
+            "INSERT INTO notes (FolderId, Title, Body, Pinned, CreatedAt, UpdatedAt, Position) \
+             VALUES (?, ?, ?, 0, ?, ?, \
+                     (SELECT COALESCE(MAX(Position) + 1, 0) FROM notes WHERE FolderId = ?))",
         )
         .bind(folder_id)
         .bind(title)
         .bind(body)
         .bind(&ts)
         .bind(&ts)
+        .bind(folder_id)
         .execute(&mut *tx)
         .await?;
     }
@@ -1165,6 +1175,23 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(pinned.0, 1, "expected one pinned note");
+        let root_order: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT Title, Position FROM notes WHERE FolderId IS NULL ORDER BY Pinned DESC, Position, id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            root_order,
+            vec![
+                ("Welcome to Notes".into(), 0),
+                ("Markdown tables".into(), 1),
+                ("Code and setext headings".into(), 2),
+                ("Weekly sync".into(), 3),
+                ("Long note".into(), 4)
+            ],
+            "seeded notes are numbered densely in list order"
+        );
         assert_eq!(
             count(&pool, "reminders").await,
             6,

@@ -3,16 +3,18 @@
 	import { flip } from 'svelte/animate';
 	import { fade } from 'svelte/transition';
 	import {
-		ROOT_TARGET,
 		autoScrollStep,
-		dropFolder,
+		dropTarget,
 		folderChain,
+		keyboardMove,
 		noteNeighbour,
-		targetFolderId,
 		treeKeyAction,
 		visibleRows,
 		type DragItem,
+		type DropHover,
+		type DropTarget,
 		type FolderTree,
+		type MovePlan,
 		type TreeRow
 	} from '#lib/folders.js';
 	import type { Folder, NoteSummary } from '#lib/types.js';
@@ -32,9 +34,9 @@
 	import Trash2 from '@lucide/svelte/icons/trash';
 
 	// The notes folder tree: one flat keyed list of visible rows (so `animate:flip` works
-	// across levels), ARIA tree keyboard navigation, inline folder rename/delete, a
-	// right-click menu per row, and pointer-event drag and drop (todos-page pattern) with
-	// auto-expand and auto-scroll.
+	// across levels), ARIA tree keyboard navigation (⌥↑/⌥↓ reorder), inline folder
+	// rename/delete, a right-click menu per row, and pointer-event drag and drop (todos-page
+	// pattern) with an insertion line between rows, auto-expand and auto-scroll.
 
 	const DRAG_THRESHOLD = 5; // px of movement before a press becomes a drag
 	const AUTO_EXPAND_MS = 600;
@@ -93,7 +95,8 @@
 		ondeletenote: (noteId: number) => Promise<void>;
 		/** Opens the "Move to…" picker for a folder or note. */
 		onmoveto: (item: DragItem, name: string) => void;
-		onmove: (item: DragItem, folderId: number | null) => void;
+		/** A drop or ⌥↑/⌥↓: move `item` into `plan.folderId` at `plan.index` (null: default place). */
+		onmove: (item: DragItem, plan: MovePlan) => void;
 		/** Context menu "Remind me…" on a note (omitted: no item). */
 		onremind?: (note: NoteSummary) => void;
 		/** ↑ on the "Notes" root row (↑ on the first tree row focuses the root row). */
@@ -187,6 +190,17 @@
 		if (isMenuKey(e)) {
 			e.preventDefault();
 			if (row) openMenuAt(row.key, e.currentTarget as HTMLElement);
+			return;
+		}
+		if (e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+			// ⌥↑/⌥↓: one step among its siblings; the focus stays on the moved row.
+			e.preventDefault();
+			const item = row ? dragItem(row) : null;
+			const plan = item ? keyboardMove(tree, item, e.key === 'ArrowUp' ? -1 : 1) : null;
+			if (row && item && plan) {
+				focusKey = row.key;
+				onmove(item, plan);
+			}
 			return;
 		}
 		if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -419,7 +433,7 @@
 
 	type Press = { item: DragItem; label: string; startX: number; startY: number; width: number };
 	let pending: Press | null = null;
-	let drag = $state<(Press & { x: number; y: number; target: number | null | undefined }) | null>(null);
+	let drag = $state<(Press & { x: number; y: number; target: DropTarget | undefined }) | null>(null);
 	let dragged = false; // the threshold was crossed: swallow the click that ends this press
 	let autoExpandId: number | null = null;
 	let autoExpandTimer: ReturnType<typeof setTimeout> | undefined;
@@ -467,15 +481,33 @@
 		updateTarget();
 	}
 
-	/** Folder under the pointer (a note row stands for its folder; empty space for root). */
+	/** The row under the pointer and how far down it is, the "Notes" root row, or empty space. */
+	function hoverAt(x: number, y: number): DropHover {
+		const hit = document.elementFromPoint(x, y);
+		if (!hit || !rootEl?.contains(hit)) return null;
+		const el = hit.closest<HTMLElement>('[data-row-index]');
+		if (!el) return hit.closest('.tree-root') ? 'root' : hit.closest('[data-drop-root]') ? 'end' : null;
+		const r = el.getBoundingClientRect();
+		return { index: Number(el.dataset.rowIndex), fraction: r.height > 0 ? (y - r.top) / r.height : 0.5 };
+	}
+
+	function sameTarget(a: DropTarget | undefined, b: DropTarget | undefined): boolean {
+		if (!a || !b) return a === b;
+		const line = (t: DropTarget) => (t.line ? `${t.line.key}:${t.line.edge}:${t.line.depth}` : '');
+		return a.folderId === b.folderId && a.index === b.index && line(a) === line(b);
+	}
+
+	/** Where a drop would go now: a slot between rows (insertion line) or into a folder. */
 	function updateTarget(): void {
 		if (!drag) return;
-		const el = document.elementFromPoint(drag.x, drag.y)?.closest<HTMLElement>('[data-drop-folder]');
-		const inside = !!el && !!rootEl?.contains(el);
-		const target = inside ? dropFolder(tree, drag.item, targetFolderId(el!.dataset.dropFolder ?? '')) : undefined;
-		if (target !== drag.target) drag.target = target;
-		const collapsed = inside && el!.dataset.autoexpand ? Number(el!.dataset.autoexpand) : null;
-		armAutoExpand(collapsed !== null && collapsed === target ? collapsed : null);
+		const hover = hoverAt(drag.x, drag.y);
+		const target = dropTarget(tree, rows, drag.item, hover);
+		if (!sameTarget(target, drag.target)) drag.target = target;
+		// A collapsed folder with children, hovered as the "into" target, opens after a pause.
+		const row = hover && typeof hover === 'object' ? rows[hover.index] : undefined;
+		const into = target && target.line === null ? target.folderId : undefined;
+		const collapsed = row?.kind === 'folder' && !row.expanded && row.hasChildren && row.folder.id === into ? into : null;
+		armAutoExpand(collapsed);
 	}
 
 	/** A collapsed (valid) folder hovered for 600 ms opens. */
@@ -542,10 +574,13 @@
 		endDrag();
 		if (dragged) swallowNextClick();
 		dragged = false;
-		if (!dropped || dropped.target === undefined) return; // plain click, or released on no target
+		const target = dropped?.target;
+		if (!dropped || !target) return; // plain click, or released on no target
 		if (opened.length) onexpand(opened, true); // a drop keeps the auto-expanded folders open
-		flash(dropped.target === null ? 'root' : `f:${dropped.target}`);
-		onmove(dropped.item, dropped.target);
+		// Into a folder: flash the folder; between rows: flash the moved row in its new place.
+		if (target.line === null) flash(target.folderId === null ? 'root' : `f:${target.folderId}`);
+		else flash(`${dropped.item.kind === 'note' ? 'n' : 'f'}:${dropped.item.id}`);
+		onmove(dropped.item, { folderId: target.folderId, index: target.index });
 	}
 
 	function onPointerCancel(): void {
@@ -569,11 +604,24 @@
 		flashTimer = setTimeout(() => (flashKey = null), 600);
 	}
 
+	/** The folder (null: root) a drop moves into, highlighted; undefined for a slot drop. */
+	const intoFolder = $derived(drag?.target && drag.target.line === null ? drag.target.folderId : undefined);
+
 	/** Rows inside the highlighted target folder get a light tint (the drop zone). */
 	function inDropZone(row: TreeRow): boolean {
-		const target = drag?.target;
+		const target = intoFolder;
 		if (target === undefined || target === null || row.parentId === null) return false;
 		return folderChain(tree.byId, row.parentId).includes(target);
+	}
+
+	/** The insertion line on this row's edge, if the drop slot is there. */
+	function dropLine(key: string): { edge: 'before' | 'after'; depth: number } | null {
+		const line = drag?.target?.line;
+		return line && line.key === key ? line : null;
+	}
+
+	function lineIndent(depth: number): string {
+		return `left: ${8 + Math.min(depth, MAX_INDENT_DEPTH) * INDENT}px`;
 	}
 
 	function isDragged(row: TreeRow): boolean {
@@ -583,10 +631,14 @@
 		return false;
 	}
 
-	const targetName = $derived.by(() => {
+	/** The ghost's second line: where the drop goes. */
+	const targetLabel = $derived.by(() => {
 		const target = drag?.target;
-		if (target === undefined) return null;
-		return target === null ? 'Notes' : (tree.byId.get(target)?.name ?? null);
+		if (!drag || !target) return null;
+		const from = drag.item.kind === 'note' ? drag.item.folderId : drag.item.parentId;
+		if (target.line !== null && target.folderId === from) return 'Move here';
+		const name = target.folderId === null ? 'Notes' : tree.byId.get(target.folderId)?.name;
+		return name === undefined ? null : `Move to ${name}`;
 	});
 
 	onDestroy(() => {
@@ -601,7 +653,7 @@
 <div
 	bind:this={rootEl}
 	class="tree"
-	data-drop-folder={ROOT_TARGET}
+	data-drop-root
 	onclickcapture={(e) => {
 		if (e.ctrlKey) e.stopPropagation();
 	}}
@@ -611,10 +663,10 @@
 		type="button"
 		class="tree-root"
 		class:tree-root-current={currentFolderId === null}
-		class:tree-row-drop={drag?.target === null}
+		class:tree-row-drop={intoFolder === null}
 		class:tree-row-flash={flashKey === 'root'}
 		class:tree-row-menu={menu?.key === ROOT_KEY}
-		data-drop-folder={ROOT_TARGET}
+		data-drop-root
 		aria-current={currentFolderId === null ? 'true' : undefined}
 		title="Top level: new notes and folders go here"
 		onclick={() => oncurrent(null)}
@@ -626,6 +678,7 @@
 
 	<div role="tree" aria-label="Notes">
 		{#each rows as row, index (row.key)}
+			{@const line = dropLine(row.key)}
 			<div role="none" animate:flip={{ duration: 180 }} in:fade={{ duration: 150 }}>
 				{#if row.kind === 'folder'}
 					{@const f = row.folder}
@@ -637,10 +690,9 @@
 						aria-selected="false"
 						data-row
 						data-key={row.key}
-						data-drop-folder={f.id}
-						data-autoexpand={!row.expanded && row.hasChildren ? f.id : undefined}
+						data-row-index={index}
 						class="tree-row tree-folder group"
-						class:tree-row-drop={drag?.target === f.id}
+						class:tree-row-drop={intoFolder === f.id}
 						class:tree-row-drop-zone={inDropZone(row)}
 						class:tree-row-dragging={isDragged(row)}
 						class:tree-row-flash={flashKey === row.key}
@@ -653,6 +705,16 @@
 						oncontextmenu={(e) => onContextMenu(e, row.key)}
 						onfocus={() => (focusKey = row.key)}
 					>
+						{#if line}
+							<span
+								class="tree-drop-line"
+								class:tree-drop-line-before={line.edge === 'before'}
+								class:tree-drop-line-after={line.edge === 'after'}
+								style={lineIndent(line.depth)}
+								aria-hidden="true"
+								in:fade={{ duration: 150 }}
+							></span>
+						{/if}
 						<ChevronRight size={14} class="tree-chevron {row.expanded ? 'rotate-90' : ''} {row.hasChildren ? '' : 'opacity-40'}" />
 						<span class="tree-folder-icon" class:tree-folder-icon-current={f.id === currentFolderId}>
 							{#if row.expanded}<FolderOpen size={15} />{:else}<FolderIcon size={15} />{/if}
@@ -725,7 +787,7 @@
 						aria-current={n.id === selectedId ? 'true' : undefined}
 						data-row
 						data-key={row.key}
-						data-drop-folder={row.parentId ?? ROOT_TARGET}
+						data-row-index={index}
 						class="tree-row tree-note group"
 						class:note-row-active={n.id === selectedId}
 						class:tree-row-drop-zone={inDropZone(row)}
@@ -739,6 +801,16 @@
 						oncontextmenu={(e) => onContextMenu(e, row.key)}
 						onfocus={() => (focusKey = row.key)}
 					>
+						{#if line}
+							<span
+								class="tree-drop-line"
+								class:tree-drop-line-before={line.edge === 'before'}
+								class:tree-drop-line-after={line.edge === 'after'}
+								style={lineIndent(line.depth)}
+								aria-hidden="true"
+								in:fade={{ duration: 150 }}
+							></span>
+						{/if}
 						<p class="note-row-title pr-6">{n.title}</p>
 						{#if n.excerpt}
 							<p class="note-row-excerpt">{n.excerpt}</p>
@@ -787,11 +859,21 @@
 				{:else}
 					<p
 						class="tree-empty"
-						class:tree-row-drop-zone={drag?.target === row.parentId}
+						class:tree-row-drop-zone={intoFolder === row.parentId}
 						style={indent(row.depth, true)}
-						data-drop-folder={row.parentId}
+						data-key={row.key}
+						data-row-index={index}
 						aria-hidden="true"
 					>
+						{#if line}
+							<span
+								class="tree-drop-line"
+								class:tree-drop-line-before={line.edge === 'before'}
+								class:tree-drop-line-after={line.edge === 'after'}
+								style={lineIndent(line.depth)}
+								in:fade={{ duration: 150 }}
+							></span>
+						{/if}
 						Empty
 					</p>
 				{/if}
@@ -814,8 +896,8 @@
 				{#if drag.item.kind === 'folder'}<FolderIcon size={14} class="shrink-0" />{:else}<FileText size={14} class="shrink-0" />{/if}
 				<span class="truncate">{drag.label}</span>
 			</span>
-			{#if targetName !== null}
-				<span class="tree-drag-ghost-target" in:fade={{ duration: 150 }}>Move to {targetName}</span>
+			{#if targetLabel !== null}
+				<span class="tree-drag-ghost-target" in:fade={{ duration: 150 }}>{targetLabel}</span>
 			{/if}
 		</div>
 	</div>

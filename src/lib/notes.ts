@@ -4,14 +4,42 @@ import type { NoteHit, NoteSummary } from '#lib/types.js';
 
 // ── List ──────────────────────────────────────────────────────────────────────
 
-/** Pinned first, then most recently updated, then id (same order as list_notes). */
+/** Pinned first, then manual position, then id (same order as list_notes). */
+export function compareNotes(a: NoteSummary, b: NoteSummary): number {
+	return Number(b.pinned) - Number(a.pinned) || a.position - b.position || a.id - b.id;
+}
+
 export function sortNotes(notes: NoteSummary[]): NoteSummary[] {
-	return [...notes].sort(
-		(a, b) =>
-			Number(b.pinned) - Number(a.pinned) ||
-			b.updated_at.localeCompare(a.updated_at) ||
-			a.id - b.id
-	);
+	return [...notes].sort(compareNotes);
+}
+
+/**
+ * Renumbers the notes of one folder 0..n in the given order (pinned ones first), like
+ * Rust's dense rewrite, and re-sorts the list.
+ */
+function withFolderOrder(notes: NoteSummary[], order: NoteSummary[]): NoteSummary[] {
+	const positions = new Map(order.map((n, i) => [n.id, i]));
+	const others = notes.filter((n) => !positions.has(n.id));
+	return sortNotes([...others, ...order.map((n, i) => ({ ...n, position: i }))]);
+}
+
+/** The notes in `folderId` other than `id`, in list order, as [pinned, unpinned]. */
+function folderGroups(notes: NoteSummary[], folderId: number | null, id: number): [NoteSummary[], NoteSummary[]] {
+	const rest = sortNotes(notes.filter((n) => n.folder_id === folderId && n.id !== id));
+	return [rest.filter((n) => n.pinned), rest.filter((n) => !n.pinned)];
+}
+
+/**
+ * Mirrors move_note: puts note `id` into `folderId` at `index` within its pin group there
+ * (clamped; null: the top of the group) and renumbers that folder.
+ */
+export function moveNoteLocally(notes: NoteSummary[], id: number, folderId: number | null, index: number | null): NoteSummary[] {
+	const note = notes.find((n) => n.id === id);
+	if (!note) return notes;
+	const [pinned, unpinned] = folderGroups(notes, folderId, id);
+	const group = note.pinned ? pinned : unpinned;
+	group.splice(Math.max(0, Math.min(index ?? 0, group.length)), 0, { ...note, folder_id: folderId });
+	return withFolderOrder(notes, [...pinned, ...unpinned]);
 }
 
 /** A run of text, `hit` when search highlighted it. */
@@ -73,9 +101,22 @@ export function searchRows(notes: NoteSummary[], hits: NoteHit[]): ListRow[] {
 	});
 }
 
-/** Replaces the row with the same id (or adds it) and re-sorts. */
+/**
+ * Applies a command's summary to the list, mirroring Rust's order. An edit, rename or move
+ * result replaces the row in place (edits never reorder). A new note is added where Rust
+ * put it (the top of its folder's unpinned notes). A pin change lands on the boundary
+ * between the groups (the bottom of the pinned notes, or the top of the unpinned ones)
+ * and renumbers the folder like set_note_pinned.
+ */
 export function upsertNote(notes: NoteSummary[], summary: NoteSummary): NoteSummary[] {
-	return sortNotes([...notes.filter((n) => n.id !== summary.id), summary]);
+	const index = notes.findIndex((n) => n.id === summary.id);
+	if (index === -1) return sortNotes([...notes, summary]);
+	if (notes[index].pinned === summary.pinned) return notes.map((n, i) => (i === index ? summary : n));
+	const [pinned, unpinned] = folderGroups(notes, summary.folder_id, summary.id);
+	return withFolderOrder(
+		notes.filter((n) => n.id !== summary.id),
+		[...pinned, summary, ...unpinned]
+	);
 }
 
 /** The id to select after removing `id` from the visible list: the next one, else the previous. */

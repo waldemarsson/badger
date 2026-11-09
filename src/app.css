@@ -729,7 +729,7 @@
   }
 
   .tree-empty {
-    @apply select-none py-1 pr-2 text-xs italic text-slate-400 dark:text-neutral-500;
+    @apply relative select-none py-1 pr-2 text-xs italic text-slate-400 dark:text-neutral-500;
   }
 
   /* Drag and drop: the valid target folder (or root) and the rows inside it. */
@@ -751,6 +751,24 @@
 
   .tree-row-dragging {
     @apply opacity-40;
+  }
+
+  /* Where a drop between rows lands: a sky line on the row's top or bottom edge, starting
+     at the slot's indent with a small ring as its head. */
+  .tree-drop-line {
+    @apply pointer-events-none absolute right-1 z-10 h-0.5 rounded-full bg-sky-500 dark:bg-sky-400;
+  }
+
+  .tree-drop-line::before {
+    @apply absolute -left-1 -top-[3px] h-2 w-2 rounded-full border-2 border-sky-500 bg-white content-[''] dark:border-sky-400 dark:bg-neutral-900;
+  }
+
+  .tree-drop-line-before {
+    @apply -top-px;
+  }
+
+  .tree-drop-line-after {
+    @apply -bottom-px;
   }
 
   /* While dragging, only valid drop targets light up. */

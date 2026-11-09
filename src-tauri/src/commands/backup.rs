@@ -89,6 +89,10 @@ pub struct BackupNote {
     pub pinned: bool,
     pub created_at: String,
     pub updated_at: String,
+    /// Manual order within the folder. Missing in backups from before manual sorting:
+    /// restore then backfills the old order (pinned, then most recently updated).
+    #[serde(default)]
+    pub position: Option<i64>,
 }
 
 /// A reminder as stored in a backup file (`weekdays` as stored, e.g. `"1,4"`).
@@ -193,7 +197,7 @@ pub async fn inner_backup_data(pool: &Pool<Sqlite>) -> Result<String, AppError> 
     .await?;
 
     let notes = sqlx::query_as::<_, BackupNote>(
-        "SELECT id, FolderId as folder_id, Title as title, Body as body, Pinned as pinned, CreatedAt as created_at, UpdatedAt as updated_at FROM notes ORDER BY id",
+        "SELECT id, FolderId as folder_id, Title as title, Body as body, Pinned as pinned, CreatedAt as created_at, UpdatedAt as updated_at, Position as position FROM notes ORDER BY id",
     )
     .fetch_all(pool)
     .await?;
@@ -380,6 +384,9 @@ fn suffix_duplicate_folder_names(folders: &mut [BackupFolder]) {
 /// Inserts folders, then notes. Foreign keys are deferred to commit from here on, so a
 /// child folder may come before its parent; earlier tables keep immediate checks, which
 /// means a commit-time FK failure can only come from folders or notes.
+///
+/// Backups from before manual sorting get the old tree order: notes when any lacks a
+/// position, folders when all have Position 0 (older builds never wrote another value).
 async fn insert_folders_and_notes(
     folders: &[BackupFolder],
     notes: &[BackupNote],
@@ -399,7 +406,7 @@ async fn insert_folders_and_notes(
     }
     for n in notes {
         sqlx::query(
-            "INSERT INTO notes (id, FolderId, Title, Body, Pinned, CreatedAt, UpdatedAt) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO notes (id, FolderId, Title, Body, Pinned, CreatedAt, UpdatedAt, Position) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(n.id)
         .bind(n.folder_id)
@@ -408,8 +415,15 @@ async fn insert_folders_and_notes(
         .bind(n.pinned)
         .bind(&n.created_at)
         .bind(&n.updated_at)
+        .bind(n.position.unwrap_or(0))
         .execute(&mut **tx)
         .await?;
+    }
+    if notes.iter().any(|n| n.position.is_none()) {
+        crate::db::backfill_note_positions(tx).await?;
+    }
+    if folders.iter().all(|f| f.position == 0) {
+        crate::db::backfill_folder_positions(tx).await?;
     }
     Ok(())
 }
@@ -703,6 +717,100 @@ mod tests {
             let expected = serde_json::to_string(&(&original.folders, &original.notes)).unwrap();
             assert_eq!(exported, expected, "byte-for-byte");
         }
+    }
+
+    /// (parent, name) of folders and (folder, title) of notes, in list (tree) order.
+    async fn tree_order(
+        pool: &Pool<Sqlite>,
+    ) -> (Vec<(Option<i64>, String)>, Vec<(Option<i64>, String)>) {
+        let folders = crate::commands::folders::inner_list_folders(pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|f| (f.parent_id, f.name))
+            .collect();
+        let notes = crate::commands::notes::inner_list_notes(pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|n| (n.folder_id, n.title))
+            .collect();
+        (folders, notes)
+    }
+
+    #[tokio::test]
+    async fn test_backup_restore_roundtrips_manual_order() {
+        let pool = crate::test_db().await;
+        // Root folders Zed, Alpha (manual, not A–Z); root notes: pinned P, then B above A
+        // despite A being newer.
+        sqlx::raw_sql(
+            "INSERT INTO folders (id, ParentId, Name, Position) VALUES (1, NULL, 'Alpha', 1), (2, NULL, 'Zed', 0);
+             INSERT INTO notes (id, FolderId, Title, Pinned, CreatedAt, UpdatedAt, Position) VALUES
+               (1, NULL, 'A', 0, 'x', '2026-03-01', 2),
+               (2, NULL, 'B', 0, 'x', '2026-01-01', 1),
+               (3, NULL, 'P', 1, 'x', '2025-01-01', 0),
+               (4, 1, 'In alpha', 0, 'x', 'x', 0);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let before = tree_order(&pool).await;
+        assert_eq!(before.0[0].1, "Zed");
+        let json = inner_backup_data(&pool).await.unwrap();
+        assert!(
+            json.contains("\"position\":2"),
+            "note positions are exported"
+        );
+
+        let fresh = crate::test_db().await;
+        inner_restore_data(&json, &fresh).await.unwrap();
+        assert_eq!(tree_order(&fresh).await, before);
+        let result: BackupData =
+            serde_json::from_str(&inner_backup_data(&fresh).await.unwrap()).unwrap();
+        let positions: Vec<Option<i64>> = result.notes.iter().map(|n| n.position).collect();
+        assert_eq!(positions, vec![Some(2), Some(1), Some(0), Some(0)]);
+    }
+
+    #[tokio::test]
+    async fn test_restore_backup_without_note_positions_uses_the_old_order() {
+        let pool = crate::test_db().await;
+        // An older backup: notes without "position", folders all at Position 0.
+        let legacy = r#"{"customers":[],"projects":[],"issues":[],"time_entries":[],"todos":[],"travel":[],
+            "folders":[
+              {"id":1,"parent_id":null,"name":"work 10","position":0},
+              {"id":2,"parent_id":null,"name":"Ödla","position":0},
+              {"id":3,"parent_id":null,"name":"Work 2","position":0},
+              {"id":4,"parent_id":3,"name":"b","position":0},
+              {"id":5,"parent_id":3,"name":"A","position":0}],
+            "notes":[
+              {"id":1,"folder_id":null,"title":"Old","body":"","pinned":false,"created_at":"x","updated_at":"2026-01-01"},
+              {"id":2,"folder_id":null,"title":"New","body":"","pinned":false,"created_at":"x","updated_at":"2026-03-01"},
+              {"id":3,"folder_id":null,"title":"Pinned","body":"","pinned":true,"created_at":"x","updated_at":"2025-01-01"},
+              {"id":4,"folder_id":3,"title":"Only","body":"","pinned":false,"created_at":"x","updated_at":"x"}]}"#;
+        inner_restore_data(legacy, &pool).await.unwrap();
+        let (folders, notes) = tree_order(&pool).await;
+        let children: Vec<&str> = folders
+            .iter()
+            .filter(|(p, _)| *p == Some(3))
+            .map(|(_, n)| n.as_str())
+            .collect();
+        assert_eq!(children, ["A", "b"]);
+        let root: Vec<&str> = folders
+            .iter()
+            .filter(|(p, _)| p.is_none())
+            .map(|(_, n)| n.as_str())
+            .collect();
+        assert_eq!(root, ["Work 2", "work 10", "Ödla"]);
+        let titles: Vec<&str> = notes.iter().map(|(_, t)| t.as_str()).collect();
+        assert_eq!(titles, ["Pinned", "Only", "New", "Old"]);
+        let positions: Vec<i64> = crate::commands::notes::inner_list_notes(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|n| n.folder_id.is_none())
+            .map(|n| n.position)
+            .collect();
+        assert_eq!(positions, [0, 1, 2]);
     }
 
     #[tokio::test]

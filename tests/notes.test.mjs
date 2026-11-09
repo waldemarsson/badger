@@ -8,6 +8,7 @@ const {
 	plainRows,
 	searchRows,
 	upsertNote,
+	moveNoteLocally,
 	neighborAfterRemoval,
 	parseTimestamp,
 	formatNoteDate,
@@ -25,6 +26,7 @@ const note = (id, updated_at, extra = {}) => ({
 	pinned: false,
 	created_at: '2026-11-01T09:00:00.000',
 	updated_at,
+	position: 0,
 	...extra
 });
 
@@ -32,15 +34,15 @@ const ids = (rows) => rows.map((r) => r.id);
 
 // ── List order and filter ─────────────────────────────────────────────────────
 
-test('sortNotes: pinned first, then updated_at desc, then id', () => {
+test('sortNotes: pinned first, then position, then id (never the update time)', () => {
 	const rows = [
-		note(1, '2026-11-05T10:00:00.000'),
-		note(2, '2026-11-06T10:00:00.000'),
-		note(3, '2026-11-01T10:00:00.000', { pinned: true }),
-		note(4, '2026-11-05T10:00:00.000'),
-		note(5, '2026-11-02T10:00:00.000', { pinned: true })
+		note(1, '2026-11-05T10:00:00.000', { position: 2 }),
+		note(2, '2026-11-06T10:00:00.000', { position: 3 }),
+		note(3, '2026-11-01T10:00:00.000', { pinned: true, position: 1 }),
+		note(4, '2026-11-05T10:00:00.000', { position: 2 }),
+		note(5, '2026-11-02T10:00:00.000', { pinned: true, position: 0 })
 	];
-	assert.deepEqual(ids(sortNotes(rows)), [5, 3, 2, 1, 4]);
+	assert.deepEqual(ids(sortNotes(rows)), [5, 3, 1, 4, 2]);
 	assert.deepEqual(ids(rows), [1, 2, 3, 4, 5], 'input is not mutated');
 });
 
@@ -104,13 +106,52 @@ test('searchRows: semantic-only hits keep the related marker and their passage',
 	assert.equal(rows[0].snippet, null, 'no snippet: the excerpt shows');
 });
 
-test('upsertNote replaces by id or adds, and keeps list order', () => {
-	const rows = [note(1, '2026-11-05T10:00:00.000'), note(2, '2026-11-04T10:00:00.000')];
-	const updated = upsertNote(rows, note(2, '2026-11-06T10:00:00.000', { title: 'Renamed' }));
-	assert.deepEqual(ids(updated), [2, 1]);
-	assert.equal(updated[0].title, 'Renamed');
-	assert.deepEqual(ids(upsertNote(rows, note(3, '2026-11-01T10:00:00.000'))), [1, 2, 3]);
-	assert.equal(rows.length, 2, 'input is not mutated');
+const T = '2026-11-05T10:00:00.000';
+// Root: pinned 5 | 1 2 ; folder 7: 3 4
+const placed = () => [
+	note(5, T, { pinned: true, position: 0 }),
+	note(1, T, { position: 1 }),
+	note(3, T, { folder_id: 7, position: 0 }),
+	note(2, T, { position: 2 }),
+	note(4, T, { folder_id: 7, position: 1 })
+];
+const inFolder = (rows, folderId) => ids(rows.filter((n) => n.folder_id === folderId));
+
+test('upsertNote: an edit or rename replaces the row in place, even when it is newer', () => {
+	const rows = placed();
+	const updated = upsertNote(rows, note(2, '2026-11-09T10:00:00.000', { title: 'Renamed', excerpt: 'x', position: 2 }));
+	assert.deepEqual(ids(updated), ids(rows), 'nothing moves');
+	assert.equal(updated[3].title, 'Renamed');
+	assert.equal(rows[3].title, 'Note 2', 'input is not mutated');
+});
+
+test('upsertNote: a created note goes to the top of its folder\'s unpinned notes', () => {
+	assert.deepEqual(inFolder(upsertNote(placed(), note(9, T, { position: -1 })), null), [5, 9, 1, 2]);
+	assert.deepEqual(inFolder(upsertNote(placed(), note(9, T, { folder_id: 7, position: -1 })), 7), [9, 3, 4]);
+});
+
+test('upsertNote: pinning lands at the bottom of the pinned notes, unpinning at the top of the rest', () => {
+	const pinned = upsertNote(placed(), note(2, T, { pinned: true, position: 1 }));
+	assert.deepEqual(inFolder(pinned, null), [5, 2, 1]);
+	assert.deepEqual(pinned.filter((n) => n.folder_id === null).map((n) => n.position), [0, 1, 2], 'renumbered like Rust');
+	assert.deepEqual(inFolder(pinned, 7), [3, 4], 'other folders untouched');
+	const unpinned = upsertNote(pinned, note(5, T, { position: 1 }));
+	assert.deepEqual(inFolder(unpinned, null), [2, 5, 1]);
+	assert.deepEqual(ids(sortNotes(unpinned)), ids(unpinned), 'the list stays sorted');
+});
+
+test('moveNoteLocally mirrors move_note: within the pin group, null = top, renumbered', () => {
+	const rows = placed();
+	assert.deepEqual(inFolder(moveNoteLocally(rows, 2, null, 0), null), [5, 2, 1]);
+	assert.deepEqual(inFolder(moveNoteLocally(rows, 1, null, 99), null), [5, 2, 1], 'clamped to its group');
+	assert.deepEqual(inFolder(moveNoteLocally(rows, 5, null, 99), null), [5, 1, 2], 'a pinned note stays pinned on top');
+	const across = moveNoteLocally(rows, 1, 7, 1);
+	assert.deepEqual(inFolder(across, 7), [3, 1, 4]);
+	assert.deepEqual(across.filter((n) => n.folder_id === 7).map((n) => n.position), [0, 1, 2]);
+	assert.deepEqual(inFolder(across, null), [5, 2]);
+	assert.deepEqual(inFolder(moveNoteLocally(rows, 5, 7, null), 7), [5, 3, 4], 'null: the top of its group');
+	assert.equal(moveNoteLocally(rows, 99, 7, 0), rows, 'unknown id: unchanged');
+	assert.deepEqual(ids(rows), [5, 1, 3, 2, 4], 'input is not mutated');
 });
 
 test('neighborAfterRemoval: next in list, else previous, else null', () => {

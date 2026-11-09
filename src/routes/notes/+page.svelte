@@ -6,7 +6,7 @@
 	import { onMount, tick, untrack } from 'svelte';
 	import { flip } from 'svelte/animate';
 	import { fade } from 'svelte/transition';
-	import { formatNoteDate, neighborAfterRemoval, plainRows, searchRows, sortNotes, upsertNote } from '#lib/notes.js';
+	import { formatNoteDate, moveNoteLocally, neighborAfterRemoval, plainRows, searchRows, sortNotes, upsertNote } from '#lib/notes.js';
 	import type { Segment } from '#lib/notes.js';
 	import { NoteSaveQueue } from '#lib/note-save-queue.js';
 	import { registerFlushHandler } from '#lib/flush-guard.js';
@@ -14,7 +14,19 @@
 	import { HYBRID_DEBOUNCE_MS, qualifiesForSemantic, semanticHintVisible, semanticReady, shouldApply, type SearchResponse } from '#lib/semantic.js';
 	import { semantic } from '#lib/semantic-state.svelte.js';
 	import { linkData } from '#lib/editor/links.js';
-	import { buildTree, folderChain, folderPath, moveTargets, noteNeighbour, sameIds, targetFolderId, visibleRows, type DragItem } from '#lib/folders.js';
+	import {
+		buildTree,
+		folderChain,
+		folderPath,
+		moveFolderLocally,
+		moveTargets,
+		noteNeighbour,
+		sameIds,
+		targetFolderId,
+		visibleRows,
+		type DragItem,
+		type MovePlan
+	} from '#lib/folders.js';
 	import type { Backlink, Folder, LinkTargets, Note, NoteHit, NoteSummary, RenamedNote, RenderMode, TagSuggestion } from '#lib/types.js';
 	import NoteEditor from '#lib/components/NoteEditor.svelte';
 	import NoteReader from '#lib/components/NoteReader.svelte';
@@ -344,7 +356,11 @@
 	}
 
 	/** A save, rename or pin result: update the row, and the open note when it is this one. */
-	function applySummary(summary: NoteSummary): void {
+	function applySummary(result: NoteSummary): void {
+		// While moves are queued, the list is ahead of Rust: a save or rename that finishes
+		// meanwhile keeps the row's local place (the reload after the moves syncs it).
+		const local = movesPending > 0 ? notes.find((n) => n.id === result.id) : undefined;
+		const summary = local ? { ...result, folder_id: local.folder_id, position: local.position } : result;
 		notes = upsertNote(notes, summary);
 		if (current?.id === summary.id) {
 			const { title, pinned, updated_at, folder_id } = summary;
@@ -354,8 +370,8 @@
 
 	/** List row for a just-created (empty) note. */
 	function summaryOf(note: Note): NoteSummary {
-		const { id, folder_id, title, pinned, created_at, updated_at } = note;
-		return { id, folder_id, title, excerpt: '', pinned, created_at, updated_at };
+		const { id, folder_id, title, pinned, created_at, updated_at, position } = note;
+		return { id, folder_id, title, excerpt: '', pinned, created_at, updated_at, position };
 	}
 
 	// ── Folders ───────────────────────────────────────────────────────────────────
@@ -465,26 +481,43 @@
 		await load();
 	}
 
-	/** Drag and drop or Move to…: moves locally at once, then persists and reloads. */
-	async function moveItem(item: DragItem, folderId: number | null): Promise<void> {
+	// Moves persist one at a time (held ⌥↓ repeats faster than a round trip): each is
+	// applied locally at once, so the next plan is computed from the moved tree, and its
+	// command waits for the previous one. The reload runs once the queue is empty, so it
+	// never undoes steps that are still queued.
+	let moveChain: Promise<void> = Promise.resolve();
+	let movesPending = 0;
+
+	/**
+	 * Drag and drop, ⌥↑/⌥↓ or Move to…: moves (and reorders) locally at once, then persists
+	 * and reloads. `index` null is the default place: a note at the top of its pin group, a
+	 * folder at the end. A failure shows above the tree; the reload restores the order.
+	 */
+	function moveItem(item: DragItem, { folderId, index }: MovePlan): Promise<void> {
 		actionError = '';
-		await queue.flush(); // a save in flight would report the note's old folder
 		if (item.kind === 'note') {
-			notes = notes.map((n) => (n.id === item.id ? { ...n, folder_id: folderId } : n));
-			if (current?.id === item.id) {
+			notes = moveNoteLocally(notes, item.id, folderId, index);
+			if (current?.id === item.id && current.folder_id !== folderId) {
 				current = { ...current, folder_id: folderId };
 				currentFolderId = folderId;
 			}
 		} else {
-			folders = folders.map((f) => (f.id === item.id ? { ...f, parent_id: folderId } : f));
+			folders = moveFolderLocally(folders, item.id, folderId, index);
 		}
-		try {
-			if (item.kind === 'note') applySummary(await invoke<NoteSummary>('move_note', { id: item.id, folderId }));
-			else await invoke<Folder>('move_folder', { id: item.id, parentId: folderId });
-		} catch (e) {
-			actionError = String(e);
-		}
-		await load();
+		movesPending++;
+		moveChain = moveChain.then(async () => {
+			try {
+				await queue.flush(); // a save in flight would report the note's old folder
+				// The result isn't applied: queued steps already moved the list further; the
+				// reload below brings the server's order.
+				if (item.kind === 'note') await invoke<NoteSummary>('move_note', { id: item.id, folderId, index });
+				else await invoke<Folder>('move_folder', { id: item.id, parentId: folderId, index });
+			} catch (e) {
+				actionError = String(e);
+			}
+			if (--movesPending === 0) await load();
+		});
+		return moveChain;
 	}
 
 	// "Move to…" picker (editor header for the open note, folder row actions for folders).
@@ -536,7 +569,7 @@
 	function pickMove(folderId: number | null): void {
 		const item = moving?.item;
 		void closeMove();
-		if (item) void moveItem(item, folderId);
+		if (item) void moveItem(item, { folderId, index: null });
 	}
 
 	// ── Selection (lives in ?id=) ─────────────────────────────────────────────────
@@ -1048,7 +1081,7 @@
 							ondeletenote={deleteNote}
 							onmoveto={openMove}
 							onremind={openRemind}
-							onmove={(item, folderId) => void moveItem(item, folderId)}
+							onmove={(item, plan) => void moveItem(item, plan)}
 							onexit={() => searchInput?.focus()}
 						/>
 					{:else}

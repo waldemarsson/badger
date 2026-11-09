@@ -13,38 +13,59 @@ const {
 	ROOT_TARGET,
 	targetFolderId,
 	firstFreeName,
-	sameIds
+	sameIds,
+	moveFolderLocally
 } = await import('../src/lib/folders.ts');
 
-const folder = (id, name, parent_id = null) => ({ id, parent_id, name });
-const note = (id, folder_id = null) => ({
+const folder = (id, name, parent_id = null, position = 0) => ({ id, parent_id, name, position });
+const note = (id, folder_id = null, extra = {}) => ({
 	id,
 	folder_id,
 	title: `Note ${id}`,
 	excerpt: '',
 	pinned: false,
 	created_at: '2026-11-01T09:00:00.000',
-	updated_at: '2026-11-01T09:00:00.000'
+	updated_at: '2026-11-01T09:00:00.000',
+	position: 0,
+	...extra
 });
 
-// Projects (1) > Archive (2) > Deep (5); Inbox (3); empty (4) "beta"
-const folders = [folder(2, 'Archive', 1), folder(1, 'Projects'), folder(3, 'inbox'), folder(4, 'Beta'), folder(5, 'Deep', 2)];
+// Root in manual order: Beta (4, empty), inbox (3), Projects (1) > Archive (2) > Deep (5)
+const folders = [folder(2, 'Archive', 1), folder(1, 'Projects', null, 2), folder(3, 'inbox', null, 1), folder(4, 'Beta'), folder(5, 'Deep', 2)];
 // Notes come pre-sorted (sortNotes); the tree keeps their order per folder.
 const notes = [note(30, 2), note(10), note(20, 1), note(11), note(40, 99)];
 const keys = (rows) => rows.map((r) => r.key);
 
-test('compareFolders sorts A–Z case-insensitively, numbers naturally, then by id', () => {
-	const sorted = sortFolders([folder(1, 'b'), folder(2, 'A'), folder(3, 'Work 10'), folder(4, 'Work 2'), folder(5, 'a')]);
+test('compareFolders keeps the manual order: position, then id, never the name', () => {
+	const sorted = sortFolders([folder(1, 'b', null, 2), folder(2, 'A', null, 1), folder(3, 'Work 10', null, 0), folder(4, 'Work 2', null, 1)]);
 	assert.deepEqual(
 		sorted.map((f) => f.name),
-		['A', 'a', 'b', 'Work 2', 'Work 10']
+		['Work 10', 'A', 'Work 2', 'b']
 	);
-	assert.ok(compareFolders(folder(1, 'x'), folder(2, 'X')) < 0, 'same name: lower id first');
+	assert.ok(compareFolders(folder(2, 'a'), folder(1, 'z')) > 0, 'same position: lower id first');
 	assert.deepEqual(folders.map((f) => f.id), [2, 1, 3, 4, 5], 'input not mutated');
 });
 
+test('moveFolderLocally mirrors move_folder: insert at index (clamped; null = end), renumber densely', () => {
+	const flat = [folder(1, 'A', null, 0), folder(2, 'B', null, 1), folder(3, 'C', null, 2), folder(4, 'X', 1, 0)];
+	const order = (list, parent) => sortFolders(list.filter((f) => f.parent_id === parent)).map((f) => `${f.name}${f.position}`);
+	assert.deepEqual(order(moveFolderLocally(flat, 3, null, 0), null), ['C0', 'A1', 'B2']);
+	assert.deepEqual(order(moveFolderLocally(flat, 1, null, 99), null), ['B0', 'C1', 'A2']);
+	const across = moveFolderLocally(flat, 2, 1, 0);
+	assert.deepEqual(order(across, 1), ['B0', 'X1']);
+	assert.deepEqual(order(across, null), ['A0', 'C2'], 'the old siblings keep their gaps, like Rust');
+	assert.deepEqual(order(moveFolderLocally(flat, 2, 1, null), 1), ['X0', 'B1'], 'null: the end');
+	assert.equal(moveFolderLocally(flat, 99, null, 0), flat, 'unknown id: unchanged');
+	assert.equal(flat[2].position, 2, 'input not mutated');
+});
+
+test('buildTree keeps the server order: renaming a folder does not move it', () => {
+	const renamed = folders.map((f) => (f.id === 4 ? { ...f, name: 'Zzz' } : f));
+	assert.deepEqual(buildTree(renamed, []).folders.get(null).map((f) => f.name), ['Zzz', 'inbox', 'Projects']);
+});
+
 test('buildTree groups folders and notes by parent; unknown parents fall back to root', () => {
-	const tree = buildTree([...folders, folder(6, 'Lost', 77)], notes);
+	const tree = buildTree([...folders, folder(6, 'Lost', 77, 1)], notes);
 	assert.deepEqual(tree.folders.get(null).map((f) => f.name), ['Beta', 'inbox', 'Lost', 'Projects']);
 	assert.deepEqual(tree.folders.get(1).map((f) => f.id), [2]);
 	assert.equal(tree.folders.get(4), undefined);
@@ -73,7 +94,7 @@ test('visibleRows: folders first, then notes, nested only inside expanded folder
 });
 
 test('visibleRows: expanding a folder inside a collapsed one shows nothing; pinned notes stay put', () => {
-	const pinned = [{ ...note(50, 2), pinned: true }, ...notes];
+	const pinned = [note(50, 2, { pinned: true }), ...notes];
 	const rows = visibleRows(buildTree(folders, pinned), new Set([2]));
 	assert.deepEqual(keys(rows), ['f:4', 'f:3', 'f:1', 'n:10', 'n:11', 'n:40']);
 });
@@ -155,7 +176,7 @@ test('sameIds compares id sets regardless of order and duplicates', () => {
 	assert.ok(!sameIds([1, 3], [1, 2]));
 });
 
-const { treeKeyAction, noteNeighbour, dropFolder, autoScrollStep } = await import('../src/lib/folders.ts');
+const { treeKeyAction, noteNeighbour, dropTarget, keyboardMove, autoScrollStep } = await import('../src/lib/folders.ts');
 
 test('treeKeyAction: ↑/↓/Home/End move between rows and skip "Empty" placeholders', () => {
 	// f:4 e:4 f:3 f:1 f:2 f:5 e:5 n:30 n:20 n:10 n:11 n:40
@@ -207,24 +228,6 @@ test('noteNeighbour picks the next note in the same folder, else the previous, r
 	assert.equal(noteNeighbour(stale, 1), 2, 'a note in an unknown folder counts as root');
 });
 
-test('dropFolder: valid targets only; self, descendants and the current place do nothing', () => {
-	const tree = buildTree(folders, []);
-	const noteIn = (folderId) => ({ kind: 'note', id: 1, folderId });
-	const projects = { kind: 'folder', id: 1, parentId: null };
-	assert.equal(dropFolder(tree, noteIn(null), 2), 2);
-	assert.equal(dropFolder(tree, noteIn(2), null), null, 'to root');
-	assert.equal(dropFolder(tree, noteIn(2), 2), undefined, 'same folder');
-	assert.equal(dropFolder(tree, noteIn(null), null), undefined, 'already at root');
-	assert.equal(dropFolder(tree, noteIn(null), 99), undefined, 'unknown folder');
-	assert.equal(dropFolder(tree, noteIn(null), undefined), undefined, 'no target');
-	assert.equal(dropFolder(tree, projects, 3), 3);
-	assert.equal(dropFolder(tree, projects, 1), undefined, 'itself');
-	assert.equal(dropFolder(tree, projects, 5), undefined, 'a descendant');
-	assert.equal(dropFolder(tree, projects, null), undefined, 'already at root');
-	assert.equal(dropFolder(tree, { kind: 'folder', id: 5, parentId: 2 }, null), null);
-	assert.equal(dropFolder(tree, { kind: 'folder', id: 5, parentId: 2 }, 1), 1, 'to an ancestor');
-});
-
 test('autoScrollStep scrolls near the edges, faster closer to them', () => {
 	assert.equal(autoScrollStep(300, 100, 500), 0);
 	assert.ok(autoScrollStep(130, 100, 500) < 0);
@@ -232,4 +235,169 @@ test('autoScrollStep scrolls near the edges, faster closer to them', () => {
 	assert.equal(autoScrollStep(50, 100, 500), -14, 'capped past the edge');
 	assert.ok(autoScrollStep(480, 100, 500) > 0);
 	assert.equal(autoScrollStep(900, 100, 500), 14);
+});
+
+// ── Drop targets and ⌥↑/⌥↓ ────────────────────────────────────────────────────
+
+// Root: Beta (4, empty), inbox (3), Projects (1) > Archive (2); root notes: pinned 60 61 | 10 11 12
+const dndNotes = [
+	note(60, null, { pinned: true }),
+	note(61, null, { pinned: true }),
+	note(30, 2),
+	note(10),
+	note(11),
+	note(12)
+];
+const dndTree = buildTree(folders.slice(0, 4), dndNotes);
+// f:4 e:4 f:3 f:1 f:2 n:30 n:60 n:61 n:10 n:11 n:12
+const dndRows = visibleRows(dndTree, new Set([1, 2, 4]));
+const at = (key, fraction = 0.5) => ({ index: dndRows.findIndex((r) => r.key === key), fraction });
+const drop = (item, hover) => dropTarget(dndTree, dndRows, item, hover);
+const rootNote = (id) => ({ kind: 'note', id, folderId: null });
+const folderItem = (id, parentId = null) => ({ kind: 'folder', id, parentId });
+
+test('dropTarget: a note between note rows inserts there, with a line', () => {
+	assert.deepEqual(drop(rootNote(12), at('n:10', 0.2)), {
+		folderId: null,
+		index: 0,
+		line: { key: 'n:10', edge: 'before', depth: 0 }
+	});
+	assert.deepEqual(drop(rootNote(10), at('n:11', 0.8)), {
+		folderId: null,
+		index: 1,
+		line: { key: 'n:12', edge: 'before', depth: 0 }
+	});
+	assert.deepEqual(drop(rootNote(10), at('n:12', 0.8)), {
+		folderId: null,
+		index: 2,
+		line: { key: 'n:12', edge: 'after', depth: 0 }
+	});
+	// Across folders: into Archive before/after its note.
+	assert.deepEqual(drop(rootNote(11), at('n:30', 0.9)), {
+		folderId: 2,
+		index: 1,
+		line: { key: 'n:30', edge: 'after', depth: 2 }
+	});
+});
+
+test('dropTarget: note slots snap into the dragged note\'s pin group', () => {
+	// An unpinned note over the pinned ones: the top of the unpinned group.
+	assert.deepEqual(drop(rootNote(12), at('n:60', 0.1)), {
+		folderId: null,
+		index: 0,
+		line: { key: 'n:10', edge: 'before', depth: 0 }
+	});
+	// A pinned note over the unpinned ones: the bottom of the pinned group.
+	assert.deepEqual(drop(rootNote(60), at('n:11', 0.9)), {
+		folderId: null,
+		index: 1,
+		line: { key: 'n:10', edge: 'before', depth: 0 }
+	});
+	// Into a folder whose group is empty: index 0, the line at the edge of its other notes.
+	assert.deepEqual(drop(rootNote(60), at('n:30', 0.9)), {
+		folderId: 2,
+		index: 0,
+		line: { key: 'n:30', edge: 'before', depth: 2 }
+	});
+});
+
+test('dropTarget: dropping where a note already is does nothing', () => {
+	assert.equal(drop(rootNote(11), at('n:11', 0.2)), undefined, 'itself');
+	assert.equal(drop(rootNote(11), at('n:10', 0.8)), undefined, 'just above it');
+	assert.equal(drop(rootNote(11), at('n:12', 0.2)), undefined, 'just below it');
+	assert.equal(drop(rootNote(10), at('n:61', 0.5)), undefined, 'snapped back to where it is');
+	assert.equal(drop(rootNote(10), 'root'), undefined, 'root: already on top of its group');
+	assert.equal(drop(rootNote(10), null), undefined);
+});
+
+test('dropTarget: a note over a folder row, its Empty row or the root moves into it (top of group)', () => {
+	assert.deepEqual(drop(rootNote(10), at('f:3', 0.1)), { folderId: 3, index: null, line: null }, 'any height');
+	assert.deepEqual(drop(rootNote(10), at('e:4')), { folderId: 4, index: null, line: null });
+	assert.deepEqual(drop(rootNote(11), 'root'), { folderId: null, index: null, line: null }, 'own folder: to the top');
+	assert.deepEqual(drop({ kind: 'note', id: 30, folderId: 2 }, 'root'), { folderId: null, index: null, line: null });
+	assert.equal(drop({ kind: 'note', id: 30, folderId: 2 }, at('f:2')), undefined, 'own folder, already on top');
+});
+
+test('dropTarget: a folder row\'s top/bottom quarter inserts among siblings, the middle moves into it', () => {
+	assert.deepEqual(drop(folderItem(1), at('f:4', 0.1)), {
+		folderId: null,
+		index: 0,
+		line: { key: 'f:4', edge: 'before', depth: 0 }
+	});
+	assert.deepEqual(drop(folderItem(4), at('f:3', 0.9)), {
+		folderId: null,
+		index: 1,
+		line: { key: 'f:3', edge: 'after', depth: 0 }
+	});
+	assert.deepEqual(drop(folderItem(4), at('f:3', 0.5)), { folderId: 3, index: null, line: null });
+	// The bottom of an expanded folder is the start of its children.
+	assert.deepEqual(drop(folderItem(3), at('f:1', 0.9)), {
+		folderId: 1,
+		index: 0,
+		line: { key: 'f:1', edge: 'after', depth: 1 }
+	});
+	// Over notes: the end of their folder's subfolders.
+	assert.deepEqual(drop(folderItem(3), at('n:30')), { folderId: 2, index: null, line: null });
+	assert.deepEqual(
+		drop(folderItem(4), at('n:10')),
+		{ folderId: null, index: 2, line: { key: 'n:60', edge: 'before', depth: 0 } },
+		'own parent: a reorder to the end, the line below the last subfolder (above the first note)'
+	);
+	assert.deepEqual(
+		drop(folderItem(3), at('n:12', 0.9)),
+		{ folderId: null, index: 2, line: { key: 'n:60', edge: 'before', depth: 0 } },
+		'any note row of the parent'
+	);
+	assert.equal(drop(folderItem(1), at('n:10')), undefined, 'already last');
+});
+
+test('dropTarget: a folder never goes into itself or a descendant, and no-op drops are undefined', () => {
+	assert.equal(drop(folderItem(1), at('f:1', 0.5)), undefined, 'itself');
+	assert.equal(drop(folderItem(1), at('f:2', 0.5)), undefined, 'a descendant');
+	assert.equal(drop(folderItem(1), at('f:2', 0.1)), undefined, 'a slot inside itself');
+	assert.equal(drop(folderItem(1), at('f:1', 0.9)), undefined, 'its own children');
+	assert.equal(drop(folderItem(1), at('f:3', 0.9)), undefined, 'just below its (collapsed) previous sibling');
+	assert.equal(drop(folderItem(3), at('f:1', 0.1)), undefined, 'just above its next sibling');
+	assert.equal(drop(folderItem(4), 'root'), undefined, 'its own parent');
+	assert.equal(drop(folderItem(4), at('e:4')), undefined, 'its own Empty row');
+	assert.deepEqual(drop(folderItem(2, 1), 'root'), { folderId: null, index: null, line: null });
+});
+
+test('dropTarget: empty space is the root for notes, the end of the root folders for folders', () => {
+	assert.deepEqual(drop(rootNote(11), 'end'), { folderId: null, index: null, line: null }, 'note: today\'s root drop');
+	assert.equal(drop(rootNote(10), 'end'), undefined, 'note already on top of its group');
+	// Root has notes: the line closes the folder block, above the first root note.
+	assert.deepEqual(drop(folderItem(4), 'end'), { folderId: null, index: 2, line: { key: 'n:60', edge: 'before', depth: 0 } });
+	assert.deepEqual(drop(folderItem(2, 1), 'end'), { folderId: null, index: 3, line: { key: 'n:60', edge: 'before', depth: 0 } });
+	assert.equal(drop(folderItem(1), 'end'), undefined, 'already the last root folder');
+	assert.equal(drop(folderItem(1), 'root'), undefined, 'the Notes row stays "into root" (a no-op here)');
+
+	// No root notes, last root folder expanded: the line goes after the last row of its subtree.
+	const noNotes = buildTree(folders.slice(0, 4), [note(30, 2)]);
+	const rows = visibleRows(noNotes, new Set([1, 2])); // f:4 f:3 f:1 f:2 n:30
+	assert.deepEqual(dropTarget(noNotes, rows, folderItem(4), 'end'), {
+		folderId: null,
+		index: 2,
+		line: { key: 'n:30', edge: 'after', depth: 0 }
+	});
+	const lastEmpty = visibleRows(buildTree(folders.slice(0, 4), []), new Set([1, 2])); // ends with e:2
+	assert.deepEqual(dropTarget(buildTree(folders.slice(0, 4), []), lastEmpty, folderItem(3), 'end'), {
+		folderId: null,
+		index: 2,
+		line: { key: 'e:2', edge: 'after', depth: 0 }
+	});
+});
+
+test('keyboardMove: one step among siblings, within the pin group; null at the edges', () => {
+	assert.deepEqual(keyboardMove(dndTree, rootNote(11), -1), { folderId: null, index: 0 });
+	assert.deepEqual(keyboardMove(dndTree, rootNote(11), 1), { folderId: null, index: 2 });
+	assert.equal(keyboardMove(dndTree, rootNote(10), -1), null, 'top of the unpinned group');
+	assert.equal(keyboardMove(dndTree, rootNote(61), 1), null, 'bottom of the pinned group');
+	assert.deepEqual(keyboardMove(dndTree, rootNote(61), -1), { folderId: null, index: 0 });
+	assert.equal(keyboardMove(dndTree, rootNote(99), 1), null, 'unknown note');
+	assert.deepEqual(keyboardMove(dndTree, folderItem(3), -1), { folderId: null, index: 0 });
+	assert.deepEqual(keyboardMove(dndTree, folderItem(3), 1), { folderId: null, index: 2 });
+	assert.equal(keyboardMove(dndTree, folderItem(4), -1), null);
+	assert.equal(keyboardMove(dndTree, folderItem(1), 1), null);
+	assert.equal(keyboardMove(dndTree, folderItem(2, 1), 1), null, 'only child');
 });

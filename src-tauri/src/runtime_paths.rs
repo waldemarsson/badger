@@ -21,13 +21,13 @@ pub fn resolve_runtime_paths(
     debug_build: bool,
 ) -> RuntimePaths {
     let base_dir = if debug_build {
-        repo_root_from_manifest_dir(manifest_dir).join(".timetracker-dev")
+        repo_root_from_manifest_dir(manifest_dir).join(".badger-dev")
     } else {
-        home_dir.join(".timetracker")
+        home_dir.join(".badger")
     };
 
     RuntimePaths {
-        db_path: base_dir.join("timetracker.db"),
+        db_path: base_dir.join("badger.db"),
         log_dir: base_dir.join("logs"),
         models_dir: base_dir.join("models"),
     }
@@ -57,12 +57,9 @@ mod tests {
             models_dir,
         } = resolve_runtime_paths(home_dir, manifest_dir, true);
 
-        assert_eq!(
-            db_path,
-            Path::new("/workspace/.timetracker-dev/timetracker.db")
-        );
-        assert_eq!(log_dir, Path::new("/workspace/.timetracker-dev/logs"));
-        assert_eq!(models_dir, Path::new("/workspace/.timetracker-dev/models"));
+        assert_eq!(db_path, Path::new("/workspace/.badger-dev/badger.db"));
+        assert_eq!(log_dir, Path::new("/workspace/.badger-dev/logs"));
+        assert_eq!(models_dir, Path::new("/workspace/.badger-dev/models"));
     }
 
     #[test]
@@ -76,12 +73,9 @@ mod tests {
             models_dir,
         } = resolve_runtime_paths(home_dir, manifest_dir, false);
 
-        assert_eq!(
-            db_path,
-            Path::new("/home/tester/.timetracker/timetracker.db")
-        );
-        assert_eq!(log_dir, Path::new("/home/tester/.timetracker/logs"));
-        assert_eq!(models_dir, Path::new("/home/tester/.timetracker/models"));
+        assert_eq!(db_path, Path::new("/home/tester/.badger/badger.db"));
+        assert_eq!(log_dir, Path::new("/home/tester/.badger/logs"));
+        assert_eq!(models_dir, Path::new("/home/tester/.badger/models"));
         assert_eq!(
             repo_root_from_manifest_dir(manifest_dir),
             Path::new("/workspace")
@@ -97,7 +91,7 @@ mod tests {
 
         assert_eq!(
             crate::startup_backup::backup_root_dir(&paths.db_path),
-            Path::new("/home/tester/.timetracker/backups")
+            Path::new("/home/tester/.badger/backups")
         );
     }
 }

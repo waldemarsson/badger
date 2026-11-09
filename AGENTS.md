@@ -1,6 +1,6 @@
 # Agent instructions
 
-TimeTracker is a local-first macOS desktop app: a SvelteKit SPA (Svelte 5, Tailwind 3) inside a Tauri 2 WebView, with a Rust backend that owns a SQLite database. Read `docs/architecture.md` for the big picture; this file holds the rules and gotchas.
+Badger is a local-first macOS desktop app: a SvelteKit SPA (Svelte 5, Tailwind 3) inside a Tauri 2 WebView, with a Rust backend that owns a SQLite database. Read `docs/architecture.md` for the big picture; this file holds the rules and gotchas.
 
 ## Gates — all must pass before handing off
 
@@ -21,7 +21,7 @@ CI only builds releases: every push to `main` publishes a new macOS release. Not
 
 - **Rust owns persistence and the file system.** The frontend only calls `invoke()`. It never touches SQLite or files directly.
 - **SPA only.** `ssr = false`; Tauri APIs exist only in the WebView at runtime.
-- **Dev data is isolated.** Debug builds use repo-local `.timetracker-dev/`. Never read, write, or delete `~/.timetracker/` — that is the user's real data.
+- **Dev data is isolated.** Debug builds use repo-local `.badger-dev/`. Never read, write, or delete `~/.badger/` — that is the user's real data.
 - **No new dependencies** (npm or cargo) without asking. Prefer the stdlib, Svelte built-ins (`svelte/transition`, `svelte/animate`), and what is already in `package.json` / `Cargo.toml`.
 - Match the surrounding file's style and indentation; files differ.
 
@@ -43,7 +43,7 @@ Gotchas:
 - **Multi-step writes** go in a transaction (`pool.begin()`).
 - **Note write paths must also feed the semantic index.** Call the `*_and_queue` / `delete_note_and_evict` helpers in `commands/notes.rs` (not bare `inner_*`) from wrappers so the note is re-embedded; see `docs/architecture.md` (Semantic search).
 - **Reminder-affecting write paths must call `reminders_scheduler::reminders_changed(&app, pool)`** after committing (reminder commands, and todo/note wrappers that cascade-delete, complete or retitle linked reminders; restore). It emits `reminders-changed` and recomputes the dock badge; without it the UI and badge go stale until the next 30 s tick. Todo-done completion of reminders belongs inside `inner_move_todo`'s transaction. See `docs/architecture.md` (Reminders).
-- **Semantic tests never download or load the model.** Use `FakeEmbedder` and `semantic::index::tests::ready_state`. Real-model tests are `#[ignore]`d; run them with `TIMETRACKER_MODEL_DIR=<dir> cargo test -p time-tracker real_model -- --ignored --test-threads=1`.
+- **Semantic tests never download or load the model.** Use `FakeEmbedder` and `semantic::index::tests::ready_state`. Real-model tests are `#[ignore]`d; run them with `BADGER_MODEL_DIR=<dir> cargo test -p badger real_model -- --ignored --test-threads=1`.
 - **`ort` downloads ONNX Runtime from `cdn.pyke.io` at build time**, so the first build (and any clean `target/`) needs network. Never add `unwrap`/`expect` on tokenizer, inference or download paths: release is `panic = "abort"`.
 - **Quit/close must go through `flush_guard.rs`** (flushes unsaved notes). Don't restore the native macOS Quit menu item or exit via `std::process::exit`; both bypass `RunEvent::ExitRequested`.
 

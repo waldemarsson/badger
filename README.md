@@ -1,16 +1,16 @@
-# TimeTracker
+# Badger
 
 **Your time, your todos, your notes — on your Mac, and nowhere else.**
 
-TimeTracker is a fast, keyboard-friendly desktop app for consultants and developers who bill by the hour. Log time against customers, projects, and issues; run your week from a kanban board; keep markdown notes next to the work; and get a month-end report you can paste straight into an invoice.
+Badger is a fast, keyboard-friendly desktop app for consultants and developers who bill by the hour. Log time against customers, projects, and issues; run your week from a kanban board; keep markdown notes next to the work; and get a month-end report you can paste straight into an invoice.
 
 No account, no cloud, no subscription, no telemetry. Everything lives in one SQLite file in your home directory.
 
 ![Today view](docs/screenshots/today.png)
 
-## Why TimeTracker
+## Why Badger
 
-- **Local-first, private by default.** All data is stored in `~/.timetracker/timetracker.db` on your machine. The app makes no network calls for your data and works fully offline.
+- **Local-first, private by default.** All data is stored in `~/.badger/badger.db` on your machine. The app makes no network calls for your data and works fully offline.
 - **Yours to keep.** Plain SQLite plus one-click JSON export. Automatic daily backups on startup, with configurable retention.
 - **Built for the workflow, not the database.** A Today agenda, a drag-and-drop board, and a ⌘K command palette replace form-filling.
 - **Native and lightweight.** A Tauri 2 app with a Rust backend: small binary, quick start, low memory.
@@ -92,8 +92,8 @@ Manage customers and projects as cards, with defaults that pre-fill new entries.
 
 | What | Where |
 | --- | --- |
-| Database (installed app) | `~/.timetracker/timetracker.db` |
-| Database (dev builds) | `.timetracker-dev/` in the repo |
+| Database (installed app) | `~/.badger/badger.db` |
+| Database (dev builds) | `.badger-dev/` in the repo |
 | Manual backups | JSON file, wherever you save it |
 | Automatic backups | Daily on startup, kept for a configurable number of days |
 
@@ -104,20 +104,20 @@ Restore replaces the current data with the backup's contents. See [Data and back
 Pre-built `.dmg` releases are published automatically on every push to `main`.
 
 1. Go to the [Releases](../../releases) page and download the latest `.dmg`.
-2. Open the `.dmg` and drag **TimeTracker** into your `Applications` folder.
+2. Open the `.dmg` and drag **Badger** into your `Applications` folder.
 3. On first launch macOS blocks the app because it is unsigned. Remove the
    Gatekeeper quarantine flag from a terminal:
 
    ```bash
-   xattr -dr com.apple.quarantine /Applications/TimeTracker.app
+   xattr -dr com.apple.quarantine /Applications/Badger.app
    ```
 
    Then open the app normally. If macOS still reports the app as "damaged",
    re-sign it ad-hoc and retry:
 
    ```bash
-   codesign --force --deep --sign - /Applications/TimeTracker.app
-   xattr -dr com.apple.quarantine /Applications/TimeTracker.app
+   codesign --force --deep --sign - /Applications/Badger.app
+   xattr -dr com.apple.quarantine /Applications/Badger.app
    ```
 
 The build is arm64-only (Apple Silicon) and unsigned/un-notarized, which is why
@@ -130,7 +130,7 @@ npm install
 npm run dev
 ```
 
-This starts the Vite dev server and launches the Tauri shell against it. Development runs store their SQLite database and logs under repo-local `.timetracker-dev/`, isolated from the live `~/.timetracker/` data used by release builds.
+This starts the Vite dev server and launches the Tauri shell against it. Development runs store their SQLite database and logs under repo-local `.badger-dev/`, isolated from the live `~/.badger/` data used by release builds.
 
 **Stack:** SvelteKit SPA (Svelte 5, Tailwind) in a Tauri 2 WebView, with a Rust backend that owns a SQLite database via sqlx.
 

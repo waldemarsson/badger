@@ -2,7 +2,7 @@
 
 ## Overview
 
-TimeTracker is a local-first desktop application built as a Tauri shell around a SvelteKit single-page app. The frontend renders the user interface and calls Rust commands through Tauri's `invoke()` bridge. The Rust backend owns persistence, validation, reporting queries, backup/restore logic, and file-system access.
+Badger is a local-first desktop application built as a Tauri shell around a SvelteKit single-page app. The frontend renders the user interface and calls Rust commands through Tauri's `invoke()` bridge. The Rust backend owns persistence, validation, reporting queries, backup/restore logic, and file-system access.
 
 ## Main parts
 
@@ -28,7 +28,7 @@ The main user-facing areas are:
 ### Backend
 
 - Located under `src-tauri/src/`
-- Starts from `main.rs` and delegates to `time_tracker_lib::run()`
+- Starts from `main.rs` and delegates to `badger_lib::run()`
 - Registers Tauri commands in `lib.rs`
 - Stores a shared SQLite pool and logging guard in Tauri managed state
 
@@ -173,24 +173,24 @@ Slack-style reminders: a text, a time, an optional repeat and an optional link t
 
 ## Storage model
 
-TimeTracker keeps runtime files in different locations by build type:
+Badger keeps runtime files in different locations by build type:
 
 Development (`npm run dev` / debug builds):
 
 ```text
-.timetracker-dev/timetracker.db
-.timetracker-dev/logs/
-.timetracker-dev/backups/
-.timetracker-dev/models/
+.badger-dev/badger.db
+.badger-dev/logs/
+.badger-dev/backups/
+.badger-dev/models/
 ```
 
 Non-debug builds:
 
 ```text
-~/.timetracker/timetracker.db
-~/.timetracker/logs/
-~/.timetracker/backups/
-~/.timetracker/models/
+~/.badger/badger.db
+~/.badger/logs/
+~/.badger/backups/
+~/.badger/models/
 ```
 
 The schema is created on startup if it does not exist. The main tables are:
@@ -225,8 +225,8 @@ The frontend does not talk to SQLite directly and does not read or write backup 
 
 ### Logging is file-based
 
-The backend initializes daily-rotating logs under repo-local `.timetracker-dev/logs/` in debug builds and `~/.timetracker/logs/` in non-debug builds. It keeps the logging guard alive in managed Tauri state so writes do not stop early.
+The backend initializes daily-rotating logs under repo-local `.badger-dev/logs/` in debug builds and `~/.badger/logs/` in non-debug builds. It keeps the logging guard alive in managed Tauri state so writes do not stop early.
 
 ### Automatic startup backups
 
-On each application startup, TimeTracker creates a backup if the retention setting is greater than zero. The backup is written to `backups/YYYY-MM-DD/backup.json` beside the active database, overwriting any existing backup for today. After backup creation, old backups are automatically trimmed to keep only the most recent backups based on the retention setting (default: 3). Setting retention to 0 disables automatic startup backups entirely. Backup creation, trimming, and listing logic stays in Rust; the frontend only displays the available backups and retention setting.
+On each application startup, Badger creates a backup if the retention setting is greater than zero. The backup is written to `backups/YYYY-MM-DD/backup.json` beside the active database, overwriting any existing backup for today. After backup creation, old backups are automatically trimmed to keep only the most recent backups based on the retention setting (default: 3). Setting retention to 0 disables automatic startup backups entirely. Backup creation, trimming, and listing logic stays in Rust; the frontend only displays the available backups and retention setting.

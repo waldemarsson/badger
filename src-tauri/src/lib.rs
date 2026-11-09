@@ -115,7 +115,7 @@ pub fn run() {
             app.manage(pool.clone());
             app.manage(runtime_paths.clone());
 
-            tracing::info!("TimeTracker started. DB: {:?}", runtime_paths.db_path);
+            tracing::info!("Badger started. DB: {:?}", runtime_paths.db_path);
 
             // ── Startup Backup ───────────────────────────────────────────────
             // Background task writes daily backup if retention > 0.

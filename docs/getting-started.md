@@ -29,7 +29,7 @@ This uses:
 - `npm run vite:dev` for the frontend dev server on port `1420`
 - Tauri development mode pointing at that dev server
 
-Development runs started with `npm run dev` keep runtime data under repo-local `.timetracker-dev/` (including the SQLite database and logs). Release and other non-debug builds continue to use `~/.timetracker/`.
+Development runs started with `npm run dev` keep runtime data under repo-local `.badger-dev/` (including the SQLite database and logs). Release and other non-debug builds continue to use `~/.badger/`.
 
 ## Verification commands
 

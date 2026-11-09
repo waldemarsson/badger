@@ -75,7 +75,7 @@ fn environment() -> ort::Result<ort::environment::Environment> {
     if let Some(env) = slot.as_ref() {
         return Ok(env.clone());
     }
-    let env = ort::init().with_name("timetracker").build()?;
+    let env = ort::init().with_name("badger").build()?;
     *slot = Some(env.clone());
     Ok(env)
 }

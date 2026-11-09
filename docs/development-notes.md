@@ -28,7 +28,7 @@ That pattern matters because it keeps backend tests:
 - seed tooling is available during local development
 - release builds do not expose the seed command
 
-Debug builds also keep their runtime database and logs under repo-local `.timetracker-dev/`, which keeps seed workflows away from the live `~/.timetracker/` data used by non-debug builds.
+Debug builds also keep their runtime database and logs under repo-local `.badger-dev/`, which keeps seed workflows away from the live `~/.badger/` data used by non-debug builds.
 
 The seed workflow populates sample customers, projects, issues, and time entries anchored to recent dates so reporting screens have realistic data to display.
 
@@ -42,10 +42,10 @@ Reminders are seeded too, whenever the `reminders` table is empty (also when cus
 
 Unit tests never download or load the embedding model. Embedding sits behind the `Embedder` trait and tests use `FakeEmbedder` (deterministic vectors, a word-count token counter); `semantic::index::tests::ready_state` builds a ready `SemanticState` around one. Download tests run against a local fake source, not the network.
 
-`src-tauri/src/semantic/real_model_tests.rs` holds `#[ignore]`d tests against the real model. They download nothing: enable semantic search in a debug build first (files land in `.timetracker-dev/models/`), or point `TIMETRACKER_MODEL_DIR` at a directory with `model_quantized.onnx` and `tokenizer.json`:
+`src-tauri/src/semantic/real_model_tests.rs` holds `#[ignore]`d tests against the real model. They download nothing: enable semantic search in a debug build first (files land in `.badger-dev/models/`), or point `BADGER_MODEL_DIR` at a directory with `model_quantized.onnx` and `tokenizer.json`:
 
 ```bash
-TIMETRACKER_MODEL_DIR=<dir> cargo test -p time-tracker real_model -- --ignored --nocapture --test-threads=1
+BADGER_MODEL_DIR=<dir> cargo test -p badger real_model -- --ignored --nocapture --test-threads=1
 ```
 
 `real_model_spike` also compares against the fp32 export when `model.onnx` is in the same directory, and prints the timing, int8-vs-fp32 overlap and the similarity-floor sweeps (fixed floor, then the relative rule's `MARGIN` and `ABSOLUTE_FLOOR` over topic and off-topic queries); rerun it when the model, chunker or prefixes change (see `similarity_floor` in `semantic/fusion.rs`). `real_model_sample_notes` checks the rule on the dev seed's 16 sample notes through hybrid search and prints every note's score, the median and the floor per query.

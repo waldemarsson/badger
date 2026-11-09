@@ -1,12 +1,12 @@
 [package]
-name = "time-tracker"
+name = "badger"
 version = "1.0.0"
-description = "TimeTracker macOS Desktop App"
+description = "Badger macOS Desktop App"
 authors = ["you"]
 edition = "2021"
 
 [lib]
-name = "time_tracker_lib"
+name = "badger_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

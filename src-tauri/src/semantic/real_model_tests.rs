@@ -1,9 +1,9 @@
 //! Opt-in tests against the real embedding model. They never download anything: run them after
-//! enabling semantic search in a debug build (files in `.timetracker-dev/models/`) or
-//! point `TIMETRACKER_MODEL_DIR` at a directory holding the model files:
+//! enabling semantic search in a debug build (files in `.badger-dev/models/`) or
+//! point `BADGER_MODEL_DIR` at a directory holding the model files:
 //!
 //! ```sh
-//! cargo test -p time-tracker real_model -- --ignored --nocapture --test-threads=1
+//! cargo test -p badger real_model -- --ignored --nocapture --test-threads=1
 //! ```
 //!
 //! `real_model_spike` also compares against the fp32 export when `model.onnx` is present
@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 fn model_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("TIMETRACKER_MODEL_DIR") {
+    if let Some(dir) = std::env::var_os("BADGER_MODEL_DIR") {
         return PathBuf::from(dir);
     }
     let paths = crate::runtime_paths::runtime_paths(std::path::Path::new("/nonexistent-home"));

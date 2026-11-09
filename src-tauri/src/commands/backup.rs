@@ -1182,7 +1182,7 @@ mod tests {
             .join("target")
             .join("test-artifacts")
             .join(format!("list-startup-backups-{unique}"));
-        let db_path = test_dir.join("timetracker.db");
+        let db_path = test_dir.join("badger.db");
 
         crate::startup_backup::write_daily_backup(&db_path, "2026-05-08", r#"{"test":"older"}"#)
             .expect("older backup write should succeed");

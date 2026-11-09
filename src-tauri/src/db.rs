@@ -1,8 +1,9 @@
 // src-tauri/src/db.rs
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
-    Pool, Sqlite,
+    Pool, Sqlite, SqliteConnection,
 };
+use std::cmp::Ordering;
 use std::path::Path;
 
 /// Full schema DDL.  Uses PRAGMA lines so in-memory test pools also get FK enforcement.
@@ -69,6 +70,7 @@ CREATE TABLE IF NOT EXISTS folders (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
     ParentId  INTEGER REFERENCES folders(id) ON DELETE SET NULL,
     Name      TEXT    NOT NULL,
+    -- Manual order among siblings; shown as Position, id.
     Position  INTEGER NOT NULL DEFAULT 0
 );
 
@@ -79,7 +81,9 @@ CREATE TABLE IF NOT EXISTS notes (
     Body      TEXT    NOT NULL DEFAULT '',
     Pinned    INTEGER NOT NULL DEFAULT 0,
     CreatedAt TEXT    NOT NULL,
-    UpdatedAt TEXT    NOT NULL
+    UpdatedAt TEXT    NOT NULL,
+    -- Manual order within the folder; shown as Pinned DESC, Position, id.
+    Position  INTEGER NOT NULL DEFAULT 0
 );
 
 -- Reminders: the current occurrence (RemindAt, naive local time), the recurrence anchor
@@ -159,6 +163,7 @@ pub async fn init_db(db_path: &Path) -> Result<Pool<Sqlite>, sqlx::Error> {
     sqlx::raw_sql(SCHEMA_SQL).execute(&pool).await?;
     migrate_todos_status(&pool).await?;
     migrate_issues_drop_external_id(&pool).await?;
+    migrate_notes_position(&pool).await?;
     backfill_notes_fts(&pool).await?;
     backfill_note_refs(&pool).await?;
 
@@ -204,6 +209,157 @@ pub async fn migrate_issues_drop_external_id(pool: &Pool<Sqlite>) -> Result<(), 
         .execute(pool)
         .await?;
     Ok(())
+}
+
+/// Adds `notes.Position` to databases created before manual sorting and backfills notes
+/// and folders with the order they used to show in. Idempotent: does nothing once the
+/// column exists.
+pub async fn migrate_notes_position(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
+    let columns: Vec<(String,)> = sqlx::query_as("SELECT name FROM pragma_table_info('notes')")
+        .fetch_all(pool)
+        .await?;
+    if columns.iter().any(|(name,)| name == "Position") {
+        return Ok(());
+    }
+
+    let mut tx = pool.begin().await?;
+    sqlx::query("ALTER TABLE notes ADD COLUMN Position INTEGER NOT NULL DEFAULT 0")
+        .execute(&mut *tx)
+        .await?;
+    backfill_positions(&mut tx).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Numbers notes and folders densely (0..n per folder / parent) in the order the tree
+/// used before manual sorting. Used by the migration and by restoring older backups.
+pub async fn backfill_positions(conn: &mut SqliteConnection) -> Result<(), sqlx::Error> {
+    backfill_note_positions(&mut *conn).await?;
+    backfill_folder_positions(conn).await
+}
+
+/// Notes per folder: pinned first, then most recently updated, then id.
+pub async fn backfill_note_positions(conn: &mut SqliteConnection) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE notes SET Position = (
+             SELECT r.Pos FROM (
+                 SELECT id, ROW_NUMBER() OVER (
+                     PARTITION BY FolderId ORDER BY Pinned DESC, UpdatedAt DESC, id
+                 ) - 1 AS Pos
+                 FROM notes
+             ) r WHERE r.id = notes.id
+         )",
+    )
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// Folders per parent: A–Z by [`compare_folder_names`], then id.
+pub async fn backfill_folder_positions(conn: &mut SqliteConnection) -> Result<(), sqlx::Error> {
+    let mut folders: Vec<(i64, Option<i64>, String)> =
+        sqlx::query_as("SELECT id, ParentId, Name FROM folders")
+            .fetch_all(&mut *conn)
+            .await?;
+    folders.sort_by(|a, b| {
+        a.1.cmp(&b.1)
+            .then_with(|| compare_folder_names(&a.2, &b.2))
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    let mut parent: Option<Option<i64>> = None;
+    let mut position = 0_i64;
+    for (id, parent_id, _) in folders {
+        if parent != Some(parent_id) {
+            parent = Some(parent_id);
+            position = 0;
+        }
+        sqlx::query("UPDATE folders SET Position = ? WHERE id = ?")
+            .bind(position)
+            .bind(id)
+            .execute(&mut *conn)
+            .await?;
+        position += 1;
+    }
+    Ok(())
+}
+
+/// A token of a name for [`compare_folder_names`]: a run of digits or a single character.
+enum NameToken<'a> {
+    Number(&'a str),
+    Char(char),
+}
+
+fn name_tokens(name: &str) -> Vec<NameToken<'_>> {
+    let mut tokens = Vec::new();
+    let mut rest = name;
+    while let Some(c) = rest.chars().next() {
+        if c.is_ascii_digit() {
+            let end = rest
+                .find(|ch: char| !ch.is_ascii_digit())
+                .unwrap_or(rest.len());
+            tokens.push(NameToken::Number(&rest[..end]));
+            rest = &rest[end..];
+        } else {
+            tokens.push(NameToken::Char(c));
+            rest = &rest[c.len_utf8()..];
+        }
+    }
+    tokens
+}
+
+/// Sort key of a non-digit character: (class, weight). Spaces and punctuation (class 0)
+/// sort before digits (class 1) and letters (class 2). Letters ignore case and most
+/// accents; å, ä, ö (and æ, ø) follow z as in Swedish.
+fn char_key(c: char) -> (u8, u32) {
+    let lower = c.to_lowercase().next().unwrap_or(c);
+    let folded = match lower {
+        'à' | 'á' | 'â' | 'ã' | 'ā' => 'a',
+        'ç' | 'č' => 'c',
+        'è' | 'é' | 'ê' | 'ë' | 'ē' => 'e',
+        'ì' | 'í' | 'î' | 'ï' => 'i',
+        'ñ' | 'ń' => 'n',
+        'ò' | 'ó' | 'ô' | 'õ' => 'o',
+        'ù' | 'ú' | 'û' => 'u',
+        'ü' | 'ý' | 'ÿ' => 'y',
+        'š' => 's',
+        'ž' => 'z',
+        'æ' => 'ä',
+        'ø' => 'ö',
+        other => other,
+    };
+    match folded {
+        'a'..='z' => (2, folded as u32 - 'a' as u32),
+        'å' => (2, 26),
+        'ä' => (2, 27),
+        'ö' => (2, 28),
+        other if other.is_alphabetic() => (2, 1000 + other as u32),
+        other => (0, other as u32),
+    }
+}
+
+/// Compares two runs of ASCII digits by value ("2" < "10"; "007" == "7").
+fn compare_numbers(a: &str, b: &str) -> Ordering {
+    let a = a.trim_start_matches('0');
+    let b = b.trim_start_matches('0');
+    a.len().cmp(&b.len()).then_with(|| a.cmp(b))
+}
+
+/// Folder-name order approximating the old A–Z tree in a Swedish locale: case-insensitive,
+/// numbers compared by value ("Work 2" before "Work 10"), å < ä < ö after z.
+pub fn compare_folder_names(a: &str, b: &str) -> Ordering {
+    let (left, right) = (name_tokens(a), name_tokens(b));
+    for (x, y) in left.iter().zip(&right) {
+        let order = match (x, y) {
+            (NameToken::Number(m), NameToken::Number(n)) => compare_numbers(m, n),
+            (NameToken::Number(_), NameToken::Char(c)) => (1, 0).cmp(&char_key(*c)),
+            (NameToken::Char(c), NameToken::Number(_)) => char_key(*c).cmp(&(1, 0)),
+            (NameToken::Char(c), NameToken::Char(d)) => char_key(*c).cmp(&char_key(*d)),
+        };
+        if order != Ordering::Equal {
+            return order;
+        }
+    }
+    left.len().cmp(&right.len())
 }
 
 /// Rebuilds the search index when its row count differs from `notes`: the first start
@@ -601,6 +757,143 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(done_col.0, 0, "Done column must be dropped");
+    }
+
+    #[test]
+    fn folder_names_compare_case_insensitively_naturally_and_swedish() {
+        let mut names = vec![
+            "Ödla", "b", "Work 10", "Zebra", "Ärende", "A", "Åsa", "work 2", "éclair", "a",
+            "Work 2b", "_misc", "2024",
+        ];
+        names.sort_by(|a, b| super::compare_folder_names(a, b));
+        assert_eq!(
+            names,
+            vec![
+                "_misc", "2024", "A", "a", "b", "éclair", "work 2", "Work 2b", "Work 10", "Zebra",
+                "Åsa", "Ärende", "Ödla"
+            ]
+        );
+        assert_eq!(
+            super::compare_folder_names("Item 007", "item 7"),
+            std::cmp::Ordering::Equal
+        );
+    }
+
+    #[tokio::test]
+    async fn test_migrate_notes_position_backfills_old_order() {
+        use sqlx::sqlite::SqlitePoolOptions;
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        // Old shape: folders already had Position (always 0), notes had none.
+        sqlx::raw_sql(
+            "CREATE TABLE folders (id INTEGER PRIMARY KEY AUTOINCREMENT, ParentId INTEGER,
+                 Name TEXT NOT NULL, Position INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, FolderId INTEGER,
+                 Title TEXT NOT NULL, Body TEXT NOT NULL DEFAULT '',
+                 Pinned INTEGER NOT NULL DEFAULT 0, CreatedAt TEXT NOT NULL,
+                 UpdatedAt TEXT NOT NULL);
+             INSERT INTO folders (id, ParentId, Name) VALUES
+                 (1, NULL, 'Work 10'), (2, NULL, 'ödla'), (3, NULL, 'work 2'),
+                 (4, NULL, 'Archive'), (5, 4, 'b'), (6, 4, 'A');
+             INSERT INTO notes (id, FolderId, Title, Pinned, CreatedAt, UpdatedAt) VALUES
+                 (1, NULL, 'old', 0, 'x', '2026-01-01'),
+                 (2, NULL, 'new', 0, 'x', '2026-03-01'),
+                 (3, NULL, 'pinned old', 1, 'x', '2026-01-01'),
+                 (4, NULL, 'tie', 0, 'x', '2026-03-01'),
+                 (5, 4, 'only', 0, 'x', '2026-02-01'),
+                 (6, 4, 'pinned', 1, 'x', '2025-01-01');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        super::migrate_notes_position(&pool).await.unwrap();
+        let notes = || async {
+            sqlx::query_as::<_, (i64, Option<i64>, i64)>(
+                "SELECT id, FolderId, Position FROM notes ORDER BY FolderId, Position",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+        };
+        let folders = || async {
+            sqlx::query_as::<_, (i64, Option<i64>, i64)>(
+                "SELECT id, ParentId, Position FROM folders ORDER BY ParentId, Position",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+        };
+        let expected_notes = vec![
+            (3, None, 0),
+            (2, None, 1),
+            (4, None, 2),
+            (1, None, 3),
+            (6, Some(4), 0),
+            (5, Some(4), 1),
+        ];
+        let expected_folders = vec![
+            (4, None, 0),
+            (3, None, 1),
+            (1, None, 2),
+            (2, None, 3),
+            (6, Some(4), 0),
+            (5, Some(4), 1),
+        ];
+        assert_eq!(notes().await, expected_notes);
+        assert_eq!(folders().await, expected_folders);
+
+        // Second run is a no-op: manual changes survive.
+        sqlx::query("UPDATE notes SET Position = 9 WHERE id = 3")
+            .execute(&pool)
+            .await
+            .unwrap();
+        super::migrate_notes_position(&pool).await.unwrap();
+        let position: (i64,) = sqlx::query_as("SELECT Position FROM notes WHERE id = 3")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(position.0, 9);
+        assert_eq!(folders().await, expected_folders);
+    }
+
+    #[tokio::test]
+    async fn test_init_db_migrates_notes_without_position() {
+        let db = TempDb::new("pre-position");
+        {
+            use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+            let opts = SqliteConnectOptions::new()
+                .filename(&db.0)
+                .create_if_missing(true);
+            let pool = SqlitePoolOptions::new().connect_with(opts).await.unwrap();
+            let old_schema = super::SCHEMA_SQL.replace(
+                ",\n    -- Manual order within the folder; shown as Pinned DESC, Position, id.\n    Position  INTEGER NOT NULL DEFAULT 0",
+                "",
+            );
+            assert_ne!(
+                old_schema,
+                super::SCHEMA_SQL,
+                "old shape must drop Position"
+            );
+            sqlx::raw_sql(&old_schema).execute(&pool).await.unwrap();
+            sqlx::query(
+                "INSERT INTO notes (Title, CreatedAt, UpdatedAt) VALUES ('a', 'x', '1'), ('b', 'x', '2')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            pool.close().await;
+        }
+        let pool = super::init_db(&db.0).await.unwrap();
+        let rows: Vec<(String, i64)> =
+            sqlx::query_as("SELECT Title, Position FROM notes ORDER BY Position")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(rows, vec![("b".into(), 0), ("a".into(), 1)]);
+        pool.close().await;
     }
 
     #[tokio::test]

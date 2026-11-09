@@ -28,6 +28,8 @@ pub struct Note {
     pub pinned: bool,
     pub created_at: String,
     pub updated_at: String,
+    /// Manual order within the folder (display: pinned first, then `position`, then id).
+    pub position: i64,
 }
 
 /// A note for the list: the body is replaced by a short plain-text excerpt.
@@ -40,6 +42,7 @@ pub struct NoteSummary {
     pub pinned: bool,
     pub created_at: String,
     pub updated_at: String,
+    pub position: i64,
 }
 
 impl From<Note> for NoteSummary {
@@ -52,6 +55,7 @@ impl From<Note> for NoteSummary {
             pinned: n.pinned,
             created_at: n.created_at,
             updated_at: n.updated_at,
+            position: n.position,
         }
     }
 }
@@ -62,7 +66,8 @@ const SELECT_NOTES: &str = "SELECT id,
         Body      AS body,
         Pinned    AS pinned,
         CreatedAt AS created_at,
-        UpdatedAt AS updated_at
+        UpdatedAt AS updated_at,
+        Position  AS position
  FROM notes";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -336,7 +341,45 @@ pub(crate) async fn rewrite_tag_refs(
     Ok(rewritten)
 }
 
+/// The notes in `folder_id` (root = None) other than `except_id`, in display order, as
+/// (pinned, unpinned) id lists.
+pub(crate) async fn note_groups(
+    folder_id: Option<i64>,
+    except_id: Option<i64>,
+    conn: &mut SqliteConnection,
+) -> Result<(Vec<i64>, Vec<i64>), sqlx::Error> {
+    let rows: Vec<(i64, bool)> = sqlx::query_as(
+        "SELECT id, Pinned FROM notes WHERE FolderId IS ? AND id IS NOT ? \
+         ORDER BY Pinned DESC, Position, id",
+    )
+    .bind(folder_id)
+    .bind(except_id)
+    .fetch_all(conn)
+    .await?;
+    let (pinned, unpinned): (Vec<_>, Vec<_>) = rows.into_iter().partition(|(_, p)| *p);
+    Ok((
+        pinned.into_iter().map(|(id, _)| id).collect(),
+        unpinned.into_iter().map(|(id, _)| id).collect(),
+    ))
+}
+
+/// Numbers the given notes 0..n in order (one folder's notes, pinned group first).
+pub(crate) async fn write_note_positions(
+    ids: &[i64],
+    conn: &mut SqliteConnection,
+) -> Result<(), sqlx::Error> {
+    for (position, id) in (0_i64..).zip(ids) {
+        sqlx::query("UPDATE notes SET Position = ? WHERE id = ?")
+            .bind(position)
+            .bind(id)
+            .execute(&mut *conn)
+            .await?;
+    }
+    Ok(())
+}
+
 /// Inserts a note without the Rust-side duplicate check; the unique index is the backstop.
+/// The note goes to the top of its folder (pinned notes still show above it).
 async fn insert_note(
     title: &str,
     folder_id: Option<i64>,
@@ -346,13 +389,16 @@ async fn insert_note(
     let mut tx = pool.begin().await?;
     super::folders::ensure_folder_exists(folder_id, &mut *tx).await?;
     let row: (i64,) = sqlx::query_as(
-        "INSERT INTO notes (FolderId, Title, Body, Pinned, CreatedAt, UpdatedAt) \
-         VALUES (?, ?, '', 0, ?, ?) RETURNING id",
+        "INSERT INTO notes (FolderId, Title, Body, Pinned, CreatedAt, UpdatedAt, Position) \
+         VALUES (?, ?, '', 0, ?, ?, \
+                 (SELECT COALESCE(MIN(Position) - 1, 0) FROM notes WHERE FolderId IS ?)) \
+         RETURNING id",
     )
     .bind(folder_id)
     .bind(title)
     .bind(&ts)
     .bind(&ts)
+    .bind(folder_id)
     .fetch_one(&mut *tx)
     .await
     .map_err(|e| map_unique(e, title))?;
@@ -363,9 +409,10 @@ async fn insert_note(
 
 // ── Inner functions (testable without Tauri) ──────────────────────────────────
 
-/// All notes without bodies: pinned first, then most recently updated, then id.
+/// All notes without bodies: pinned first, then manual position, then id (the tree order
+/// within each folder).
 pub async fn inner_list_notes(pool: &Pool<Sqlite>) -> Result<Vec<NoteSummary>, AppError> {
-    let sql = format!("{SELECT_NOTES} ORDER BY Pinned DESC, UpdatedAt DESC, id");
+    let sql = format!("{SELECT_NOTES} ORDER BY Pinned DESC, Position, id");
     let notes = sqlx::query_as::<_, Note>(&sql).fetch_all(pool).await?;
     Ok(notes.into_iter().map(NoteSummary::from).collect())
 }
@@ -466,20 +513,35 @@ pub async fn inner_update_note_body(
     get_summary(id, pool).await
 }
 
-/// Pins or unpins a note without touching `UpdatedAt`.
+/// Pins or unpins a note without touching `UpdatedAt`. It lands on the boundary between
+/// the groups: pinning puts it at the bottom of the pinned notes, unpinning at the top of
+/// the unpinned ones. Its folder's positions are renumbered densely.
 pub async fn inner_set_note_pinned(
     id: i64,
     pinned: bool,
     pool: &Pool<Sqlite>,
 ) -> Result<NoteSummary, AppError> {
-    let result = sqlx::query("UPDATE notes SET Pinned = ? WHERE id = ?")
-        .bind(pinned)
-        .bind(id)
-        .execute(pool)
-        .await?;
-    if result.rows_affected() == 0 {
+    let mut tx = pool.begin().await?;
+    let row: Option<(Option<i64>, bool)> =
+        sqlx::query_as("SELECT FolderId, Pinned FROM notes WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some((folder_id, was_pinned)) = row else {
         return Err(not_found());
+    };
+    if was_pinned != pinned {
+        sqlx::query("UPDATE notes SET Pinned = ? WHERE id = ?")
+            .bind(pinned)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        let (mut order, unpinned) = note_groups(folder_id, Some(id), &mut tx).await?;
+        order.push(id);
+        order.extend(unpinned);
+        write_note_positions(&order, &mut tx).await?;
     }
+    tx.commit().await?;
     get_summary(id, pool).await
 }
 
@@ -672,7 +734,7 @@ pub async fn inner_search_notes(
     let mut sql = String::from(
         "SELECT n.id, n.FolderId AS folder_id, n.Title AS title, n.Body AS body,
                 n.Pinned AS pinned, n.CreatedAt AS created_at, n.UpdatedAt AS updated_at,
-                notes_fts.Title AS plain_title, notes_fts.Body AS plain_body,",
+                n.Position AS position, notes_fts.Title AS plain_title, notes_fts.Body AS plain_body,",
     );
     if long.is_empty() {
         sql.push_str(" n.Title AS title_marked, '' AS snippet");
@@ -1579,21 +1641,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_orders_pinned_then_updated_desc_then_id() {
+    async fn list_orders_pinned_then_position_then_id() {
         let pool = crate::test_db().await;
         let a = note_titled("a", &pool).await;
         let b = note_titled("b", &pool).await;
         let c = note_titled("c", &pool).await;
         let d = note_titled("d", &pool).await;
-        set_updated_at(a.id, "2026-01-01T00:00:00.000", &pool).await;
+        // Update times don't matter; new notes go on top, pinning to the pinned group.
         set_updated_at(b.id, "2026-03-01T00:00:00.000", &pool).await;
-        set_updated_at(c.id, "2026-02-01T00:00:00.000", &pool).await;
-        set_updated_at(d.id, "2026-02-01T00:00:00.000", &pool).await;
         inner_set_note_pinned(a.id, true, &pool).await.unwrap();
-
-        assert_eq!(titles(&pool).await, vec!["a", "b", "c", "d"]);
+        assert_eq!(titles(&pool).await, vec!["a", "d", "c", "b"]);
         let list = inner_list_notes(&pool).await.unwrap();
         assert!(list[0].pinned);
+
+        // Equal positions fall back to id.
+        sqlx::query("UPDATE notes SET Position = 5 WHERE id IN (?, ?)")
+            .bind(c.id)
+            .bind(d.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(titles(&pool).await, vec!["a", "b", "c", "d"]);
     }
 
     #[tokio::test]

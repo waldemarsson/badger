@@ -111,6 +111,7 @@ export interface Folder {
 	id: number;
 	parent_id: number | null;
 	name: string; // unique among siblings, case-insensitively
+	position: number; // manual order among siblings (then id)
 }
 
 /** Note list row (list_notes, update_note_body, set_note_pinned, move_note). */
@@ -122,6 +123,7 @@ export interface NoteSummary {
 	pinned: boolean;
 	created_at: string; // local YYYY-MM-DDTHH:MM:SS.mmm
 	updated_at: string;
+	position: number; // manual order within the folder (shown pinned first, then position, then id)
 }
 
 /** search_notes result: a list row plus title/snippet with hits wrapped in \u0002…\u0003. */
@@ -196,6 +198,7 @@ export interface Note {
 	pinned: boolean;
 	created_at: string;
 	updated_at: string;
+	position: number;
 }
 
 export type ReminderRepeat = 'none' | 'daily' | 'weekdays' | 'weekly' | 'monthly';

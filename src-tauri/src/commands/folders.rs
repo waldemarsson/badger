@@ -1,7 +1,7 @@
 /// Note folders: a tree via `ParentId` (root = NULL). Names are unique among siblings,
 /// case-insensitively; moves and deletes never fail on a clash but suffix the moved
 /// folder (" 2", " 3", …) instead. Note titles stay globally unique, so notes never clash.
-use crate::commands::notes::{inner_get_note, NoteSummary};
+use crate::commands::notes::{inner_get_note, note_groups, write_note_positions, NoteSummary};
 use crate::AppError;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Pool, Sqlite, SqliteConnection, SqliteExecutor};
@@ -18,9 +18,12 @@ pub struct Folder {
     pub id: i64,
     pub parent_id: Option<i64>,
     pub name: String,
+    /// Manual order among its siblings (display: `position`, then id).
+    pub position: i64,
 }
 
-const SELECT_FOLDERS: &str = "SELECT id, ParentId AS parent_id, Name AS name FROM folders";
+const SELECT_FOLDERS: &str =
+    "SELECT id, ParentId AS parent_id, Name AS name, Position AS position FROM folders";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -99,6 +102,41 @@ async fn get_folder(id: i64, executor: impl SqliteExecutor<'_>) -> Result<Folder
         .ok_or_else(not_found)
 }
 
+/// Ids of the folders under `parent_id` (root = None) other than `except_id`, in order.
+async fn sibling_ids(
+    parent_id: Option<i64>,
+    except_id: Option<i64>,
+    conn: &mut SqliteConnection,
+) -> Result<Vec<i64>, AppError> {
+    Ok(sqlx::query_scalar(
+        "SELECT id FROM folders WHERE ParentId IS ? AND id IS NOT ? ORDER BY Position, id",
+    )
+    .bind(parent_id)
+    .bind(except_id)
+    .fetch_all(conn)
+    .await?)
+}
+
+/// Numbers the given folders 0..n in order (one parent's children).
+async fn write_folder_positions(ids: &[i64], conn: &mut SqliteConnection) -> Result<(), AppError> {
+    for (position, id) in (0_i64..).zip(ids) {
+        sqlx::query("UPDATE folders SET Position = ? WHERE id = ?")
+            .bind(position)
+            .bind(id)
+            .execute(&mut *conn)
+            .await?;
+    }
+    Ok(())
+}
+
+/// `index` clamped to 0..=len (None: `default`).
+fn clamp_index(index: Option<i64>, default: usize, len: usize) -> usize {
+    index
+        .map(|i| usize::try_from(i.max(0)).unwrap_or(usize::MAX))
+        .unwrap_or(default)
+        .min(len)
+}
+
 /// True when `target` is `id` or one of its descendants. Walks `ParentId` upward from
 /// `target`, bounded by the folder count so corrupt (cyclic) data can't loop forever.
 async fn is_self_or_descendant(
@@ -123,14 +161,14 @@ async fn is_self_or_descendant(
 
 // ── Inner functions (testable without Tauri) ──────────────────────────────────
 
-/// All folders, by id. The frontend sorts (locale-aware) when it builds the tree.
+/// All folders in manual order (`Position`, then id); grouped by parent, that is the tree.
 pub async fn inner_list_folders(pool: &Pool<Sqlite>) -> Result<Vec<Folder>, AppError> {
-    let sql = format!("{SELECT_FOLDERS} ORDER BY id");
+    let sql = format!("{SELECT_FOLDERS} ORDER BY Position, id");
     Ok(sqlx::query_as::<_, Folder>(&sql).fetch_all(pool).await?)
 }
 
-/// Creates a folder under `parent_id` (root = None). A given `name` is validated and must
-/// be free among its siblings; `None` picks the first free `New folder[ n]`.
+/// Creates a folder at the end of `parent_id` (root = None). A given `name` is validated
+/// and must be free among its siblings; `None` picks the first free `New folder[ n]`.
 pub async fn inner_create_folder(
     name: Option<&str>,
     parent_id: Option<i64>,
@@ -145,12 +183,16 @@ pub async fn inner_create_folder(
         Some(n) => n,
         None => first_free_name(NEW_FOLDER_NAME, &taken),
     };
-    let row: (i64,) =
-        sqlx::query_as("INSERT INTO folders (ParentId, Name) VALUES (?, ?) RETURNING id")
-            .bind(parent_id)
-            .bind(&name)
-            .fetch_one(&mut *tx)
-            .await?;
+    let row: (i64,) = sqlx::query_as(
+        "INSERT INTO folders (ParentId, Name, Position) \
+         VALUES (?, ?, (SELECT COALESCE(MAX(Position) + 1, 0) FROM folders WHERE ParentId IS ?)) \
+         RETURNING id",
+    )
+    .bind(parent_id)
+    .bind(&name)
+    .bind(parent_id)
+    .fetch_one(&mut *tx)
+    .await?;
     let folder = get_folder(row.0, &mut *tx).await?;
     tx.commit().await?;
     Ok(folder)
@@ -182,17 +224,21 @@ pub async fn inner_rename_folder(
     Ok(folder)
 }
 
-/// Moves a folder under `parent_id` (root = None). Rejects moving it into itself or a
+/// Moves a folder under `parent_id` (root = None) at `index` among its new siblings
+/// (clamped; None: the end), renumbering them densely. Rejects moving it into itself or a
 /// descendant. On a name clash among the new siblings the folder gets the first free
-/// ` 2`, ` 3`, … suffix. Moving to the current parent is a no-op.
+/// ` 2`, ` 3`, … suffix. The current parent with `index` None is a no-op; with an index
+/// it is a reorder.
 pub async fn inner_move_folder(
     id: i64,
     parent_id: Option<i64>,
+    index: Option<i64>,
     pool: &Pool<Sqlite>,
 ) -> Result<Folder, AppError> {
     let mut tx = pool.begin().await?;
     let folder = get_folder(id, &mut *tx).await?;
-    if folder.parent_id == parent_id {
+    let same_parent = folder.parent_id == parent_id;
+    if same_parent && index.is_none() {
         return Ok(folder);
     }
     ensure_folder_exists(parent_id, &mut *tx).await?;
@@ -203,33 +249,42 @@ pub async fn inner_move_folder(
             ));
         }
     }
-    let name = first_free_name(
-        &folder.name,
-        &sibling_names(parent_id, Some(id), &mut tx).await?,
-    );
+    let name = if same_parent {
+        folder.name
+    } else {
+        first_free_name(
+            &folder.name,
+            &sibling_names(parent_id, Some(id), &mut tx).await?,
+        )
+    };
     sqlx::query("UPDATE folders SET ParentId = ?, Name = ? WHERE id = ?")
         .bind(parent_id)
         .bind(&name)
         .bind(id)
         .execute(&mut *tx)
         .await?;
+    let mut order = sibling_ids(parent_id, Some(id), &mut tx).await?;
+    let at = clamp_index(index, order.len(), order.len());
+    order.insert(at, id);
+    write_folder_positions(&order, &mut tx).await?;
     let folder = get_folder(id, &mut *tx).await?;
     tx.commit().await?;
     Ok(folder)
 }
 
-/// Deletes a folder. Its child folders (suffixed on a name clash, in id order) and notes
-/// move to its parent first, all in one transaction. The deleted id is dropped from the
-/// stored expanded-folders set.
+/// Deletes a folder. Its child folders (suffixed on a name clash, in order) and notes
+/// move to the end of its parent's folders and notes, keeping their order, all in one
+/// transaction. The deleted id is dropped from the stored expanded-folders set.
 pub async fn inner_delete_folder(id: i64, pool: &Pool<Sqlite>) -> Result<(), AppError> {
     let mut tx = pool.begin().await?;
     let folder = get_folder(id, &mut *tx).await?;
     let mut taken = sibling_names(folder.parent_id, Some(id), &mut tx).await?;
     let children: Vec<(i64, String)> =
-        sqlx::query_as("SELECT id, Name FROM folders WHERE ParentId = ? ORDER BY id")
+        sqlx::query_as("SELECT id, Name FROM folders WHERE ParentId = ? ORDER BY Position, id")
             .bind(id)
             .fetch_all(&mut *tx)
             .await?;
+    let mut folder_order = sibling_ids(folder.parent_id, Some(id), &mut tx).await?;
     for (child_id, child_name) in children {
         let name = first_free_name(&child_name, &taken);
         taken.insert(name.to_lowercase());
@@ -239,12 +294,20 @@ pub async fn inner_delete_folder(id: i64, pool: &Pool<Sqlite>) -> Result<(), App
             .bind(child_id)
             .execute(&mut *tx)
             .await?;
+        folder_order.push(child_id);
     }
+    write_folder_positions(&folder_order, &mut tx).await?;
+    // Parent's notes, then the deleted folder's, each in display order; the pinned ones
+    // among them still show at the top.
+    let (pinned, unpinned) = note_groups(folder.parent_id, None, &mut tx).await?;
+    let (child_pinned, child_unpinned) = note_groups(Some(id), None, &mut tx).await?;
     sqlx::query("UPDATE notes SET FolderId = ? WHERE FolderId = ?")
         .bind(folder.parent_id)
         .bind(id)
         .execute(&mut *tx)
         .await?;
+    let note_order: Vec<i64> = [pinned, unpinned, child_pinned, child_unpinned].concat();
+    write_note_positions(&note_order, &mut tx).await?;
     sqlx::query("DELETE FROM folders WHERE id = ?")
         .bind(id)
         .execute(&mut *tx)
@@ -254,23 +317,39 @@ pub async fn inner_delete_folder(id: i64, pool: &Pool<Sqlite>) -> Result<(), App
     Ok(())
 }
 
-/// Moves a note into `folder_id` (root = None) without touching `UpdatedAt`: moving is
-/// not an edit, and bumping it would reorder the list.
+/// Moves a note into `folder_id` (root = None) at `index` within its own pin group there
+/// (clamped; None: the top of the group), renumbering the folder's notes densely. The
+/// same folder with an index is a reorder. `UpdatedAt` is untouched: moving is not an edit.
 pub async fn inner_move_note(
     id: i64,
     folder_id: Option<i64>,
+    index: Option<i64>,
     pool: &Pool<Sqlite>,
 ) -> Result<NoteSummary, AppError> {
     let mut tx = pool.begin().await?;
     ensure_folder_exists(folder_id, &mut *tx).await?;
-    let result = sqlx::query("UPDATE notes SET FolderId = ? WHERE id = ?")
+    let pinned: Option<bool> = sqlx::query_scalar("SELECT Pinned FROM notes WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    let Some(pinned) = pinned else {
+        return Err(AppError::Custom("Note not found".to_string()));
+    };
+    sqlx::query("UPDATE notes SET FolderId = ? WHERE id = ?")
         .bind(folder_id)
         .bind(id)
         .execute(&mut *tx)
         .await?;
-    if result.rows_affected() == 0 {
-        return Err(AppError::Custom("Note not found".to_string()));
-    }
+    let (mut pinned_ids, mut unpinned_ids) = note_groups(folder_id, Some(id), &mut tx).await?;
+    let group = if pinned {
+        &mut pinned_ids
+    } else {
+        &mut unpinned_ids
+    };
+    let at = clamp_index(index, 0, group.len());
+    group.insert(at, id);
+    pinned_ids.extend(unpinned_ids);
+    write_note_positions(&pinned_ids, &mut tx).await?;
     tx.commit().await?;
     inner_get_note(id, pool).await.map(NoteSummary::from)
 }
@@ -304,9 +383,10 @@ pub async fn rename_folder(
 pub async fn move_folder(
     id: i64,
     parent_id: Option<i64>,
+    index: Option<i64>,
     pool: State<'_, Pool<Sqlite>>,
 ) -> Result<Folder, AppError> {
-    inner_move_folder(id, parent_id, pool.inner()).await
+    inner_move_folder(id, parent_id, index, pool.inner()).await
 }
 
 #[tauri::command]
@@ -318,9 +398,10 @@ pub async fn delete_folder(id: i64, pool: State<'_, Pool<Sqlite>>) -> Result<(),
 pub async fn move_note(
     id: i64,
     folder_id: Option<i64>,
+    index: Option<i64>,
     pool: State<'_, Pool<Sqlite>>,
 ) -> Result<NoteSummary, AppError> {
-    inner_move_note(id, folder_id, pool.inner()).await
+    inner_move_note(id, folder_id, index, pool.inner()).await
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
@@ -454,22 +535,22 @@ mod tests {
             "Folder not found"
         );
         assert_eq!(
-            err_msg(inner_move_note(n, Some(99), &pool).await),
+            err_msg(inner_move_note(n, Some(99), None, &pool).await),
             "Folder not found"
         );
         assert_eq!(
-            err_msg(inner_move_folder(f.id, Some(99), &pool).await),
+            err_msg(inner_move_folder(f.id, Some(99), None, &pool).await),
             "Folder not found"
         );
         for missing in [
             err_msg(inner_rename_folder(99, "X", &pool).await),
-            err_msg(inner_move_folder(99, None, &pool).await),
+            err_msg(inner_move_folder(99, None, None, &pool).await),
             err_msg(inner_delete_folder(99, &pool).await),
         ] {
             assert_eq!(missing, "Folder not found");
         }
         assert_eq!(
-            err_msg(inner_move_note(999, Some(f.id), &pool).await),
+            err_msg(inner_move_note(999, Some(f.id), None, &pool).await),
             "Note not found"
         );
         let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM notes")
@@ -545,7 +626,8 @@ mod tests {
             Folder {
                 id: inner.id,
                 parent_id: Some(a.id),
-                name: "Beta".into()
+                name: "Beta".into(),
+                position: 0
             }
         );
     }
@@ -558,7 +640,7 @@ mod tests {
         let c = folder("C", Some(b.id), &pool).await;
         for target in [a.id, b.id, c.id] {
             assert_eq!(
-                err_msg(inner_move_folder(a.id, Some(target), &pool).await),
+                err_msg(inner_move_folder(a.id, Some(target), None, &pool).await),
                 "Can't move a folder into itself",
                 "target {target}"
             );
@@ -566,21 +648,21 @@ mod tests {
         assert_eq!(get(a.id, &pool).await.parent_id, None);
         // Upward and sideways moves are fine.
         assert_eq!(
-            inner_move_folder(c.id, Some(a.id), &pool)
+            inner_move_folder(c.id, Some(a.id), None, &pool)
                 .await
                 .unwrap()
                 .parent_id,
             Some(a.id)
         );
         assert_eq!(
-            inner_move_folder(b.id, None, &pool)
+            inner_move_folder(b.id, None, None, &pool)
                 .await
                 .unwrap()
                 .parent_id,
             None
         );
         assert_eq!(
-            inner_move_folder(a.id, Some(b.id), &pool)
+            inner_move_folder(a.id, Some(b.id), None, &pool)
                 .await
                 .unwrap()
                 .parent_id,
@@ -597,20 +679,288 @@ mod tests {
         let nested = folder("Archive", Some(projects.id), &pool).await;
         let solo = folder("Solo", Some(projects.id), &pool).await;
 
-        let moved = inner_move_folder(nested.id, None, &pool).await.unwrap();
+        let moved = inner_move_folder(nested.id, None, None, &pool)
+            .await
+            .unwrap();
         assert_eq!((moved.parent_id, moved.name.as_str()), (None, "Archive 3"));
 
         // Back down: no clash, the suffixed name is kept as is.
-        let back = inner_move_folder(moved.id, Some(projects.id), &pool)
+        let back = inner_move_folder(moved.id, Some(projects.id), None, &pool)
             .await
             .unwrap();
         assert_eq!(back.name, "Archive 3");
 
-        // Same parent: unchanged, no suffix.
-        let same = inner_move_folder(solo.id, Some(projects.id), &pool)
+        // Same parent without an index: unchanged, no suffix.
+        let before = get(solo.id, &pool).await;
+        let same = inner_move_folder(solo.id, Some(projects.id), None, &pool)
             .await
             .unwrap();
-        assert_eq!(same, solo);
+        assert_eq!(same, before);
+        // Same parent with an index: a reorder, still no suffix.
+        let reordered = inner_move_folder(solo.id, Some(projects.id), Some(0), &pool)
+            .await
+            .unwrap();
+        assert_eq!((reordered.name.as_str(), reordered.position), ("Solo", 0));
+    }
+
+    /// Folder names under `parent_id`, in list order.
+    async fn folder_order(parent_id: Option<i64>, pool: &Pool<Sqlite>) -> Vec<String> {
+        inner_list_folders(pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|f| f.parent_id == parent_id)
+            .map(|f| f.name)
+            .collect()
+    }
+
+    /// Raw (id, Position) of the folders under `parent_id`, in list order.
+    async fn folder_positions(parent_id: Option<i64>, pool: &Pool<Sqlite>) -> Vec<i64> {
+        inner_list_folders(pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|f| f.parent_id == parent_id)
+            .map(|f| f.position)
+            .collect()
+    }
+
+    /// Note ids in `folder_id`, in list order (pinned first, then position, then id).
+    async fn note_order(folder_id: Option<i64>, pool: &Pool<Sqlite>) -> Vec<i64> {
+        crate::commands::notes::inner_list_notes(pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|n| n.folder_id == folder_id)
+            .map(|n| n.id)
+            .collect()
+    }
+
+    async fn note_positions(folder_id: Option<i64>, pool: &Pool<Sqlite>) -> Vec<i64> {
+        crate::commands::notes::inner_list_notes(pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|n| n.folder_id == folder_id)
+            .map(|n| n.position)
+            .collect()
+    }
+
+    async fn pin(id: i64, pinned: bool, pool: &Pool<Sqlite>) {
+        crate::commands::notes::inner_set_note_pinned(id, pinned, pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn folders_are_listed_in_manual_order_and_created_at_the_end() {
+        let pool = crate::test_db().await;
+        let zed = folder("Zed", None, &pool).await;
+        folder("alpha", None, &pool).await;
+        let p = folder("Mid", None, &pool).await;
+        folder("b", Some(p.id), &pool).await;
+        folder("a", Some(p.id), &pool).await;
+        assert_eq!(folder_order(None, &pool).await, ["Zed", "alpha", "Mid"]);
+        assert_eq!(folder_order(Some(p.id), &pool).await, ["b", "a"]);
+        assert_eq!(folder_positions(None, &pool).await, [0, 1, 2]);
+        // Renaming doesn't re-sort.
+        inner_rename_folder(zed.id, "Aaa", &pool).await.unwrap();
+        assert_eq!(folder_order(None, &pool).await, ["Aaa", "alpha", "Mid"]);
+    }
+
+    #[tokio::test]
+    async fn move_folder_with_index_reorders_inserts_and_clamps() {
+        let pool = crate::test_db().await;
+        let a = folder("A", None, &pool).await;
+        folder("B", None, &pool).await;
+        let c = folder("C", None, &pool).await;
+        let p = folder("P", None, &pool).await;
+        folder("X", Some(p.id), &pool).await;
+        folder("Y", Some(p.id), &pool).await;
+
+        // Same parent: pure reorder, positions dense.
+        inner_move_folder(c.id, None, Some(0), &pool).await.unwrap();
+        assert_eq!(folder_order(None, &pool).await, ["C", "A", "B", "P"]);
+        inner_move_folder(c.id, None, Some(2), &pool).await.unwrap();
+        assert_eq!(folder_order(None, &pool).await, ["A", "B", "C", "P"]);
+        assert_eq!(folder_positions(None, &pool).await, [0, 1, 2, 3]);
+        // Clamped at both ends.
+        inner_move_folder(a.id, None, Some(99), &pool)
+            .await
+            .unwrap();
+        assert_eq!(folder_order(None, &pool).await, ["B", "C", "P", "A"]);
+        inner_move_folder(a.id, None, Some(-5), &pool)
+            .await
+            .unwrap();
+        assert_eq!(folder_order(None, &pool).await, ["A", "B", "C", "P"]);
+
+        // Across parents at an index; default (None) is the end.
+        inner_move_folder(a.id, Some(p.id), Some(1), &pool)
+            .await
+            .unwrap();
+        assert_eq!(folder_order(Some(p.id), &pool).await, ["X", "A", "Y"]);
+        assert_eq!(folder_positions(Some(p.id), &pool).await, [0, 1, 2]);
+        inner_move_folder(c.id, Some(p.id), None, &pool)
+            .await
+            .unwrap();
+        assert_eq!(folder_order(Some(p.id), &pool).await, ["X", "A", "Y", "C"]);
+        assert_eq!(folder_order(None, &pool).await, ["B", "P"]);
+    }
+
+    #[tokio::test]
+    async fn move_folder_with_index_keeps_cycle_and_name_rules() {
+        let pool = crate::test_db().await;
+        let a = folder("A", None, &pool).await;
+        let b = folder("B", Some(a.id), &pool).await;
+        folder("Dup", None, &pool).await;
+        let dup = folder("dup", Some(a.id), &pool).await;
+        assert_eq!(
+            err_msg(inner_move_folder(a.id, Some(b.id), Some(0), &pool).await),
+            "Can't move a folder into itself"
+        );
+        assert_eq!(
+            err_msg(inner_move_folder(a.id, Some(a.id), Some(0), &pool).await),
+            "Can't move a folder into itself"
+        );
+        let moved = inner_move_folder(dup.id, None, Some(0), &pool)
+            .await
+            .unwrap();
+        assert_eq!((moved.name.as_str(), moved.position), ("dup 2", 0));
+        assert_eq!(folder_order(None, &pool).await, ["dup 2", "A", "Dup"]);
+    }
+
+    #[tokio::test]
+    async fn new_notes_go_to_the_top_of_the_unpinned_group() {
+        let pool = crate::test_db().await;
+        let f = folder("F", None, &pool).await;
+        let first = note_in(Some(f.id), &pool).await;
+        let pinned = note_in(Some(f.id), &pool).await;
+        pin(pinned, true, &pool).await;
+        let newest = note_in(Some(f.id), &pool).await;
+        let root = note_in(None, &pool).await;
+        assert_eq!(note_order(Some(f.id), &pool).await, [pinned, newest, first]);
+        assert_eq!(note_order(None, &pool).await, [root]);
+    }
+
+    #[tokio::test]
+    async fn move_note_with_index_reorders_within_its_pin_group_and_across_folders() {
+        let pool = crate::test_db().await;
+        let f = folder("F", None, &pool).await;
+        let g = folder("G", None, &pool).await;
+        // In F (top to bottom): p1 p2 | u1 u2 u3
+        let u3 = note_in(Some(f.id), &pool).await;
+        let u2 = note_in(Some(f.id), &pool).await;
+        let u1 = note_in(Some(f.id), &pool).await;
+        let p2 = note_in(Some(f.id), &pool).await;
+        let p1 = note_in(Some(f.id), &pool).await;
+        pin(p1, true, &pool).await;
+        pin(p2, true, &pool).await;
+        assert_eq!(note_order(Some(f.id), &pool).await, [p1, p2, u1, u2, u3]);
+
+        // Same folder: pure reorder within the group, positions dense over the folder.
+        inner_move_note(u3, Some(f.id), Some(0), &pool)
+            .await
+            .unwrap();
+        assert_eq!(note_order(Some(f.id), &pool).await, [p1, p2, u3, u1, u2]);
+        assert_eq!(note_positions(Some(f.id), &pool).await, [0, 1, 2, 3, 4]);
+        // An index is relative to the pin group and clamps to it: a pinned note can't
+        // land among unpinned ones, nor an unpinned one among pinned ones.
+        inner_move_note(p1, Some(f.id), Some(99), &pool)
+            .await
+            .unwrap();
+        assert_eq!(note_order(Some(f.id), &pool).await, [p2, p1, u3, u1, u2]);
+        inner_move_note(u2, Some(f.id), Some(-3), &pool)
+            .await
+            .unwrap();
+        assert_eq!(note_order(Some(f.id), &pool).await, [p2, p1, u2, u3, u1]);
+        inner_move_note(u1, Some(f.id), Some(1), &pool)
+            .await
+            .unwrap();
+        assert_eq!(note_order(Some(f.id), &pool).await, [p2, p1, u2, u1, u3]);
+
+        // Across folders at an index; None is the top of the group (pinned too).
+        let g1 = note_in(Some(g.id), &pool).await;
+        let g0 = note_in(Some(g.id), &pool).await;
+        inner_move_note(u2, Some(g.id), Some(1), &pool)
+            .await
+            .unwrap();
+        assert_eq!(note_order(Some(g.id), &pool).await, [g0, u2, g1]);
+        inner_move_note(u3, Some(g.id), None, &pool).await.unwrap();
+        assert_eq!(note_order(Some(g.id), &pool).await, [u3, g0, u2, g1]);
+        inner_move_note(p1, Some(g.id), None, &pool).await.unwrap();
+        assert_eq!(note_order(Some(g.id), &pool).await, [p1, u3, g0, u2, g1]);
+        assert_eq!(note_positions(Some(g.id), &pool).await, [0, 1, 2, 3, 4]);
+        assert_eq!(note_order(Some(f.id), &pool).await, [p2, u1]);
+        assert_eq!(note_folder(u2, &pool).await, (Some(g.id), OLD.to_string()));
+    }
+
+    #[tokio::test]
+    async fn pinning_lands_on_the_group_boundary() {
+        let pool = crate::test_db().await;
+        let c = note_in(None, &pool).await;
+        let b = note_in(None, &pool).await;
+        let a = note_in(None, &pool).await;
+        let p = note_in(None, &pool).await;
+        pin(p, true, &pool).await;
+        assert_eq!(note_order(None, &pool).await, [p, a, b, c]);
+        // Pin → bottom of the pinned group.
+        pin(c, true, &pool).await;
+        assert_eq!(note_order(None, &pool).await, [p, c, a, b]);
+        // Unpin → top of the unpinned group.
+        pin(p, false, &pool).await;
+        assert_eq!(note_order(None, &pool).await, [c, p, a, b]);
+        assert_eq!(note_positions(None, &pool).await, [0, 1, 2, 3]);
+        // Re-pinning an already pinned note keeps its place.
+        pin(c, true, &pool).await;
+        assert_eq!(note_order(None, &pool).await, [c, p, a, b]);
+        assert_eq!(note_folder(c, &pool).await.1, OLD, "pinning is not an edit");
+    }
+
+    #[tokio::test]
+    async fn editing_or_renaming_a_note_keeps_its_place() {
+        let pool = crate::test_db().await;
+        let b = note_in(None, &pool).await;
+        let a = note_in(None, &pool).await;
+        crate::commands::notes::inner_update_note_body(b, "changed", &pool)
+            .await
+            .unwrap();
+        crate::commands::notes::inner_rename_note(b, "Renamed", &pool)
+            .await
+            .unwrap();
+        assert_eq!(note_order(None, &pool).await, [a, b]);
+    }
+
+    #[tokio::test]
+    async fn delete_folder_appends_children_to_the_parent_in_order() {
+        let pool = crate::test_db().await;
+        let top = folder("Top", None, &pool).await;
+        folder("First", Some(top.id), &pool).await;
+        let doomed = folder("Doomed", Some(top.id), &pool).await;
+        folder("Last", Some(top.id), &pool).await;
+        let z = folder("Z", Some(doomed.id), &pool).await;
+        folder("Y", Some(doomed.id), &pool).await;
+        inner_move_folder(z.id, Some(doomed.id), Some(1), &pool)
+            .await
+            .unwrap(); // Y, Z
+        let kept = note_in(Some(top.id), &pool).await;
+        let kept_pinned = note_in(Some(top.id), &pool).await;
+        pin(kept_pinned, true, &pool).await;
+        let child2 = note_in(Some(doomed.id), &pool).await;
+        let child1 = note_in(Some(doomed.id), &pool).await;
+        let child_pinned = note_in(Some(doomed.id), &pool).await;
+        pin(child_pinned, true, &pool).await;
+
+        inner_delete_folder(doomed.id, &pool).await.unwrap();
+
+        assert_eq!(
+            folder_order(Some(top.id), &pool).await,
+            ["First", "Last", "Y", "Z"]
+        );
+        assert_eq!(folder_positions(Some(top.id), &pool).await, [0, 1, 2, 3]);
+        assert_eq!(
+            note_order(Some(top.id), &pool).await,
+            [kept_pinned, child_pinned, kept, child1, child2]
+        );
     }
 
     #[tokio::test]
@@ -619,11 +969,11 @@ mod tests {
         let f = folder("F", None, &pool).await;
         let n = note_in(None, &pool).await;
 
-        let moved = inner_move_note(n, Some(f.id), &pool).await.unwrap();
+        let moved = inner_move_note(n, Some(f.id), None, &pool).await.unwrap();
         assert_eq!(moved.folder_id, Some(f.id));
         assert_eq!(note_folder(n, &pool).await, (Some(f.id), OLD.to_string()));
 
-        inner_move_note(n, None, &pool).await.unwrap();
+        inner_move_note(n, None, None, &pool).await.unwrap();
         assert_eq!(note_folder(n, &pool).await, (None, OLD.to_string()));
     }
 

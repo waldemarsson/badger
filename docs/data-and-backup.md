@@ -14,6 +14,7 @@ Badger stores its working data in a local SQLite database. The schema is intenti
 - `notes` — markdown notes: unique `Title` (case-insensitive, via a `COLLATE NOCASE` unique index), `Body`, `Pinned`, `CreatedAt`/`UpdatedAt`, an optional `FolderId`, and `Position` (manual order within the folder; added to existing databases by the idempotent `migrate_notes_position`, see Manual order below)
 - `folders` — nestable note folders (`ParentId`, root = NULL, `Name`, `Position`, manual order among siblings; see Manual order below). Names are trimmed, 1–100 characters, may not contain `/`, and are unique among siblings ignoring case (Rust `to_lowercase()`, like note titles)
 - `scratchpad` — the scratchpad's text: a single row (`id` is `CHECK (id = 1)`), `Body` and `UpdatedAt`, created on the first save (no row means an empty pad). Not a note, so it is in no search or link index and has no title rule. An identical body is a no-op that keeps `UpdatedAt`. Created by `SCHEMA_SQL` with no migration. Semantics are in `docs/architecture.md` (Scratchpad)
+- `handovers` — end-of-day notes: `Date` (`TEXT PRIMARY KEY`, the local `YYYY-MM-DD` the handover was written, computed by the frontend and validated by Rust as a real calendar date), `Body`, `DismissedAt` (NULL until its incoming card is dismissed), `CreatedAt`/`UpdatedAt`. One row per date; saving an empty or whitespace-only body deletes the row, an identical body is a no-op that keeps `UpdatedAt`, and a body edit never clears `DismissedAt`. Not a note, so it is in no search, link or semantic index. Created by `SCHEMA_SQL` with no migration. Semantics are in `docs/architecture.md` (Handovers)
 - `note_refs` — link index: one row per note and distinct `#tag` or `[[wikilink]]` target (`Kind` `tag`/`link`, `Target` lowercased, tags without the `#`); `NoteId` cascades on note delete. Derived data like `notes_fts`: Rust writes it in the same transaction as every body write, it is not in backups, and it is rebuilt by restore, by the same Settings › Preferences › Search index › Rebuild button (which rebuilds both indexes), and at startup when the `note_refs_version` value in `app_settings` differs from the code's `NOTE_REFS_VERSION` (first start after upgrade, or after the extraction rules change; bump the constant when they do). The startup rebuild is version-only, so a drifted index is repaired by Rebuild, not at startup. Entities are resolved at read time, so deleting a customer, project, todo or note needs no index cleanup
 - `notes_fts` — FTS5 search index (`trigram` tokenizer) over note titles and plain-text bodies; rowid = note id. Derived data: Rust writes it in the same transaction as every note write, it is not in backups, and it is rebuilt by restore, by Settings › Preferences › Search index › Rebuild, and at startup when its row count differs from `notes` (`backfill_notes_fts`: the first start after an upgrade, or notes written by an older build)
 - `note_embeddings` — semantic search index: one row per embedded note chunk (`NoteId` cascades on note delete, `ChunkIndex`, `ContentHash`, `ModelId`, `ChunkText` = the chunk body without its title/heading prefix, `Vector` = L2-normalised little-endian f32 BLOB). Derived data like `notes_fts`, and a deliberate exception to the "every table is backed up" rule: it is not in backups, and restore re-embeds every restored note in the background. It is empty until semantic search is enabled; rows whose `ModelId` differs from the current model are re-embedded. Settings › Preferences › Semantic search › Rebuild re-embeds everything; the Search index Rebuild does not touch it
@@ -99,7 +100,7 @@ Startup backup creation, trimming, and listing are handled entirely in Rust and 
 
 ## Backup format
 
-Backup export writes a JSON document containing nine arrays and the scratchpad:
+Backup export writes a JSON document containing ten arrays and the scratchpad:
 
 - `customers`
 - `projects`
@@ -110,6 +111,7 @@ Backup export writes a JSON document containing nine arrays and the scratchpad:
 - `folders` (optional on import, so backups made before notes existed still restore)
 - `notes` (optional on import, same reason)
 - `reminders` (optional on import, so backups made before reminders existed still restore)
+- `handovers` (optional on import, so backups made before handovers existed still restore; each has `date`, `body`, `dismissed_at`, `created_at`, `updated_at`)
 - `scratchpad` (an object with `body` and `updated_at`, or `null` when never written; optional on import, so backups made before the scratchpad existed still restore)
 
 The backup commands preserve record identifiers so a restore can rebuild the same relationships between records.
@@ -119,19 +121,19 @@ The backup commands preserve record identifiers so a restore can rebuild the sam
 Restore always overwrites. In one transaction it:
 
 - deletes all customers, which cascades to projects, issues, and time entries
-- clears reminders, todos, travel, notes, folders and the scratchpad explicitly (the cascade does not reach them)
+- clears reminders, todos, travel, notes, folders, handovers and the scratchpad explicitly (the cascade does not reach them)
 - re-inserts the full backup, folders before notes, and reminders last (after todos and notes, so their links resolve); backups from before manual sorting get the old tree order backfilled (see below)
-- re-inserts the pad when the backup has one
+- re-inserts the pad when the backup has one, and the handovers
 - rebuilds the notes search and link indexes (`notes_fts`, `note_refs`) from the restored notes, in the same transaction
 - after the transaction commits, drops in-flight semantic work and queues every restored note for re-embedding (the delete cascaded away the old vectors; `note_embeddings` is not in the backup)
 
 Backups carry folder and note `Position`. `BackupNote.position` is optional (`#[serde(default)]`), so older files still parse. Restore backfills notes when any note lacks a position, and folders when every restored folder has `Position` 0 (older builds never wrote another value, which also covers old backups with no notes). There is no version marker.
 
-Data not in the backup is lost, so restoring a backup made before notes existed leaves zero notes (one made before reminders existed leaves zero reminders, and one made before the scratchpad existed leaves an empty pad). If the backup file is invalid, nothing is changed.
+Data not in the backup is lost, so restoring a backup made before notes existed leaves zero notes (one made before reminders existed leaves zero reminders, one made before the scratchpad existed leaves an empty pad, and one made before handovers existed leaves zero handovers). If the backup file is invalid, nothing is changed.
 
 Folders and notes are inserted with `PRAGMA defer_foreign_keys = ON` inside the transaction, so a child folder may appear before its parent (a lower id) in the file. Foreign keys are checked at commit. A dangling folder reference (for example in a hand-edited file) fails with "Backup is invalid: a folder or note refers to a missing folder", and two notes whose titles differ only in case fail with "Backup is invalid: duplicate note title". Both roll back everything. Before inserting, restore also rejects folders that form a cycle (including a folder that is its own parent) with "Backup is invalid: folders form a cycle", checked in Rust code rather than by the database, and renames duplicate sibling folder names (case-insensitive) to the first free ` 2`, ` 3`, … suffix in id order, so such a backup still restores. Names over 100 characters or containing `/` are restored as they are (tolerance for existing data, as with note titles); a `/` in a name makes the displayed folder path ambiguous. Folder ids are preserved, so a stored expanded-folders set still applies where the folders match.
 
-A reminder whose `TodoId` or `NoteId` is not in the backup is rejected before anything changes with "Backup is invalid: a reminder refers to a missing todo or note" (foreign keys are deferred during restore, so the commit error would otherwise blame folders). After a restore the app emits `reminders-changed` and recomputes the dock badge; restored pending reminders that are already past due fire together as one batch on the next scheduler tick.
+A reminder whose `TodoId` or `NoteId` is not in the backup is rejected before anything changes with "Backup is invalid: a reminder refers to a missing todo or note" (foreign keys are deferred during restore, so the commit error would otherwise blame folders). A handover whose `date` is not a real `YYYY-MM-DD` date (`2026-13-01`, `2026-02-30`, `2026-1-5`) fails with "Backup is invalid: a handover has an invalid date", and two with the same date fail with "Backup is invalid: duplicate handover date"; both are checked before anything changes. After a restore the app emits `reminders-changed` and recomputes the dock badge; restored pending reminders that are already past due fire together as one batch on the next scheduler tick.
 
 There is no merge mode. It was removed because `INSERT OR REPLACE` deletes and re-inserts rows, which cascaded to local time entries and cleared todo links.
 

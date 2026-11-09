@@ -20,7 +20,7 @@ No account, no cloud, no subscription, no telemetry. Everything lives in one SQL
 
 ### Today — start the day here
 
-Overdue and due-today todos, today's reminders, what's in progress, hours logged today, and a Mon–Sun strip showing progress against your daily target. Complete a todo or log time on it in one click.
+Overdue and due-today todos, today's reminders, what's in progress, hours logged today, and a Mon–Sun strip showing progress against your daily target. Complete a todo or log time on it in one click. A handover card carries yesterday's end-of-day note forward: write a short markdown note to your future self at the end of the day (⌘K *Write handover*), and it shows up on Today the next working day, at the bottom of the main column above the editor (Monday after a weekend), where you can tick its tasks, dismiss it, or page back through older ones.
 
 | Light | Dark |
 | --- | --- |

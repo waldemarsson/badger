@@ -2,19 +2,22 @@
 	// CodeMirror host for the Notes page and the scratchpad. The host drives it through bind:this
 	// (open/close/forget/focus/setLinks); each note keeps its own undo history while mounted.
 	import { onMount } from 'svelte';
-	import type { LinkData } from '#lib/editor/links.js';
+	import type { LinkData, LinkFollowScope } from '#lib/editor/links.js';
 	import { NoteView } from '#lib/editor/note-view.js';
 	import type { LinkFollow } from '#lib/note-links.js';
 
 	let {
 		onchange,
 		onfollow,
+		followScope = 'all',
 		class: className = ''
 	}: {
 		/** Called after every edit with the note id and its full body. */
 		onchange: (id: number, body: string) => void;
 		/** A tag, chip or wikilink was ⌘-clicked. */
 		onfollow: (link: LinkFollow) => void;
+		/** What ⌘-click can follow (read once, at mount): everything, or resolved wikilinks only. */
+		followScope?: LinkFollowScope;
 		class?: string;
 	} = $props();
 
@@ -67,7 +70,8 @@
 		editor = new NoteView(
 			host,
 			(id, body) => onchange(id, body),
-			(link) => onfollow(link)
+			(link) => onfollow(link),
+			followScope
 		);
 		if (links) editor.setLinks(links);
 		return () => {

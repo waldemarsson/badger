@@ -14,6 +14,7 @@ import {
 } from '@codemirror/view';
 import type { SyntaxNode } from '@lezer/common';
 import { focusField, revealedLines, selectionTouchesLines } from '#lib/editor/focus.js';
+import { togglesTask } from '#lib/editor/task-keys.js';
 
 const hidden = Decoration.replace({});
 
@@ -62,6 +63,14 @@ export function toggleTask(view: EditorView, from: number): boolean {
 	return true;
 }
 
+/** The checkbox widget at `pos` (after a toggle redrew it), if it is on screen. */
+function checkboxAt(view: EditorView, pos: number): HTMLElement | null {
+	for (const el of view.contentDOM.querySelectorAll<HTMLElement>('.cm-md-checkbox')) {
+		if (view.posAtDOM(el) === pos) return el;
+	}
+	return null;
+}
+
 class CheckboxWidget extends WidgetType {
 	constructor(readonly checked: boolean) {
 		super();
@@ -69,12 +78,17 @@ class CheckboxWidget extends WidgetType {
 	eq(other: CheckboxWidget): boolean {
 		return other.checked === this.checked;
 	}
-	toDOM(view: EditorView): HTMLElement {
-		const box = document.createElement('span');
+	private paint(box: HTMLElement): void {
 		box.className = this.checked ? 'cm-md-checkbox cm-md-checkbox-checked' : 'cm-md-checkbox';
-		box.setAttribute('role', 'checkbox');
 		box.setAttribute('aria-checked', String(this.checked));
 		box.setAttribute('aria-label', this.checked ? 'Mark as not done' : 'Mark as done');
+	}
+	toDOM(view: EditorView): HTMLElement {
+		const box = document.createElement('span');
+		box.setAttribute('role', 'checkbox');
+		// Focusable, so tasks can be ticked from the keyboard (also in a read-only editor).
+		box.tabIndex = 0;
+		this.paint(box);
 		// mousedown + preventDefault: toggle without moving focus or the selection.
 		box.addEventListener('mousedown', (event) => {
 			if (event.button !== 0) return;
@@ -82,7 +96,19 @@ class CheckboxWidget extends WidgetType {
 			event.stopPropagation();
 			toggleTask(view, view.posAtDOM(box));
 		});
+		box.addEventListener('keydown', (event) => {
+			if (!togglesTask(event)) return;
+			event.preventDefault();
+			event.stopPropagation();
+			const pos = view.posAtDOM(box);
+			// Keep keyboard focus on the box when the redraw replaced it.
+			if (toggleTask(view, pos) && !box.isConnected) checkboxAt(view, pos)?.focus();
+		});
 		return box;
+	}
+	updateDOM(dom: HTMLElement): boolean {
+		this.paint(dom);
+		return true;
 	}
 	ignoreEvent(): boolean {
 		return true;

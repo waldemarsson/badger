@@ -4,7 +4,7 @@
 // `setLinkData`, which also redraws the decorations. The rules live in src/lib/note-links.ts.
 import { pickedCompletion, type Completion, type CompletionContext, type CompletionResult } from '@codemirror/autocomplete';
 import { syntaxTree } from '@codemirror/language';
-import { Prec, StateEffect, StateField, type EditorState, type Range, type Text } from '@codemirror/state';
+import { Facet, Prec, StateEffect, StateField, type EditorState, type Range, type Text } from '@codemirror/state';
 import { Decoration, EditorView, ViewPlugin, WidgetType, type DecorationSet, type ViewUpdate } from '@codemirror/view';
 import type { Tree } from '@lezer/common';
 import { focusField, revealedLines } from '#lib/editor/focus.js';
@@ -172,6 +172,17 @@ export const linkKindBadge = {
 
 // ── Live preview ──────────────────────────────────────────────────────────────
 
+/**
+ * What ⌘-click can follow in this editor: everything (the notes page), or only resolved
+ * [[wikilinks]] (hosts that can open a note but can't search tags or create notes, e.g. the
+ * handover cards). Links that can't be followed get no ⌘-click hint or pointer.
+ */
+export type LinkFollowScope = 'all' | 'notes';
+
+export const linkFollowScope = Facet.define<LinkFollowScope, LinkFollowScope>({
+	combine: (values) => values[0] ?? 'all'
+});
+
 const hidden = Decoration.replace({});
 
 class ChipWidget extends WidgetType {
@@ -180,7 +191,8 @@ class ChipWidget extends WidgetType {
 		readonly kind: 'issue' | 'todo',
 		readonly title: string,
 		readonly status: string | null,
-		readonly detail: string | null
+		readonly detail: string | null,
+		readonly followable: boolean
 	) {
 		super();
 	}
@@ -189,16 +201,17 @@ class ChipWidget extends WidgetType {
 			other.tag === this.tag &&
 			other.title === this.title &&
 			other.status === this.status &&
-			other.detail === this.detail
+			other.detail === this.detail &&
+			other.followable === this.followable
 		);
 	}
 	toDOM(): HTMLElement {
 		const el = document.createElement('span');
 		// Literal class names: Tailwind only keeps app.css component rules it finds in sources.
 		el.className = this.kind === 'issue' ? 'note-chip note-chip-issue' : 'note-chip note-chip-todo';
-		el.dataset.linkTag = this.tag;
+		if (this.followable) el.dataset.linkTag = this.tag;
 		if (this.status) el.dataset.status = this.status;
-		el.title = `${this.detail ? `${this.detail} · ` : ''}#${this.tag} · ${modKey}-click to find notes`;
+		el.title = `${this.detail ? `${this.detail} · ` : ''}#${this.tag}${this.followable ? ` · ${modKey}-click to find notes` : ''}`;
 		el.textContent = this.title;
 		return el;
 	}
@@ -215,6 +228,7 @@ const followModifier = (event: MouseEvent | KeyboardEvent) => (isMac ? event.met
 function build(view: EditorView): { decorations: DecorationSet; atomic: DecorationSet } {
 	const { state } = view;
 	const { index } = state.field(linkDataField);
+	const all = state.facet(linkFollowScope) === 'all'; // else only resolved wikilinks follow
 	const revealed = revealedLines(state);
 	const isRevealed = (pos: number) => revealed.has(state.doc.lineAt(pos).number);
 	const visible = view.visibleRanges;
@@ -233,7 +247,7 @@ function build(view: EditorView): { decorations: DecorationSet; atomic: Decorati
 			const chip = chipFor(ref.target, index);
 			if (chip && rendered) {
 				const deco = Decoration.replace({
-					widget: new ChipWidget(ref.target, chip.kind, chip.title, chip.status, chip.detail)
+					widget: new ChipWidget(ref.target, chip.kind, chip.title, chip.status, chip.detail, all)
 				});
 				decos.push(deco.range(ref.from, ref.to));
 				atomic.push(deco.range(ref.from, ref.to));
@@ -242,7 +256,7 @@ function build(view: EditorView): { decorations: DecorationSet; atomic: Decorati
 			decos.push(
 				Decoration.mark({
 					class: 'note-tag',
-					attributes: { 'data-link-tag': ref.target, title: `${modKey}-click to find notes tagged #${ref.target}` }
+					attributes: all ? { 'data-link-tag': ref.target, title: `${modKey}-click to find notes tagged #${ref.target}` } : {}
 				}).range(ref.from, ref.to)
 			);
 			continue;
@@ -250,11 +264,15 @@ function build(view: EditorView): { decorations: DecorationSet; atomic: Decorati
 
 		const title = state.sliceDoc(ref.targetFrom, ref.targetTo);
 		const id = index.notes.get(ref.target);
-		const attributes: Record<string, string> = {
-			'data-link-note': title,
-			title: id === undefined ? `${modKey}-click to create “${title}”` : `${modKey}-click to open “${title}”`
-		};
-		if (id !== undefined) attributes['data-link-note-id'] = String(id);
+		const attributes: Record<string, string> = {};
+		if (id !== undefined) {
+			attributes['data-link-note'] = title;
+			attributes['data-link-note-id'] = String(id);
+			attributes.title = `${modKey}-click to open “${title}”`;
+		} else if (all) {
+			attributes['data-link-note'] = title;
+			attributes.title = `${modKey}-click to create “${title}”`;
+		}
 		const mark = Decoration.mark({
 			class: id === undefined ? 'note-wikilink note-wikilink-unresolved' : 'note-wikilink',
 			attributes
@@ -376,6 +394,6 @@ function following(onFollow: (link: LinkFollow) => void) {
 }
 
 /** Decorations, resolution data and ⌘-click. Completion sources are wired in slash.ts. */
-export function noteLinks(onFollow: (link: LinkFollow) => void) {
-	return [linkDataField, linkPreview, following(onFollow)];
+export function noteLinks(onFollow: (link: LinkFollow) => void, scope: LinkFollowScope = 'all') {
+	return [linkDataField, linkFollowScope.of(scope), linkPreview, following(onFollow)];
 }

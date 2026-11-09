@@ -114,3 +114,16 @@ test('initialIndex prefers ids in order and falls back to 0', () => {
 	assert.equal(initialIndex(items, null, undefined), 0);
 	assert.equal(initialIndex([], 1), 0);
 });
+
+test('the recorder rejects ⌘J (the scratchpad) on top of validateShortcut', async () => {
+	const { recorderProblem } = await import('../src/lib/palette.ts');
+	assert.equal(recorderProblem('Meta+J'), '⌘J opens the Scratchpad');
+	assert.match(recorderProblem('Meta+Q'), /reserved by macOS/);
+	assert.match(recorderProblem('K'), /Include/);
+	for (const s of ['Meta+K', 'Meta+Shift+J', 'Ctrl+J', 'Alt+J']) assert.equal(recorderProblem(s), null, s);
+});
+
+test('a saved ⌘J palette shortcut survives load (only the recorder rejects it)', () => {
+	assert.equal(validateShortcut('Meta+J'), null);
+	assert.equal(normalizeShortcut('Meta+J'), 'Meta+J');
+});

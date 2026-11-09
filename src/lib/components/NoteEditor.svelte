@@ -1,5 +1,5 @@
 <script lang="ts">
-	// CodeMirror host for the Notes page. The page drives it through bind:this
+	// CodeMirror host for the Notes page and the scratchpad. The host drives it through bind:this
 	// (open/close/forget/focus/setLinks); each note keeps its own undo history while mounted.
 	import { onMount } from 'svelte';
 	import type { LinkData } from '#lib/editor/links.js';
@@ -46,6 +46,16 @@
 
 	export function focus(): void {
 		editor?.focus();
+	}
+
+	/** Turns typing on or off (the scratchpad locks it while Save as note commits). */
+	export function setEditable(editable: boolean): void {
+		editor?.setEditable(editable);
+	}
+
+	/** Focuses with the caret at the end of the text. */
+	export function focusEnd(): void {
+		editor?.focusEnd();
 	}
 
 	/** The open note's current text, including edits not saved yet. */

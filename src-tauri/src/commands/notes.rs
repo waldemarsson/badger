@@ -2,7 +2,7 @@ use crate::note_links::{self, RefKind};
 use crate::semantic::SemanticState;
 use crate::AppError;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Pool, Sqlite, SqliteConnection};
+use sqlx::{FromRow, Pool, Sqlite, SqliteConnection, SqliteExecutor};
 use tauri::State;
 
 /// Maximum title length in characters (not bytes).
@@ -114,11 +114,11 @@ fn clean_title(title: &str) -> Result<String, AppError> {
 /// non-ASCII letters too (`Å` → `å`), which SQLite's NOCASE does not.
 async fn lowercase_titles(
     except_id: Option<i64>,
-    pool: &Pool<Sqlite>,
+    executor: impl SqliteExecutor<'_>,
 ) -> Result<std::collections::HashSet<String>, AppError> {
     let rows: Vec<(String,)> = sqlx::query_as("SELECT Title FROM notes WHERE id IS NOT ?")
         .bind(except_id)
-        .fetch_all(pool)
+        .fetch_all(executor)
         .await?;
     Ok(rows.into_iter().map(|(t,)| t.to_lowercase()).collect())
 }
@@ -378,33 +378,66 @@ pub(crate) async fn write_note_positions(
     Ok(())
 }
 
-/// Inserts a note without the Rust-side duplicate check; the unique index is the backstop.
-/// The note goes to the top of its folder (pinned notes still show above it).
+/// Inserts an empty note without the Rust-side duplicate check; the unique index is the
+/// backstop.
 async fn insert_note(
     title: &str,
     folder_id: Option<i64>,
     pool: &Pool<Sqlite>,
 ) -> Result<i64, AppError> {
-    let ts = now();
     let mut tx = pool.begin().await?;
-    super::folders::ensure_folder_exists(folder_id, &mut *tx).await?;
+    let id = insert_note_in(title, "", folder_id, &mut tx).await?;
+    tx.commit().await?;
+    Ok(id)
+}
+
+/// Inserts a note with `body` and indexes it (search and links) inside the caller's
+/// transaction, without the Rust-side duplicate check. The note goes to the top of its
+/// folder (pinned notes still show above it).
+async fn insert_note_in(
+    title: &str,
+    body: &str,
+    folder_id: Option<i64>,
+    conn: &mut SqliteConnection,
+) -> Result<i64, AppError> {
+    let ts = now();
+    super::folders::ensure_folder_exists(folder_id, &mut *conn).await?;
     let row: (i64,) = sqlx::query_as(
         "INSERT INTO notes (FolderId, Title, Body, Pinned, CreatedAt, UpdatedAt, Position) \
-         VALUES (?, ?, '', 0, ?, ?, \
+         VALUES (?, ?, ?, 0, ?, ?, \
                  (SELECT COALESCE(MIN(Position) - 1, 0) FROM notes WHERE FolderId IS ?)) \
          RETURNING id",
     )
     .bind(folder_id)
     .bind(title)
+    .bind(body)
     .bind(&ts)
     .bind(&ts)
     .bind(folder_id)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut *conn)
     .await
     .map_err(|e| map_unique(e, title))?;
-    index_note(row.0, &mut tx).await?;
-    tx.commit().await?;
+    index_note(row.0, conn).await?;
     Ok(row.0)
+}
+
+/// Creates a note titled `title` with `body` inside the caller's transaction: the title
+/// is validated and must be unique case-insensitively (non-ASCII too). Returns its id.
+/// The caller queues it for the semantic index after committing.
+pub(crate) async fn insert_titled_note(
+    title: &str,
+    body: &str,
+    folder_id: Option<i64>,
+    conn: &mut SqliteConnection,
+) -> Result<i64, AppError> {
+    let title = clean_title(title)?;
+    if lowercase_titles(None, &mut *conn)
+        .await?
+        .contains(&title.to_lowercase())
+    {
+        return Err(duplicate(&title));
+    }
+    insert_note_in(&title, body, folder_id, conn).await
 }
 
 // ── Inner functions (testable without Tauri) ──────────────────────────────────
@@ -448,14 +481,9 @@ pub async fn inner_create_note_titled(
     folder_id: Option<i64>,
     pool: &Pool<Sqlite>,
 ) -> Result<Note, AppError> {
-    let title = clean_title(title)?;
-    if lowercase_titles(None, pool)
-        .await?
-        .contains(&title.to_lowercase())
-    {
-        return Err(duplicate(&title));
-    }
-    let id = insert_note(&title, folder_id, pool).await?;
+    let mut tx = pool.begin().await?;
+    let id = insert_titled_note(title, "", folder_id, &mut tx).await?;
+    tx.commit().await?;
     inner_get_note(id, pool).await
 }
 

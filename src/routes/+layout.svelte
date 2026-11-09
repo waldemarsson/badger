@@ -8,16 +8,19 @@
   import { onMount } from 'svelte';
   import { toThemeMode } from '#lib/theme.js';
   import { applyTheme, theme } from '#lib/theme-state.svelte.js';
-  import { normalizeShortcut } from '#lib/palette.js';
+  import { normalizeShortcut, togglesScratchpad } from '#lib/palette.js';
   import { palette } from '#lib/palette-state.svelte.js';
   import { FLUSH_REQUEST_EVENT, runFlushHandlers } from '#lib/flush-guard.js';
   import { watchSemanticStatus } from '#lib/semantic-state.svelte.js';
   import { reminders, requestHighlight, watchReminders } from '#lib/reminders-state.svelte.js';
+  import { scratchpad, toggleScratchpad } from '#lib/scratchpad-state.svelte.js';
   import type { PaletteSettings } from '#lib/types.js';
   import CommandPalette from '#lib/components/CommandPalette.svelte';
   import Toast from '#lib/components/Toast.svelte';
   import ReminderToasts from '#lib/components/ReminderToasts.svelte';
+  import ScratchpadDrawer from '#lib/components/ScratchpadDrawer.svelte';
   import SettingsIcon from '@lucide/svelte/icons/settings';
+  import StickyNote from '@lucide/svelte/icons/sticky-note';
 
   let { children } = $props();
 
@@ -89,13 +92,24 @@
       requestHighlight(id);
       if (page.url.pathname !== '/reminders') void goto(resolve('/reminders'));
     });
+    window.addEventListener('keydown', onScratchpadKeydown, true);
     return () => {
       disposed = true;
       unlisten?.();
       stopSemantic();
       stopReminders();
+      window.removeEventListener('keydown', onScratchpadKeydown, true);
     };
   });
+
+  /** ⌘J on every page. Capture phase, so it works from inside the drawer and editors too. */
+  function onScratchpadKeydown(e: KeyboardEvent) {
+    const ctx = { paletteOpen: palette.open, recording: palette.recording, paletteShortcut: palette.shortcut };
+    if (!togglesScratchpad(e, ctx)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (!e.repeat) toggleScratchpad();
+  }
 
   const overdue = $derived(reminders.list.filter((r) => r.state === 'fired').length);
 
@@ -120,6 +134,15 @@
         {/each}
       {/each}
       <span class="nav-divider" aria-hidden="true"></span>
+      <button
+        type="button"
+        class="nav-link inline-flex h-10 items-center px-3"
+        class:nav-link-active={scratchpad.open}
+        aria-pressed={scratchpad.open}
+        aria-label="Scratchpad"
+        title="Scratchpad (⌘J)"
+        onclick={toggleScratchpad}
+      ><StickyNote size={16} /></button>
       <a
         href={resolve('/settings')}
         class="nav-link inline-flex h-10 items-center px-3"
@@ -134,6 +157,7 @@
 
 {@render children()}
 
+<ScratchpadDrawer />
 <CommandPalette pages={navLinks} {navigate} />
 <ReminderToasts />
 <Toast />

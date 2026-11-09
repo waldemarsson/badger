@@ -8,6 +8,7 @@ pub mod notes;
 pub mod projects;
 pub mod reminders;
 pub mod reports;
+pub mod scratchpad;
 pub mod semantic;
 pub mod settings;
 pub mod time_entries;

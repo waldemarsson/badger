@@ -1,6 +1,6 @@
 // One EditorView that shows one note at a time. Each note keeps its own EditorState
 // (unsaved edits, undo history) and scroll position while the view lives.
-import type { EditorState, Extension } from '@codemirror/state';
+import { Compartment, EditorState, type Extension } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { syncFocus } from '#lib/editor/focus.js';
 import { emptyLinkData, linkDataField, setLinkData, type LinkData } from '#lib/editor/links.js';
@@ -15,6 +15,9 @@ export class NoteView {
 	private currentId: number | null = null;
 	/** What links resolve to; pushed into each note's state when it is shown. */
 	private links: LinkData = emptyLinkData;
+	/** False while the host is committing the text elsewhere (no edits can slip in). */
+	private editable = true;
+	private readonly editableConf = new Compartment();
 
 	constructor(
 		parent: HTMLElement,
@@ -23,7 +26,7 @@ export class NoteView {
 	) {
 		this.extensions = noteExtensions((body) => {
 			if (this.currentId !== null) onchange(this.currentId, body);
-		}, onfollow);
+		}, onfollow).concat(this.editableConf.of(editableExtension(true)));
 		this.view = new EditorView({ parent, state: createNoteState('', this.extensions) });
 	}
 
@@ -41,6 +44,7 @@ export class NoteView {
 		this.view.setState(this.states.get(id) ?? createNoteState(body, this.extensions));
 		syncFocus(this.view);
 		this.syncLinks();
+		this.syncEditable();
 		const top = this.scrolls.get(id) ?? 0;
 		requestAnimationFrame(() => {
 			if (this.currentId === id) this.view.scrollDOM.scrollTop = top;
@@ -64,6 +68,12 @@ export class NoteView {
 		this.view.focus();
 	}
 
+	/** Focuses with the caret at the end of the text. */
+	focusEnd(): void {
+		this.view.dispatch({ selection: { anchor: this.view.state.doc.length }, scrollIntoView: true });
+		this.view.focus();
+	}
+
 	/** The open note's current text, including edits not saved yet. */
 	text(): string {
 		return this.view.state.doc.toString();
@@ -76,6 +86,20 @@ export class NoteView {
 	private reset(): void {
 		this.currentId = null;
 		this.view.setState(createNoteState('', this.extensions));
+		this.syncEditable();
+	}
+
+	/** Turns typing on or off for whatever note is shown (now and after a switch). */
+	setEditable(editable: boolean): void {
+		this.editable = editable;
+		this.syncEditable();
+	}
+
+	/** A cached or fresh state may hold another editable setting. */
+	private syncEditable(): void {
+		if (this.view.state.facet(EditorView.editable) !== this.editable) {
+			this.view.dispatch({ effects: this.editableConf.reconfigure(editableExtension(this.editable)) });
+		}
 	}
 
 	/** A cached state may hold older link data. */
@@ -88,4 +112,8 @@ export class NoteView {
 		this.states.set(this.currentId, this.view.state);
 		this.scrolls.set(this.currentId, this.view.scrollDOM.scrollTop);
 	}
+}
+
+function editableExtension(editable: boolean): Extension {
+	return [EditorView.editable.of(editable), EditorState.readOnly.of(!editable)];
 }

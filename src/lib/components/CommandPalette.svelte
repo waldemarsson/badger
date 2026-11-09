@@ -17,6 +17,7 @@
 	import Bell from '@lucide/svelte/icons/bell';
 	import Repeat from '@lucide/svelte/icons/repeat';
 	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
+	import StickyNote from '@lucide/svelte/icons/sticky-note';
 	import { today } from '#lib/date-ranges.js';
 	import {
 		filterItems,
@@ -24,7 +25,9 @@
 		isValidDate,
 		matchesShortcut,
 		normalizeShortcut,
+		formatShortcut,
 		parseHours,
+		SCRATCHPAD_SHORTCUT,
 		shiftDate
 	} from '#lib/palette.js';
 	import { changes, logTimeRequest, palette, showToast, type LogTimePrefill } from '#lib/palette-state.svelte.js';
@@ -34,6 +37,7 @@
 	import { semantic } from '#lib/semantic-state.svelte.js';
 	import { formatRemindAt, formatRepeat, isPast, parseReminder, type ParseResult } from '#lib/reminders.js';
 	import { saveReminder } from '#lib/reminders-state.svelte.js';
+	import { openScratchpad } from '#lib/scratchpad-state.svelte.js';
 	import type { Customer, Issue, NoteHit, PaletteSettings, Project, TimeEntryRow } from '#lib/types.js';
 
 	let {
@@ -71,6 +75,11 @@
 	let list = $state<HTMLElement>();
 	let returnFocus: HTMLElement | null = null;
 
+	// Shared, so ⌘J (layout) can stand down while the palette has the keys.
+	$effect(() => {
+		palette.open = open;
+	});
+
 	function emptyTexts(): Record<Step, string> {
 		return { root: '', todo: '', project: '', issue: '', hours: '', notes: '' };
 	}
@@ -82,6 +91,7 @@
 		{ id: 'log-time', label: 'Log time', group: 'Actions', run: () => void startLogTime() },
 		{ id: 'new-note', label: 'New note', group: 'Actions', run: createNote },
 		{ id: 'new-reminder', label: 'New reminder', group: 'Actions', run: startRemind },
+		{ id: 'scratchpad', label: 'Scratchpad', group: 'Actions', run: showScratchpad },
 		...pages.map((p): Command => ({
 			id: `page:${p.href}`,
 			label: p.label,
@@ -382,6 +392,12 @@
 		close();
 		// eslint-disable-next-line svelte/no-navigation-without-resolve -- resolved path plus a query string
 		void goto(`${resolve('/notes')}?new=1`);
+	}
+
+	/** After close() restored focus, so the drawer returns there and its caret lands in the pad. */
+	function showScratchpad(): void {
+		close();
+		openScratchpad();
 	}
 
 	function openNote(id: number): void {
@@ -719,7 +735,9 @@
 										: c.id === 'log-time' ? Clock
 										: c.id === 'new-note' ? NotebookPen
 										: c.id === 'new-reminder' ? Bell
-										: ArrowRight
+										: c.id === 'scratchpad' ? StickyNote
+										: ArrowRight,
+										c.id === 'scratchpad' && palette.shortcut !== SCRATCHPAD_SHORTCUT ? formatShortcut(SCRATCHPAD_SHORTCUT) : ''
 									)}
 								{/each}
 							{/if}

@@ -189,7 +189,13 @@ export interface LinkTargets {
 /** render_markdown mode: the read view, or "Copy as HTML" (links and tags as plain text). */
 export type RenderMode = 'read' | 'copy';
 
-/** Full note (get_note, create_note, create_note_titled). */
+/** The scratchpad (get_scratchpad, set_scratchpad_body). updated_at is null until the first save. */
+export interface Scratchpad {
+	body: string;
+	updated_at: string | null;
+}
+
+/** Full note (get_note, create_note, create_note_titled, save_scratchpad_as_note). */
 export interface Note {
 	id: number;
 	folder_id: number | null;

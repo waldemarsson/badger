@@ -12,7 +12,9 @@
   import { save, open } from '@tauri-apps/plugin-dialog';
   import type { ThemeMode } from '#lib/theme.js';
   import { applyTheme, theme } from '#lib/theme-state.svelte.js';
-  import { DEFAULT_SHORTCUT, formatShortcut, shortcutFromEvent, validateShortcut } from '#lib/palette.js';
+  import { DEFAULT_SHORTCUT, formatShortcut, recorderProblem, shortcutFromEvent } from '#lib/palette.js';
+  import { scratchpadRestored } from '#lib/scratchpad-state.svelte.js';
+  import { runFlushHandlers } from '#lib/flush-guard.js';
   import { palette } from '#lib/palette-state.svelte.js';
   import { formatHours, parseDailyTarget } from '#lib/today.js';
   import { formatBytes } from '#lib/notes.js';
@@ -195,7 +197,7 @@
     }
     const shortcut = shortcutFromEvent(e);
     if (!shortcut) return; // modifier still being held
-    const problem = validateShortcut(shortcut);
+    const problem = recorderProblem(shortcut);
     if (problem) {
       shortcutError = problem;
       return;
@@ -398,8 +400,11 @@
     restoreState = 'restoring';
     restoreError = '';
     try {
+      // Pending autosaves (the scratchpad's) land first, so none can overwrite restored data.
+      await runFlushHandlers();
       await invoke<void>('restore_data', { json: restoreJsonText });
       restoreState = 'success';
+      scratchpadRestored(); // the drawer reloads the restored pad
     } catch (e) {
       restoreError = String(e);
       restoreState = 'error';

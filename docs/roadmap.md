@@ -18,7 +18,7 @@ Markdown notes stored in SQLite, written in Obsidian-compatible markdown so note
 
 ## 3. Release pipeline hardening
 
-`release.yml` publishes a release on every push to `main` without running the gates. Add a gate job (`cargo test`, `cargo clippy --all -- -D warnings`, `cargo fmt --check`, `npm run check`, `npm run lint`, `node --test tests/*.mjs`) that the release job `needs:`; pin third-party actions (`actions/*`, `dtolnay/rust-toolchain`, `swatinem/rust-cache`, `tauri-apps/tauri-action`) to commit SHAs; default the workflow to `permissions: contents: read` and grant `contents: write` only to the release job.
+`release.yml` publishes a release on every `v*` tag push without running the gates. Add a gate job (`cargo test`, `cargo clippy --all -- -D warnings`, `cargo fmt --check`, `npm run check`, `npm run lint`, `node --test tests/*.mjs`) that the release job `needs:`; pin third-party actions (`actions/*`, `dtolnay/rust-toolchain`, `swatinem/rust-cache`, `tauri-apps/tauri-action`) to commit SHAs; default the workflow to `permissions: contents: read` and grant `contents: write` only to the release job.
 
 ## 4. Dependency monitoring
 

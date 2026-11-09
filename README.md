@@ -101,7 +101,7 @@ Restore replaces the current data with the backup's contents. See [Data and back
 
 ## Install (macOS)
 
-Pre-built `.dmg` releases are published automatically on every push to `main`.
+Pre-built `.dmg` releases are published when a `v*` tag is pushed (see [Releasing](#releasing)).
 
 1. Go to the [Releases](../../releases) page and download the latest `.dmg`.
 2. Open the `.dmg` and drag **Badger** into your `Applications` folder.
@@ -154,6 +154,17 @@ src-tauri/        Rust Tauri backend
 assets/           App assets used by the project
 docs/             Documentation and screenshots
 ```
+
+### Releasing
+
+Merging to `main` does not build anything. To publish a release, tag a commit on `main` and push the tag:
+
+```bash
+git tag v1.0.0-31   # v<version> or v<version>-<suffix>
+git push origin v1.0.0-31
+```
+
+`<version>` must match `version` in `src-tauri/tauri.conf.json` (bump it there, in `src-tauri/Cargo.toml` and in `package.json` for a new version), or the workflow fails before building. The tag becomes the release name.
 
 ## Documentation
 

@@ -14,17 +14,35 @@ Markdown notes stored in SQLite, written in Obsidian-compatible markdown so note
 6. **Semantic search** — done, see Done below
 7. **Chat that edits notes** — deferred; local model with tool calls proposing diffs to accept or reject
 
-## 2. Encrypted backups
+## 2. Performance improvements
 
-## 3. Release pipeline hardening
+`list_notes` sends every note body over IPC on each refresh; return the list without bodies and fetch the body when a note opens. Check the whole-document work per keystroke (`doc.toString()`, `extractRefs`, the `blocks.ts` tree walk). Measure first: time a mocked 5,000-line note.
+
+## 3. Gzipped backups
+
+Gzip the JSON backups (~5–10× smaller). Keep JSON rather than a binary format: readable, and old backups stay compatible through `#[serde(default)]`. Restore detects the format from the file's leading bytes, so existing `.json` backups still restore. Needs `flate2` as a direct dependency. Small; do it before encrypted backups.
+
+## 4. Encrypted backups
+
+Off-site copies written to a synced folder (iCloud Drive, Dropbox) chosen in Settings; no network code. Encrypted with an `age` key pair: the public key in settings, the secret key shown once and kept in a password manager. Automatic backups run unattended, and the files decrypt with the `age` CLI without Badger. A lost secret key means the backups are unrecoverable, so setup confirms the key before turning encryption on. Builds on gzipped backups.
+
+## 5. JSON notes
+
+A per-note type toggle (`markdown | json`). JSON mode uses `lang-json` with folding, bracket matching and parse-error lint, without the markdown extensions. JSON notes skip embedding, get title-only FTS, and have a size cap (e.g. 5 MB). Needs a schema migration, a backup field, and `@codemirror/lang-json` as a direct dependency. Cheaper first step: a Format/Minify action for ```` ```json ```` blocks in markdown notes.
+
+## 6. JS playground
+
+A `/playground` page with an editor, Run (⌘↵) and a console pane; nothing is persisted. Needs a sandbox, because code in the main WebView could reach the database through IPC: `rquickjs` (pure JS, fully isolated, new cargo dependency) or a sandboxed iframe (browser APIs, but needs a CSP/IPC isolation spike first). Basic scope and globals completion comes almost free; full TypeScript IntelliSense is optional (~1–2 days). JSON notes can be passed in as variables through an input picker (depends on JSON notes).
+
+## 7. Release pipeline hardening
 
 `release.yml` publishes a release on every `v*` tag push without running the gates. Add a gate job (`cargo test`, `cargo clippy --all -- -D warnings`, `cargo fmt --check`, `npm run check`, `npm run lint`, `node --test tests/*.mjs`) that the release job `needs:`; pin third-party actions (`actions/*`, `dtolnay/rust-toolchain`, `swatinem/rust-cache`, `tauri-apps/tauri-action`) to commit SHAs; default the workflow to `permissions: contents: read` and grant `contents: write` only to the release job.
 
-## 4. Dependency monitoring
+## 8. Dependency monitoring
 
 Dependabot for npm, cargo and GitHub Actions (grouped weekly updates), plus a `cargo deny check advisories` (or `cargo audit`) step and `npm audit --omit=dev` in the gate job.
 
-## 5. Major dependency upgrades
+## 9. Major dependency upgrades
 
 Each on its own branch: `sqlx` 0.9, `sha2` 0.11, `tokenizers` 0.23 first; then `typescript` 7, `prettier-plugin-svelte` 4, `@types/node` 26 and `tailwind-merge` 3; Tailwind 4 last (touches all styling and `app.css`).
 

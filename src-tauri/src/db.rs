@@ -117,6 +117,17 @@ CREATE TABLE IF NOT EXISTS scratchpad (
     UpdatedAt TEXT    NOT NULL
 );
 
+-- Handovers: one end-of-day note per local date (YYYY-MM-DD, the day it was written),
+-- shown on Today the next working day. Not a note: it stays out of notes search, the link
+-- index and the semantic index. An emptied handover is deleted, not stored blank.
+CREATE TABLE IF NOT EXISTS handovers (
+    Date        TEXT    PRIMARY KEY,
+    Body        TEXT    NOT NULL,
+    DismissedAt TEXT,
+    CreatedAt   TEXT    NOT NULL,
+    UpdatedAt   TEXT    NOT NULL
+);
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_title ON notes(Title COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_notes_folder ON notes(FolderId);
 CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(ParentId);

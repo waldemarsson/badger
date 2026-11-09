@@ -3,7 +3,7 @@
 import { Compartment, EditorState, type Extension } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { syncFocus } from '#lib/editor/focus.js';
-import { emptyLinkData, linkDataField, setLinkData, type LinkData } from '#lib/editor/links.js';
+import { emptyLinkData, linkDataField, setLinkData, type LinkData, type LinkFollowScope } from '#lib/editor/links.js';
 import { createNoteState, noteExtensions } from '#lib/editor/setup.js';
 import type { LinkFollow } from '#lib/note-links.js';
 
@@ -22,11 +22,16 @@ export class NoteView {
 	constructor(
 		parent: HTMLElement,
 		onchange: (id: number, body: string) => void,
-		onfollow: (link: LinkFollow) => void
+		onfollow: (link: LinkFollow) => void,
+		followScope: LinkFollowScope = 'all'
 	) {
-		this.extensions = noteExtensions((body) => {
-			if (this.currentId !== null) onchange(this.currentId, body);
-		}, onfollow).concat(this.editableConf.of(editableExtension(true)));
+		this.extensions = noteExtensions(
+			(body) => {
+				if (this.currentId !== null) onchange(this.currentId, body);
+			},
+			onfollow,
+			followScope
+		).concat(this.editableConf.of(editableExtension(true)));
 		this.view = new EditorView({ parent, state: createNoteState('', this.extensions) });
 	}
 

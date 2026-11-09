@@ -693,7 +693,7 @@
         <section class="panel-card space-y-4">
           <div>
             <h2 class="panel-title">Startup Backups</h2>
-            <p class="panel-copy">Automatic backups are created on startup. Set how many daily backups to keep and review the stored backup files below.</p>
+            <p class="panel-copy">Automatic backups are created on startup and again each new day while Badger stays open. Set how many daily backups to keep and review the stored backup files below.</p>
           </div>
 
           <div class="grid gap-4 lg:grid-cols-[minmax(0,18rem)_1fr]">

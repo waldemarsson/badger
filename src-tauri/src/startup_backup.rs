@@ -46,6 +46,11 @@ pub fn write_daily_backup(db_path: &Path, date: &str, json: &str) -> Result<Path
     Ok(backup_path)
 }
 
+/// True when no backup has been written yet for `today` in this run of the app.
+pub fn backup_due(last_backup: Option<NaiveDate>, today: NaiveDate) -> bool {
+    last_backup != Some(today)
+}
+
 pub fn trim_old_backups(db_path: &Path, keep_latest: usize) -> Result<(), AppError> {
     let backup_root = backup_root_dir(db_path);
     let mut dated_dirs = dated_backup_directories(&backup_root)?;
@@ -118,8 +123,10 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
+    use chrono::NaiveDate;
+
     use super::{
-        backup_root_dir, list_startup_backups, trim_old_backups, write_daily_backup,
+        backup_due, backup_root_dir, list_startup_backups, trim_old_backups, write_daily_backup,
         StoredBackupSummary,
     };
 
@@ -132,6 +139,19 @@ mod tests {
             .join("target")
             .join("test-artifacts")
             .join(format!("{name}-{unique}"))
+    }
+
+    #[test]
+    fn backup_is_due_at_launch_and_on_each_new_day() {
+        let monday = NaiveDate::from_ymd_opt(2026, 11, 9).unwrap();
+        let tuesday = NaiveDate::from_ymd_opt(2026, 11, 10).unwrap();
+
+        assert!(backup_due(None, monday), "launch backs up");
+        assert!(
+            !backup_due(Some(monday), monday),
+            "same day does not repeat"
+        );
+        assert!(backup_due(Some(monday), tuesday), "new day backs up");
     }
 
     #[test]

@@ -62,7 +62,7 @@ Downgrading to a build without semantic search leaves the `note_embeddings` tabl
 
 ## Automatic startup backups
 
-Badger automatically creates a backup on each application startup. This behavior is controlled by the startup backup retention setting, which defaults to `3`:
+Badger automatically creates a backup on each application startup, and again whenever the local date changes while the app stays open (checked every 10 minutes; a failed backup is retried at the next check). This behavior is controlled by the startup backup retention setting, which defaults to `3`:
 
 - **Retention > 0**: A backup is written to `backups/YYYY-MM-DD/backup.json` beside the active database, overwriting any existing backup for today. After creation, old backups are automatically trimmed to keep only the most recent `N` backups.
 - **Retention = 0**: Automatic startup backups are disabled entirely.

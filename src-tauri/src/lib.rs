@@ -43,6 +43,7 @@ pub(crate) async fn test_db() -> sqlx::SqlitePool {
 async fn run_startup_backup(
     db_path: &std::path::Path,
     pool: &sqlx::SqlitePool,
+    today: chrono::NaiveDate,
 ) -> Result<(), AppError> {
     let retention = match app_settings::get_startup_backup_retention(pool).await {
         Ok(r) => r,
@@ -65,7 +66,7 @@ async fn run_startup_backup(
         }
     };
 
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let today = today.format("%Y-%m-%d").to_string();
     let backup_path = match startup_backup::write_daily_backup(db_path, &today, &json) {
         Ok(p) => p,
         Err(e) => {
@@ -82,6 +83,29 @@ async fn run_startup_backup(
     tracing::debug!("Startup backup trimmed to {} most recent", retention);
 
     Ok(())
+}
+
+/// How often the backup task checks whether the local date has changed.
+const BACKUP_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Writes the daily backup at launch, then again whenever the local date changes while
+/// the app stays open. A failed backup is retried on the next check.
+async fn run_daily_backups(db_path: std::path::PathBuf, pool: sqlx::SqlitePool) {
+    let mut last_backup: Option<chrono::NaiveDate> = None;
+    let mut interval = tokio::time::interval(BACKUP_CHECK_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        interval.tick().await;
+        let today = chrono::Local::now().date_naive();
+        if !startup_backup::backup_due(last_backup, today) {
+            continue;
+        }
+        match run_startup_backup(&db_path, &pool, today).await {
+            Ok(()) => last_backup = Some(today),
+            // Individual step errors already logged in run_startup_backup
+            Err(e) => tracing::debug!("Daily backup task completed with error: {}", e),
+        }
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -117,18 +141,14 @@ pub fn run() {
 
             tracing::info!("Badger started. DB: {:?}", runtime_paths.db_path);
 
-            // ── Startup Backup ───────────────────────────────────────────────
-            // Background task writes daily backup if retention > 0.
-            // Non-blocking: spawns onto Tauri's async runtime, logs any errors.
-            let db_path_for_backup = runtime_paths.db_path.clone();
-            let pool_for_backup = pool.clone();
+            // ── Daily Backup ─────────────────────────────────────────────────
+            // Background task writes the daily backup (if retention > 0) at launch and
+            // again on each new day while the app stays open. Logs any errors.
             let pool_for_reminders = pool.clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = run_startup_backup(&db_path_for_backup, &pool_for_backup).await {
-                    // Individual step errors already logged in run_startup_backup
-                    tracing::debug!("Startup backup task completed with error: {}", e);
-                }
-            });
+            tauri::async_runtime::spawn(run_daily_backups(
+                runtime_paths.db_path.clone(),
+                pool.clone(),
+            ));
 
             // ── Semantic search ──────────────────────────────────────────────
             // Managed state, the indexing worker, and a startup task that loads the model

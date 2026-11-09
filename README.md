@@ -62,6 +62,14 @@ Notes with a live-preview editor: headings, task lists, quotes, and syntax-highl
 | --- | --- |
 | ![Notes](docs/screenshots/notes.png) | ![Notes, dark](docs/screenshots/notes-dark.png) |
 
+### Scratchpad — jot without leaving the page
+
+Press ⌘J on any page (or pick *Scratchpad* in ⌘K, or the icon next to Settings) and a drawer slides in from the left over whatever you're doing, with the caret ready. It's one persistent pad with the same live-preview editor as notes. It saves as you type and is still there after a restart, but it stays out of search, links, and tags. When something turns out to be worth keeping, *Save as note* asks for a title and turns the whole pad into a note. You can also copy it as HTML, read it rendered with ⌘E, or clear it.
+
+| Light | Dark |
+| --- | --- |
+| ![Scratchpad](docs/screenshots/scratchpad.png) | ![Scratchpad, dark](docs/screenshots/scratchpad-dark.png) |
+
 ### Weekly report
 
 An ISO-week grid grouped by customer and project, with per-day and per-issue totals.

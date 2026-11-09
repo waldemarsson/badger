@@ -109,6 +109,14 @@ CREATE INDEX IF NOT EXISTS idx_reminders_state ON reminders(State, RemindAt);
 CREATE INDEX IF NOT EXISTS idx_reminders_todo ON reminders(TodoId);
 CREATE INDEX IF NOT EXISTS idx_reminders_note ON reminders(NoteId);
 
+-- The scratchpad: a single row (id 1), written on first save. Not a note: it stays out of
+-- notes search, the link index and the semantic index.
+CREATE TABLE IF NOT EXISTS scratchpad (
+    id        INTEGER PRIMARY KEY CHECK (id = 1),
+    Body      TEXT    NOT NULL DEFAULT '',
+    UpdatedAt TEXT    NOT NULL
+);
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_title ON notes(Title COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_notes_folder ON notes(FolderId);
 CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(ParentId);
@@ -423,6 +431,7 @@ mod tests {
         assert!(names.contains(&"folders"), "folders table missing");
         assert!(names.contains(&"notes"), "notes table missing");
         assert!(names.contains(&"note_refs"), "note_refs table missing");
+        assert!(names.contains(&"scratchpad"), "scratchpad table missing");
         assert!(
             names.contains(&"note_embeddings"),
             "note_embeddings table missing"

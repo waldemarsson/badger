@@ -677,14 +677,19 @@
 		}
 	}
 
-	// React to ?id= set from outside (palette "New note", deep links) while mounted.
+	// React to ?id= set from outside (palette "New note", deep links, scratchpad "Save as
+	// note") while mounted. A note the list doesn't have yet was just created: reload it.
 	let seenUrlId: string | null | undefined;
 	$effect(() => {
 		const raw = page.url.searchParams.get('id');
 		if (raw === seenUrlId) return;
 		seenUrlId = raw;
 		const id = Number(raw);
-		if (raw !== null && Number.isInteger(id) && id > 0) untrack(() => void select(id));
+		if (raw === null || !Number.isInteger(id) || id <= 0) return;
+		untrack(() => {
+			if (loaded && !notes.some((n) => n.id === id)) void load();
+			void select(id);
+		});
 	});
 
 	// ── Create ────────────────────────────────────────────────────────────────────

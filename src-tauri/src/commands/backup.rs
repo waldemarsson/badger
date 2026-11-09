@@ -112,6 +112,13 @@ pub struct BackupReminder {
     pub updated_at: String,
 }
 
+/// The scratchpad as stored in a backup file.
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow, PartialEq)]
+pub struct BackupScratchpad {
+    pub body: String,
+    pub updated_at: String,
+}
+
 /// Shown when a restored reminder links a todo or note that is not in the backup.
 const INVALID_REMINDER_REF: &str = "Backup is invalid: a reminder refers to a missing todo or note";
 
@@ -150,6 +157,10 @@ pub struct BackupData {
     /// Absent in backups made before reminders existed.
     #[serde(default)]
     pub reminders: Vec<BackupReminder>,
+    /// None when the pad was never written, and in backups made before the scratchpad
+    /// existed (restore then leaves it empty).
+    #[serde(default)]
+    pub scratchpad: Option<BackupScratchpad>,
 }
 
 /// Reads all data from the database and serialises it to a JSON string.
@@ -208,6 +219,12 @@ pub async fn inner_backup_data(pool: &Pool<Sqlite>) -> Result<String, AppError> 
     .fetch_all(pool)
     .await?;
 
+    let scratchpad = sqlx::query_as::<_, BackupScratchpad>(
+        "SELECT Body as body, UpdatedAt as updated_at FROM scratchpad WHERE id = 1",
+    )
+    .fetch_optional(pool)
+    .await?;
+
     let backup = BackupData {
         customers,
         projects,
@@ -218,14 +235,16 @@ pub async fn inner_backup_data(pool: &Pool<Sqlite>) -> Result<String, AppError> 
         folders,
         notes,
         reminders,
+        scratchpad,
     };
     serde_json::to_string(&backup).map_err(|e| AppError::Custom(e.to_string()))
 }
 
 /// Replaces all data with the contents of a JSON backup.
 ///
-/// Deletes everything first (customers cascade via FK; reminders, todos, travel, notes
-/// and folders are cleared explicitly), then re-inserts the backup in one transaction.
+/// Deletes everything first (customers cascade via FK; reminders, todos, travel, notes,
+/// folders and the scratchpad are cleared explicitly), then re-inserts the backup in one
+/// transaction.
 pub async fn inner_restore_data(json: &str, pool: &Pool<Sqlite>) -> Result<(), AppError> {
     let mut data: BackupData = serde_json::from_str(json)
         .map_err(|e| AppError::Custom(format!("Invalid backup JSON: {}", e)))?;
@@ -248,6 +267,9 @@ pub async fn inner_restore_data(json: &str, pool: &Pool<Sqlite>) -> Result<(), A
     sqlx::query("DELETE FROM travel").execute(&mut *tx).await?;
     sqlx::query("DELETE FROM notes").execute(&mut *tx).await?;
     sqlx::query("DELETE FROM folders").execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM scratchpad")
+        .execute(&mut *tx)
+        .await?;
 
     for c in &data.customers {
         sqlx::query("INSERT INTO customers (id, Name, UseAsDefault) VALUES (?, ?, ?)")
@@ -292,6 +314,13 @@ pub async fn inner_restore_data(json: &str, pool: &Pool<Sqlite>) -> Result<(), A
     insert_travel(&data.travel, &mut tx).await?;
     insert_folders_and_notes(&data.folders, &data.notes, &mut tx).await?;
     insert_reminders(&data.reminders, &mut tx).await?;
+    if let Some(pad) = &data.scratchpad {
+        sqlx::query("INSERT INTO scratchpad (id, Body, UpdatedAt) VALUES (1, ?, ?)")
+            .bind(&pad.body)
+            .bind(&pad.updated_at)
+            .execute(&mut *tx)
+            .await?;
+    }
     // The search and link indexes are derived and not in the backup: rebuild them in the
     // same transaction.
     crate::commands::notes::rebuild_index(&mut tx).await?;
@@ -1069,6 +1098,68 @@ mod tests {
                 .unwrap();
             assert_eq!(count.0, 0, "replace clears {table} not in the backup");
         }
+    }
+
+    #[tokio::test]
+    async fn test_backup_restore_roundtrips_scratchpad() {
+        let pool = crate::test_db().await;
+        let body = "# Jot\r\n- [ ] call Åsa 📞\n[[Plan]] #idea\n";
+        crate::commands::scratchpad::inner_set_scratchpad_body(body, &pool)
+            .await
+            .unwrap();
+        let json = inner_backup_data(&pool).await.expect("backup failed");
+        let original: BackupData = serde_json::from_str(&json).unwrap();
+        let pad = original.scratchpad.as_ref().expect("pad exported");
+        assert_eq!(pad.body, body);
+
+        crate::commands::scratchpad::inner_set_scratchpad_body("changed", &pool)
+            .await
+            .unwrap();
+        let fresh = crate::test_db().await;
+        for target in [&pool, &fresh] {
+            inner_restore_data(&json, target)
+                .await
+                .expect("restore failed");
+            let restored = crate::commands::scratchpad::inner_get_scratchpad(target)
+                .await
+                .unwrap();
+            assert_eq!(restored.body, body);
+            assert_eq!(
+                restored.updated_at.as_deref(),
+                Some(pad.updated_at.as_str())
+            );
+            let hits = crate::commands::notes::inner_search_notes("call", None, target)
+                .await
+                .unwrap();
+            assert!(hits.is_empty(), "restore doesn't index the pad");
+        }
+
+        // A never-written pad exports as null and restores as empty.
+        let empty = crate::test_db().await;
+        let json = inner_backup_data(&empty).await.unwrap();
+        assert!(json.contains("\"scratchpad\":null"), "{json}");
+        inner_restore_data(&json, &pool).await.unwrap();
+        let pad = crate::commands::scratchpad::inner_get_scratchpad(&pool)
+            .await
+            .unwrap();
+        assert_eq!(pad.body, "");
+    }
+
+    #[tokio::test]
+    async fn test_restore_without_scratchpad_field_empties_the_pad() {
+        let pool = crate::test_db().await;
+        crate::commands::scratchpad::inner_set_scratchpad_body("old jottings", &pool)
+            .await
+            .unwrap();
+        let legacy = r#"{"customers":[],"projects":[],"issues":[],"time_entries":[],"todos":[],"travel":[],"folders":[],"notes":[],"reminders":[]}"#;
+        inner_restore_data(legacy, &pool)
+            .await
+            .expect("backup without the scratchpad must restore");
+        let pad = crate::commands::scratchpad::inner_get_scratchpad(&pool)
+            .await
+            .unwrap();
+        assert_eq!(pad.body, "", "restore is overwrite");
+        assert_eq!(pad.updated_at, None);
     }
 
     #[tokio::test]

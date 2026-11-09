@@ -59,6 +59,15 @@ export function validateShortcut(shortcut: string): string | null {
 	return null;
 }
 
+/**
+ * The Settings recorder's check: `validateShortcut`, and ⌘J, which opens the scratchpad.
+ * Only the recorder rejects ⌘J, so a palette shortcut saved as ⌘J before keeps working.
+ */
+export function recorderProblem(shortcut: string): string | null {
+	if (shortcut === SCRATCHPAD_SHORTCUT) return `${formatShortcut(SCRATCHPAD_SHORTCUT)} opens the Scratchpad`;
+	return validateShortcut(shortcut);
+}
+
 /** Stored values that are missing or invalid fall back to ⌘K. */
 export function normalizeShortcut(stored: unknown): string {
 	return typeof stored === 'string' && validateShortcut(stored) === null ? stored : DEFAULT_SHORTCUT;
@@ -66,6 +75,21 @@ export function normalizeShortcut(stored: unknown): string {
 
 export function matchesShortcut(e: KeyLike, shortcut: string): boolean {
 	return shortcutFromEvent(e) === shortcut;
+}
+
+/** Toggles the scratchpad drawer on every page. Fixed, not configurable. */
+export const SCRATCHPAD_SHORTCUT = 'Meta+J';
+
+/**
+ * True when `e` should toggle the scratchpad: ⌘J, unless the palette is open or recording
+ * (its keys win), or the palette's own saved shortcut is ⌘J (the palette wins then).
+ */
+export function togglesScratchpad(
+	e: KeyLike,
+	ctx: { paletteOpen: boolean; recording: boolean; paletteShortcut: string }
+): boolean {
+	if (ctx.paletteOpen || ctx.recording || ctx.paletteShortcut === SCRATCHPAD_SHORTCUT) return false;
+	return matchesShortcut(e, SCRATCHPAD_SHORTCUT);
 }
 
 /** `Meta+Shift+K` → `⇧⌘K` (macOS modifier order). */

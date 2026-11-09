@@ -5,7 +5,9 @@ import { DEFAULT_SHORTCUT } from './palette';
 export const palette = $state({
 	shortcut: DEFAULT_SHORTCUT,
 	/** True while Settings records a new shortcut, so the palette ignores keys. */
-	recording: false
+	recording: false,
+	/** True while the palette is open (⌘J is ignored then: the palette's keys win). */
+	open: false
 });
 
 /** Bumped after the palette creates data; pages showing it reload. */

@@ -42,6 +42,7 @@ The backend is organized around command modules:
 - `folders` for note folders (`list_folders`, `create_folder`, `rename_folder`, `move_folder`, `delete_folder`) and `move_note`; see Notes folders
 - `notes` for markdown notes (create, rename, body save, pin, delete), the list excerpt, which is computed in Rust, full-text search (`search_notes`, `search_index_stats`, `rebuild_search_index`), and links (`create_note_titled`, `list_tag_suggestions`, `get_link_targets`, `list_backlinks`)
 - `semantic` for semantic note search: the lifecycle commands (`get_semantic_status`, `enable_semantic_search`, `cancel_semantic_download`, `remove_semantic_model`, `rebuild_semantic_index`) live in `commands/semantic.rs`; the engine is the top-level `semantic/` module (not a command module); see Semantic search
+- `scratchpad` for the scratchpad (`get_scratchpad`, `set_scratchpad_body`, `save_scratchpad_as_note`); see Scratchpad
 - `markdown` for `render_markdown`, which turns note markdown into safe HTML (read view, copy as HTML)
 - `note_links` (a top-level module, not a command module) for the `#tag` / `[[wikilink]]` extractor and entity slugs; see Notes links
 - `reports` for weekly and monthly rollups
@@ -100,6 +101,16 @@ An edit within the debounce window must survive ⌘Q. `src-tauri/src/flush_guard
 On macOS the native app-menu Quit item sends `terminate:`, which tao turns into an unpreventable exit that skips `ExitRequested`. At startup `install_quit_menu` therefore replaces it with a custom "Quit" item (id `app-quit`, accelerator `CmdOrCtrl+Q`) that calls `AppHandle::exit`, which does go through the guard. It only applies when the default menu's app submenu ends in a Quit item; otherwise it logs a warning and keeps the native menu. The guard is unit-tested for its state machine only; it has not been verified in the real Tauri shell.
 
 The frontend keeps TypeScript interfaces in `src/lib/types.ts` aligned with the Rust response shapes so route components can work with typed command results.
+
+### Scratchpad
+
+One persistent buffer for throwaway text, in a left slide-over drawer (`src/lib/components/ScratchpadDrawer.svelte`) mounted once in the root layout, so it works on every page. There is no backdrop: the page stays usable. ⌘J toggles it (fixed, not configurable), and so do the palette's "Scratchpad" action and the icon beside the Settings gear. It always starts closed on launch. It reuses the notes editor (`NoteEditor.svelte`) under a fixed pseudo-id, with tag and link following off, and its own save queue (`note-save-queue.ts`, 800 ms) plus a flush on blur and drawer close. It registers a flush handler, so quit flushes it too (see Quit/close flush guard). The read view (⌘E), Copy as HTML and the rendered links reuse `render_markdown` as for notes.
+
+The pad lives in its own single-row `scratchpad` table, written by `commands/scratchpad.rs`. It is deliberately not a note: it stays out of notes search, `note_refs` (tags, wikilinks, backlinks), the semantic index and the palette's note hits, because none of those code paths see it.
+
+Save as note asks for a title inline (Enter saves, Esc cancels the prompt only). `save_scratchpad_as_note(title, body)` takes the editor's live text, creates a root note with that body and clears the pad in one transaction, with the notes title rules (required, length, forbidden characters, case-insensitive duplicates; the error shows inline and the pad is untouched), then queues the note for embedding. Any pending pad save is cancelled first, so stale text never writes back over the cleared pad. Clear and a backup restore do the same: restore bumps `scratchpad.restored` in `src/lib/scratchpad-state.svelte.ts` and the drawer drops its state and reloads.
+
+Key scoping: ⌘J is a capture-phase `window` listener in the layout (so it also works from inside editors), ignored while the palette is open or recording a shortcut, and when the palette's own saved shortcut is ⌘J (the palette wins). The drawer stops propagation of keydown events from inside it (bubble phase), so the notes page's ⌘N, ⌘F and ⌘E do not fire; ⌘K, a capture listener, still works. Esc closes the drawer only if nothing inside (slash or autocomplete menu, title prompt) already handled it, and focus returns to where it was. The Settings shortcut recorder rejects ⌘J ("⌘J opens the Scratchpad") through `recorderProblem` in `src/lib/palette.ts`; `validateShortcut` and `normalizeShortcut` do not, so a palette shortcut already saved as ⌘J keeps working. The drawer sits above page content and below modals, the palette and toasts.
 
 ### Notes search
 
@@ -204,6 +215,7 @@ The schema is created on startup if it does not exist. The main tables are:
 - `notes`
 - `folders` (note folders, see Notes folders)
 - `reminders` (see Reminders)
+- `scratchpad` (single row, see Scratchpad)
 - `note_refs` (derived link index, see Notes links; not in backups)
 - `note_embeddings` (derived semantic index, see Semantic search; not in backups)
 

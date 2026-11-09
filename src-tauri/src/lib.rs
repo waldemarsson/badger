@@ -270,6 +270,10 @@ pub fn run() {
                     commands::folders::delete_folder,
                     commands::folders::move_note,
                     commands::markdown::render_markdown,
+                    // Scratchpad
+                    commands::scratchpad::get_scratchpad,
+                    commands::scratchpad::set_scratchpad_body,
+                    commands::scratchpad::save_scratchpad_as_note,
                     // Backup (BE-07)
                     commands::backup::backup_data_to_file,
                     commands::backup::read_backup_file,
@@ -369,6 +373,10 @@ pub fn run() {
                     commands::folders::delete_folder,
                     commands::folders::move_note,
                     commands::markdown::render_markdown,
+                    // Scratchpad
+                    commands::scratchpad::get_scratchpad,
+                    commands::scratchpad::set_scratchpad_body,
+                    commands::scratchpad::save_scratchpad_as_note,
                     // Backup (BE-07)
                     commands::backup::backup_data_to_file,
                     commands::backup::read_backup_file,

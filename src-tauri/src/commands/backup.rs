@@ -1,7 +1,9 @@
-/// Backup and restore commands for exporting/importing all app data as JSON.
+/// Backup and restore commands for exporting/importing all app data as (gzipped) JSON.
 use crate::AppError;
+use flate2::{read::MultiGzDecoder, write::GzEncoder, Compression};
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Sqlite};
+use std::io::{Read, Write};
 use std::path::Path;
 use tauri::State;
 
@@ -584,22 +586,59 @@ async fn insert_travel(
     Ok(())
 }
 
-/// Serialises all data to JSON and writes it to the given file path.
+/// Shown when a backup file is neither valid gzip nor UTF-8 text.
+const NOT_A_BACKUP: &str = "Backup file is not a valid Badger backup";
+
+/// Leading bytes of every gzip stream.
+const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
+
+/// Gzips backup JSON (default compression level) for writing to disk.
+pub fn encode_backup(json: &str) -> Result<Vec<u8>, AppError> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(json.as_bytes())?;
+    Ok(encoder.finish()?)
+}
+
+/// Returns the backup JSON from file bytes: gunzips when they start with the gzip magic,
+/// otherwise reads them as plain UTF-8 JSON (backups from before gzip).
+pub fn decode_backup(bytes: Vec<u8>) -> Result<String, AppError> {
+    let invalid = || AppError::Custom(NOT_A_BACKUP.to_string());
+    if bytes.starts_with(&GZIP_MAGIC) {
+        let mut json = String::new();
+        MultiGzDecoder::new(bytes.as_slice())
+            .read_to_string(&mut json)
+            .map_err(|_| invalid())?;
+        Ok(json)
+    } else {
+        String::from_utf8(bytes).map_err(|_| invalid())
+    }
+}
+
+/// Writes backup JSON to `path` as a gzip file.
+pub fn inner_write_backup_file(json: &str, path: &Path) -> Result<(), AppError> {
+    std::fs::write(path, encode_backup(json)?)?;
+    Ok(())
+}
+
+/// Reads a gzip or plain JSON backup file and returns its JSON.
+pub fn inner_read_backup_file(path: &Path) -> Result<String, AppError> {
+    decode_backup(std::fs::read(path)?)
+}
+
+/// Serialises all data to JSON and writes it gzipped to the given file path.
 #[tauri::command]
 pub async fn backup_data_to_file(
     path: String,
     pool: State<'_, Pool<Sqlite>>,
 ) -> Result<(), AppError> {
     let json = inner_backup_data(&pool).await?;
-    std::fs::write(&path, &json)?;
-    Ok(())
+    inner_write_backup_file(&json, Path::new(&path))
 }
 
-/// Reads a backup JSON file from disk and returns its contents.
+/// Reads a backup file (gzip or plain JSON) from disk and returns its JSON.
 #[tauri::command]
 pub async fn read_backup_file(path: String) -> Result<String, AppError> {
-    let content = std::fs::read_to_string(&path)?;
-    Ok(content)
+    inner_read_backup_file(Path::new(&path))
 }
 
 /// Replaces all data with the contents of a JSON backup.
@@ -1486,6 +1525,97 @@ mod tests {
         assert_eq!(count.0, 1);
     }
 
+    #[test]
+    fn encode_backup_writes_gzip_that_decodes_to_the_json() {
+        let json = r#"{"customers":[],"notes":[{"title":"Å ö 🦡"}]}"#;
+
+        let bytes = encode_backup(json).unwrap();
+        assert_eq!(&bytes[..2], &[0x1f, 0x8b], "gzip magic");
+
+        let mut plain = String::new();
+        std::io::Read::read_to_string(
+            &mut flate2::read::GzDecoder::new(bytes.as_slice()),
+            &mut plain,
+        )
+        .unwrap();
+        assert_eq!(plain, json);
+        assert_eq!(decode_backup(bytes).unwrap(), json);
+    }
+
+    #[test]
+    fn decode_backup_passes_plain_json_through() {
+        let json = r#"{"customers":[]}"#;
+        assert_eq!(decode_backup(json.as_bytes().to_vec()).unwrap(), json);
+    }
+
+    #[test]
+    fn decode_backup_reads_every_gzip_member() {
+        let mut bytes = encode_backup(r#"{"customers":"#).unwrap();
+        bytes.extend(encode_backup("[]}").unwrap());
+        assert_eq!(decode_backup(bytes).unwrap(), r#"{"customers":[]}"#);
+    }
+
+    #[test]
+    fn decode_backup_rejects_corrupt_gzip() {
+        let mut bytes = encode_backup(r#"{"customers":[]}"#).unwrap();
+        bytes.truncate(bytes.len() / 2);
+        let err = decode_backup(bytes).unwrap_err();
+        assert_eq!(err.to_string(), NOT_A_BACKUP);
+
+        let err = decode_backup(vec![0x1f, 0x8b, 0x00, 0x01, 0x02]).unwrap_err();
+        assert_eq!(err.to_string(), NOT_A_BACKUP);
+    }
+
+    #[test]
+    fn decode_backup_rejects_non_utf8_bytes() {
+        let err = decode_backup(vec![0xff, 0xfe, 0x00, 0x80]).unwrap_err();
+        assert_eq!(err.to_string(), NOT_A_BACKUP);
+
+        let gz_non_utf8 = {
+            let mut encoder =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            std::io::Write::write_all(&mut encoder, &[0xff, 0xfe, 0x80]).unwrap();
+            encoder.finish().unwrap()
+        };
+        let err = decode_backup(gz_non_utf8).unwrap_err();
+        assert_eq!(err.to_string(), NOT_A_BACKUP);
+    }
+
+    #[tokio::test]
+    async fn test_restore_from_gzip_file_roundtrip() {
+        let pool = crate::test_db().await;
+        seed_test_data(&pool).await;
+        let json = inner_backup_data(&pool).await.unwrap();
+
+        let dir = std::env::temp_dir().join(format!(
+            "badger-gz-backup-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let gz_path = dir.join("backup.json.gz");
+        inner_write_backup_file(&json, &gz_path).unwrap();
+        let json_path = dir.join("legacy.json");
+        std::fs::write(&json_path, &json).unwrap();
+
+        assert_eq!(inner_read_backup_file(&gz_path).unwrap(), json);
+        assert_eq!(inner_read_backup_file(&json_path).unwrap(), json);
+
+        let restore = crate::test_db().await;
+        inner_restore_data(&inner_read_backup_file(&gz_path).unwrap(), &restore)
+            .await
+            .unwrap();
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM customers")
+            .fetch_one(&restore)
+            .await
+            .unwrap();
+        assert_eq!(count.0, 1);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[tokio::test]
     async fn test_startup_backup_retention_get_set_roundtrip() {
         let pool = crate::test_db().await;
@@ -1545,9 +1675,15 @@ mod tests {
 
         assert_eq!(summaries.len(), 2);
         assert_eq!(summaries[0].date, "2026-05-09");
-        assert_eq!(summaries[0].size_bytes, r#"{"test":"newer"}"#.len() as u64);
+        assert_eq!(
+            summaries[0].size_bytes,
+            encode_backup(r#"{"test":"newer"}"#).unwrap().len() as u64
+        );
         assert_eq!(summaries[1].date, "2026-05-08");
-        assert_eq!(summaries[1].size_bytes, r#"{"test":"older"}"#.len() as u64);
+        assert_eq!(
+            summaries[1].size_bytes,
+            encode_backup(r#"{"test":"older"}"#).unwrap().len() as u64
+        );
 
         fs::remove_dir_all(&test_dir).expect("test directory cleanup should succeed");
     }

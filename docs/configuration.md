@@ -74,7 +74,7 @@ The logger uses `tracing_subscriber::EnvFilter::try_from_default_env()` and fall
 Badger automatically creates a backup on each application startup. The retention setting controls how many recent backups are kept:
 
 - **Default**: 3 backups
-- **Retention > 0**: Backup is created on each startup (overwriting any existing backup for today) and old backups are trimmed to keep the specified number of recent backups
+- **Retention > 0**: Gzipped backup (`backup.json.gz`) is created on each startup (overwriting any existing backup for today) and old backups are trimmed to keep the specified number of recent backups
 - **Retention = 0**: Automatic startup backups are disabled
 
 The retention setting can be configured in the Settings > Backup & Restore tab. The setting is stored in the `app_settings` table with key `startup_backup_retention`.

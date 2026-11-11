@@ -47,7 +47,7 @@ The backend is organized around command modules:
 - `markdown` for `render_markdown`, which turns note markdown into safe HTML (read view, copy as HTML)
 - `note_links` (a top-level module, not a command module) for the `#tag` / `[[wikilink]]` extractor and entity slugs; see Notes links
 - `reports` for weekly and monthly rollups
-- `backup` for JSON export and import
+- `backup` for gzipped JSON export and import (restore also reads plain `.json`)
 - `settings` for app preferences (theme, daily hours target, command palette shortcut and last-used project/issue, expanded note folders) stored in `app_settings`
 - `startup_backup` for automatic daily backups on application startup
 - `flush_guard` for the quit/close guard (see Notes editor)
@@ -241,7 +241,7 @@ The root layout disables SSR because Tauri APIs only exist inside the WebView at
 
 ### Rust owns persistence and file access
 
-The frontend does not talk to SQLite directly and does not read or write backup files on its own. File-system work stays in Rust commands, which keeps native access behind a single boundary.
+The frontend does not talk to SQLite directly and does not read or write backup files on its own (restore reads and gunzips through `read_backup_file`). File-system work stays in Rust commands, which keeps native access behind a single boundary.
 
 ### Development-only seed data is gated by debug builds
 
@@ -253,4 +253,4 @@ The backend initializes daily-rotating logs under repo-local `.badger-dev/logs/`
 
 ### Automatic startup backups
 
-On each application startup, Badger creates a backup if the retention setting is greater than zero. The backup is written to `backups/YYYY-MM-DD/backup.json` beside the active database, overwriting any existing backup for today. After backup creation, old backups are automatically trimmed to keep only the most recent backups based on the retention setting (default: 3). Setting retention to 0 disables automatic startup backups entirely. Backup creation, trimming, and listing logic stays in Rust; the frontend only displays the available backups and retention setting.
+On each application startup, Badger creates a backup if the retention setting is greater than zero. The backup is written, gzipped, to `backups/YYYY-MM-DD/backup.json.gz` beside the active database, overwriting any existing backup for today (atomic write; a leftover legacy `backup.json` from the same day is removed). Listing and trimming accept either name and prefer the `.gz`. After backup creation, old backups are automatically trimmed to keep only the most recent backups based on the retention setting (default: 3). Setting retention to 0 disables automatic startup backups entirely. Backup creation, trimming, and listing logic stays in Rust; the frontend only displays the available backups and retention setting.

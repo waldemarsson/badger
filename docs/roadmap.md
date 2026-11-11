@@ -18,36 +18,33 @@ Markdown notes stored in SQLite, written in Obsidian-compatible markdown so note
 
 `list_notes` sends every note body over IPC on each refresh; return the list without bodies and fetch the body when a note opens. Check the whole-document work per keystroke (`doc.toString()`, `extractRefs`, the `blocks.ts` tree walk). Measure first: time a mocked 5,000-line note.
 
-## 3. Gzipped backups
-
-Gzip the JSON backups (~5–10× smaller). Keep JSON rather than a binary format: readable, and old backups stay compatible through `#[serde(default)]`. Restore detects the format from the file's leading bytes, so existing `.json` backups still restore. Needs `flate2` as a direct dependency. Small; do it before encrypted backups.
-
-## 4. Encrypted backups
+## 3. Encrypted backups
 
 Off-site copies written to a synced folder (iCloud Drive, Dropbox) chosen in Settings; no network code. Encrypted with an `age` key pair: the public key in settings, the secret key shown once and kept in a password manager. Automatic backups run unattended, and the files decrypt with the `age` CLI without Badger. A lost secret key means the backups are unrecoverable, so setup confirms the key before turning encryption on. Builds on gzipped backups.
 
-## 5. JSON notes
+## 4. JSON notes
 
 A per-note type toggle (`markdown | json`). JSON mode uses `lang-json` with folding, bracket matching and parse-error lint, without the markdown extensions. JSON notes skip embedding, get title-only FTS, and have a size cap (e.g. 5 MB). Needs a schema migration, a backup field, and `@codemirror/lang-json` as a direct dependency. Cheaper first step: a Format/Minify action for ```` ```json ```` blocks in markdown notes.
 
-## 6. JS playground
+## 5. JS playground
 
 A `/playground` page with an editor, Run (⌘↵) and a console pane; nothing is persisted. Needs a sandbox, because code in the main WebView could reach the database through IPC: `rquickjs` (pure JS, fully isolated, new cargo dependency) or a sandboxed iframe (browser APIs, but needs a CSP/IPC isolation spike first). Basic scope and globals completion comes almost free; full TypeScript IntelliSense is optional (~1–2 days). JSON notes can be passed in as variables through an input picker (depends on JSON notes).
 
-## 7. Release pipeline hardening
+## 6. Release pipeline hardening
 
 `release.yml` publishes a release on every `v*` tag push without running the gates. Add a gate job (`cargo test`, `cargo clippy --all -- -D warnings`, `cargo fmt --check`, `npm run check`, `npm run lint`, `node --test tests/*.mjs`) that the release job `needs:`; pin third-party actions (`actions/*`, `dtolnay/rust-toolchain`, `swatinem/rust-cache`, `tauri-apps/tauri-action`) to commit SHAs; default the workflow to `permissions: contents: read` and grant `contents: write` only to the release job.
 
-## 8. Dependency monitoring
+## 7. Dependency monitoring
 
 Dependabot for npm, cargo and GitHub Actions (grouped weekly updates), plus a `cargo deny check advisories` (or `cargo audit`) step and `npm audit --omit=dev` in the gate job.
 
-## 9. Major dependency upgrades
+## 8. Major dependency upgrades
 
 Each on its own branch: `sqlx` 0.9, `sha2` 0.11, `tokenizers` 0.23 first; then `typescript` 7, `prettier-plugin-svelte` 4, `@types/node` 26 and `tailwind-merge` 3; Tailwind 4 last (touches all styling and `app.css`).
 
 ## Done
 
+- Gzipped backups — automatic backups are written as `backups/YYYY-MM-DD/backup.json.gz` (atomic) and manual export defaults to `badger-backup-<date>.json.gz`; the content is still the same JSON (`gunzip -c` reads it), so it stays readable and compatible through `#[serde(default)]`. Restore detects gzip from the leading bytes (`1f 8b`) and otherwise reads plain JSON, so old `.json` backups still restore; listing and trim accept either name. Measured ~3–6× smaller on synthetic data (notes-heavy ≈3×, record-heavy ≈6×); `flate2` is a direct dependency
 - Scratchpad — one persistent pad for throwaway text in a left slide-over drawer on every page, opened with ⌘J, the ⌘K "Scratchpad" action or the icon beside Settings; the notes live-preview editor with autosave (flushed on close and quit); "Save as note" asks for a title and turns the whole pad into an indexed root note, plus Copy as HTML, a ⌘E read view and Clear; kept out of notes search, links and the semantic index; stored in a single-row `scratchpad` table included in backup/restore (older backups restore with an empty pad); the Settings shortcut recorder rejects ⌘J
 - Badger — the app is now called Badger (bundle id `io.github.narvallabs.badger`, data in `~/.badger/`, dev data in `.badger-dev/`) with a badger app icon generated from `src-tauri/icons/icon-source.png`
 - Reminders — Slack-style one-off or recurring pings (daily, weekdays, weekly on chosen days, monthly) at an exact local time, created by typing `remind call Anna in 20 min` (English or Swedish) in ⌘K with a live preview, from the `/reminders` page, from a todo, or from a note's context menu; due ones become native macOS notifications (batched when several fire at once, skipped while the window is focused) and actionable in-app toasts with Done and Snooze, with the fired count on the dock badge; managed on `/reminders` (Overdue / Today / Tomorrow / Later / Done) and a Today card; stored in `reminders` and included in backup/restore. Fires only while the app runs; the missed ones fire as a catch-up on launch

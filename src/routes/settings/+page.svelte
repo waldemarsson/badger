@@ -349,8 +349,8 @@
     try {
       const today = new Date().toISOString().slice(0, 10);
       const path = await save({
-        defaultPath: `badger-backup-${today}.json`,
-        filters: [{ name: 'JSON', extensions: ['json'] }],
+        defaultPath: `badger-backup-${today}.json.gz`,
+        filters: [{ name: 'Badger backup', extensions: ['gz'] }],
       });
       if (!path) { backupState = 'idle'; return; }
       await invoke<void>('backup_data_to_file', { path });
@@ -365,7 +365,7 @@
     restoreParseError = '';
     restorePreview = null;
     const path = await open({
-      filters: [{ name: 'JSON', extensions: ['json'] }],
+      filters: [{ name: 'Badger backup', extensions: ['json', 'gz'] }],
     });
     if (!path) return;
     try {
@@ -794,7 +794,7 @@
         <section class="panel-card space-y-4">
           <div>
             <h2 class="panel-title">Backup</h2>
-            <p class="panel-copy">Export all your data as a JSON file. Store it somewhere safe — you can use it to restore your data at any time.</p>
+            <p class="panel-copy">Export all your data as a compressed backup file. Store it somewhere safe — you can use it to restore your data at any time.</p>
           </div>
 
           <button class="btn-secondary" onclick={exportBackup} disabled={backupState === 'saving'}>

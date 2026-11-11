@@ -74,7 +74,7 @@ Downgrading to a build without semantic search leaves the `note_embeddings` tabl
 
 Badger automatically creates a backup on each application startup, and again whenever the local date changes while the app stays open (checked every 10 minutes; a failed backup is retried at the next check). This behavior is controlled by the startup backup retention setting, which defaults to `3`:
 
-- **Retention > 0**: A backup is written to `backups/YYYY-MM-DD/backup.json` beside the active database, overwriting any existing backup for today. After creation, old backups are automatically trimmed to keep only the most recent `N` backups.
+- **Retention > 0**: A gzipped backup is written to `backups/YYYY-MM-DD/backup.json.gz` beside the active database, overwriting any existing backup for today. The write is atomic (temp file, then rename) and removes a leftover legacy `backup.json` from the same day. After creation, old backups are automatically trimmed to keep only the most recent `N` backups.
 - **Retention = 0**: Automatic startup backups are disabled entirely.
 
 The retention setting can be adjusted in the Settings > Backup & Restore tab.
@@ -86,20 +86,26 @@ The backup root directory is determined by the database location:
 Development (`npm run dev` / debug builds):
 
 ```text
-.badger-dev/backups/YYYY-MM-DD/backup.json
+.badger-dev/backups/YYYY-MM-DD/backup.json.gz
 ```
 
 Installed and other non-debug builds:
 
 ```text
-~/.badger/backups/YYYY-MM-DD/backup.json
+~/.badger/backups/YYYY-MM-DD/backup.json.gz
 ```
+
+Backups made before gzip are plain `backup.json`. Listing and trimming accept either name in a dated directory and prefer the `.gz` when both exist, so old backups still count toward retention and show in the list.
 
 Startup backup creation, trimming, and listing are handled entirely in Rust and do not involve the frontend beyond displaying the available backups and retention setting in the UI.
 
 ## Backup format
 
-Backup export writes a JSON document containing nine arrays and the scratchpad:
+Backup export writes a JSON document containing nine arrays and the scratchpad. Manual exports and automatic backups are gzipped; the content is still this same JSON, so `gunzip -c backup.json.gz` reads it. Manual export defaults to `badger-backup-<date>.json.gz`.
+
+Restore detects gzip from the file's leading bytes (`1f 8b`) and otherwise reads plain UTF-8 JSON, so `.json` backups from before gzip still restore. A file that is neither fails with "Backup file is not a valid Badger backup" and nothing is changed. The file is read and decoded in Rust (`read_backup_file`); the frontend receives the JSON text.
+
+The document contains:
 
 - `customers`
 - `projects`
@@ -139,8 +145,8 @@ There is no merge mode. It was removed because `INSERT OR REPLACE` deletes and r
 
 The active backup and restore workflow is currently exposed in the Settings page, where the frontend:
 
-- opens a save dialog for export
-- opens a file picker for import
+- opens a save dialog for export (default name `badger-backup-<date>.json.gz`)
+- opens a file picker for import (accepts `.gz` and legacy `.json`)
 - previews record counts before restore, including notes
 - warns when the backup has no notes but the database does ("This backup has no notes; restoring deletes your N notes.")
 - warns that restore replaces all current data

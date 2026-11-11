@@ -270,6 +270,7 @@ name = "badger"
 version = "1.0.0"
 dependencies = [
  "chrono",
+ "flate2",
  "ort",
  "pulldown-cmark",
  "reqwest",

@@ -83,6 +83,7 @@ const editorTheme = EditorView.theme({
 		transition: 'background-color 150ms, border-color 150ms'
 	},
 	'.cm-md-checkbox:hover': { borderColor: 'var(--note-check)' },
+	'.cm-md-checkbox:focus-visible': { outline: '2px solid var(--note-caret)', outlineOffset: '2px' },
 	'.cm-md-checkbox-checked': {
 		backgroundColor: 'var(--note-check)',
 		borderColor: 'var(--note-check)',

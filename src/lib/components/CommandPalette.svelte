@@ -18,6 +18,7 @@
 	import Repeat from '@lucide/svelte/icons/repeat';
 	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 	import StickyNote from '@lucide/svelte/icons/sticky-note';
+	import Sunset from '@lucide/svelte/icons/sunset';
 	import { today } from '#lib/date-ranges.js';
 	import {
 		filterItems,
@@ -38,6 +39,8 @@
 	import { formatRemindAt, formatRepeat, isPast, parseReminder, type ParseResult } from '#lib/reminders.js';
 	import { saveReminder } from '#lib/reminders-state.svelte.js';
 	import { openScratchpad } from '#lib/scratchpad-state.svelte.js';
+	import { requestHandoverFocus } from '#lib/handover-state.svelte.js';
+	import { page } from '$app/state';
 	import type { Customer, Issue, NoteHit, PaletteSettings, Project, TimeEntryRow } from '#lib/types.js';
 
 	let {
@@ -92,6 +95,7 @@
 		{ id: 'new-note', label: 'New note', group: 'Actions', run: createNote },
 		{ id: 'new-reminder', label: 'New reminder', group: 'Actions', run: startRemind },
 		{ id: 'scratchpad', label: 'Scratchpad', group: 'Actions', run: showScratchpad },
+		{ id: 'write-handover', label: 'Write handover', group: 'Actions', run: writeHandover },
 		...pages.map((p): Command => ({
 			id: `page:${p.href}`,
 			label: p.label,
@@ -398,6 +402,13 @@
 	function showScratchpad(): void {
 		close();
 		openScratchpad();
+	}
+
+	/** Today's handover editor takes the request on mount, or at once when Today is open. */
+	function writeHandover(): void {
+		close();
+		requestHandoverFocus();
+		if (page.url.pathname !== resolve('/')) void goto(resolve('/'));
 	}
 
 	function openNote(id: number): void {
@@ -736,6 +747,7 @@
 										: c.id === 'new-note' ? NotebookPen
 										: c.id === 'new-reminder' ? Bell
 										: c.id === 'scratchpad' ? StickyNote
+										: c.id === 'write-handover' ? Sunset
 										: ArrowRight,
 										c.id === 'scratchpad' && palette.shortcut !== SCRATCHPAD_SHORTCUT ? formatShortcut(SCRATCHPAD_SHORTCUT) : ''
 									)}

@@ -274,6 +274,12 @@ pub fn run() {
                     commands::scratchpad::get_scratchpad,
                     commands::scratchpad::set_scratchpad_body,
                     commands::scratchpad::save_scratchpad_as_note,
+                    // Handovers
+                    commands::handovers::get_handover,
+                    commands::handovers::list_handovers,
+                    commands::handovers::save_handover,
+                    commands::handovers::dismiss_handover,
+                    commands::handovers::save_handover_as_note,
                     // Backup (BE-07)
                     commands::backup::backup_data_to_file,
                     commands::backup::read_backup_file,
@@ -377,6 +383,12 @@ pub fn run() {
                     commands::scratchpad::get_scratchpad,
                     commands::scratchpad::set_scratchpad_body,
                     commands::scratchpad::save_scratchpad_as_note,
+                    // Handovers
+                    commands::handovers::get_handover,
+                    commands::handovers::list_handovers,
+                    commands::handovers::save_handover,
+                    commands::handovers::dismiss_handover,
+                    commands::handovers::save_handover_as_note,
                     // Backup (BE-07)
                     commands::backup::backup_data_to_file,
                     commands::backup::read_backup_file,

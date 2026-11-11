@@ -195,7 +195,17 @@ export interface Scratchpad {
 	updated_at: string | null;
 }
 
-/** Full note (get_note, create_note, create_note_titled, save_scratchpad_as_note). */
+/** One day's end-of-day handover (get_handover, list_handovers, save_handover). `date` is
+ *  the local YYYY-MM-DD it was written; `dismissed_at` is set once its card was dismissed. */
+export interface Handover {
+	date: string;
+	body: string;
+	dismissed_at: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
+/** Full note (get_note, create_note, create_note_titled, save_scratchpad_as_note, save_handover_as_note). */
 export interface Note {
 	id: number;
 	folder_id: number | null;

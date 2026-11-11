@@ -549,6 +549,35 @@
     @apply px-1 py-3 text-sm text-slate-400 dark:text-neutral-500;
   }
 
+  /* Handover cards on Today: the incoming one (tinted, read-only) and today's editor. */
+  .handover-incoming {
+    @apply mt-2 rounded-xl bg-sky-50/70 ring-1 ring-sky-100 dark:bg-sky-500/5 dark:ring-sky-500/20;
+  }
+
+  .handover-today {
+    @apply mt-2 rounded-xl bg-white ring-1 ring-slate-200 transition-shadow focus-within:ring-2 focus-within:ring-sky-300 dark:bg-neutral-900 dark:ring-neutral-800 dark:focus-within:ring-sky-500/40;
+  }
+
+  .handover-dismiss {
+    @apply inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-slate-500 transition hover:bg-emerald-50 hover:text-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300 disabled:opacity-50 dark:text-neutral-400 dark:hover:bg-emerald-500/10 dark:hover:text-emerald-400 dark:focus-visible:ring-emerald-500/40;
+  }
+
+  .handover-editor .cm-editor {
+    max-height: 22rem;
+  }
+
+  .handover-editor .cm-editor .cm-content {
+    padding: 0.6rem 0;
+  }
+
+  .handover-editor .cm-editor .cm-line {
+    padding: 0 0.85rem;
+  }
+
+  .handover-editor-today .cm-editor .cm-content {
+    min-height: 5.5rem;
+  }
+
   /* Notes page */
   .notes-pane {
     @apply flex min-h-0 flex-col overflow-hidden;

@@ -121,6 +121,22 @@ pub struct BackupScratchpad {
     pub updated_at: String,
 }
 
+/// A handover as stored in a backup file (`date` is its local YYYY-MM-DD primary key).
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow, PartialEq)]
+pub struct BackupHandover {
+    pub date: String,
+    pub body: String,
+    pub dismissed_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Shown when a restored handover's date is not a real YYYY-MM-DD date.
+const INVALID_HANDOVER_DATE: &str = "Backup is invalid: a handover has an invalid date";
+
+/// Shown when two restored handovers share a date.
+const DUPLICATE_HANDOVER_DATE: &str = "Backup is invalid: duplicate handover date";
+
 /// Shown when a restored reminder links a todo or note that is not in the backup.
 const INVALID_REMINDER_REF: &str = "Backup is invalid: a reminder refers to a missing todo or note";
 
@@ -163,6 +179,9 @@ pub struct BackupData {
     /// existed (restore then leaves it empty).
     #[serde(default)]
     pub scratchpad: Option<BackupScratchpad>,
+    /// Absent in backups made before handovers existed.
+    #[serde(default)]
+    pub handovers: Vec<BackupHandover>,
 }
 
 /// Reads all data from the database and serialises it to a JSON string.
@@ -227,6 +246,12 @@ pub async fn inner_backup_data(pool: &Pool<Sqlite>) -> Result<String, AppError> 
     .fetch_optional(pool)
     .await?;
 
+    let handovers = sqlx::query_as::<_, BackupHandover>(
+        "SELECT Date as date, Body as body, DismissedAt as dismissed_at, CreatedAt as created_at, UpdatedAt as updated_at FROM handovers ORDER BY Date",
+    )
+    .fetch_all(pool)
+    .await?;
+
     let backup = BackupData {
         customers,
         projects,
@@ -238,6 +263,7 @@ pub async fn inner_backup_data(pool: &Pool<Sqlite>) -> Result<String, AppError> 
         notes,
         reminders,
         scratchpad,
+        handovers,
     };
     serde_json::to_string(&backup).map_err(|e| AppError::Custom(e.to_string()))
 }
@@ -245,7 +271,7 @@ pub async fn inner_backup_data(pool: &Pool<Sqlite>) -> Result<String, AppError> 
 /// Replaces all data with the contents of a JSON backup.
 ///
 /// Deletes everything first (customers cascade via FK; reminders, todos, travel, notes,
-/// folders and the scratchpad are cleared explicitly), then re-inserts the backup in one
+/// folders, the scratchpad and handovers are cleared explicitly), then re-inserts the backup in one
 /// transaction.
 pub async fn inner_restore_data(json: &str, pool: &Pool<Sqlite>) -> Result<(), AppError> {
     let mut data: BackupData = serde_json::from_str(json)
@@ -254,6 +280,7 @@ pub async fn inner_restore_data(json: &str, pool: &Pool<Sqlite>) -> Result<(), A
     check_folder_tree(&data.folders)?;
     suffix_duplicate_folder_names(&mut data.folders);
     check_reminder_links(&data)?;
+    check_handover_dates(&data.handovers)?;
 
     let mut tx = pool.begin().await?;
 
@@ -270,6 +297,9 @@ pub async fn inner_restore_data(json: &str, pool: &Pool<Sqlite>) -> Result<(), A
     sqlx::query("DELETE FROM notes").execute(&mut *tx).await?;
     sqlx::query("DELETE FROM folders").execute(&mut *tx).await?;
     sqlx::query("DELETE FROM scratchpad")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM handovers")
         .execute(&mut *tx)
         .await?;
 
@@ -323,6 +353,18 @@ pub async fn inner_restore_data(json: &str, pool: &Pool<Sqlite>) -> Result<(), A
             .execute(&mut *tx)
             .await?;
     }
+    for h in &data.handovers {
+        sqlx::query(
+            "INSERT INTO handovers (Date, Body, DismissedAt, CreatedAt, UpdatedAt) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(&h.date)
+        .bind(&h.body)
+        .bind(&h.dismissed_at)
+        .bind(&h.created_at)
+        .bind(&h.updated_at)
+        .execute(&mut *tx)
+        .await?;
+    }
     // The search and link indexes are derived and not in the backup: rebuild them in the
     // same transaction.
     crate::commands::notes::rebuild_index(&mut tx).await?;
@@ -351,6 +393,20 @@ fn check_reminder_links(data: &BackupData) -> Result<(), AppError> {
     } else {
         Err(AppError::Custom(INVALID_REMINDER_REF.to_string()))
     }
+}
+
+/// Rejects handovers whose date is not a real `YYYY-MM-DD` date, or appears twice.
+fn check_handover_dates(handovers: &[BackupHandover]) -> Result<(), AppError> {
+    let mut seen = std::collections::HashSet::new();
+    for h in handovers {
+        if !crate::commands::handovers::is_valid_date(&h.date) {
+            return Err(AppError::Custom(INVALID_HANDOVER_DATE.to_string()));
+        }
+        if !seen.insert(h.date.as_str()) {
+            return Err(AppError::Custom(DUPLICATE_HANDOVER_DATE.to_string()));
+        }
+    }
+    Ok(())
 }
 
 /// Rejects case-insensitive duplicate note titles, folding like the notes commands do
@@ -1199,6 +1255,101 @@ mod tests {
             .unwrap();
         assert_eq!(pad.body, "", "restore is overwrite");
         assert_eq!(pad.updated_at, None);
+    }
+
+    #[tokio::test]
+    async fn test_backup_restore_roundtrips_handovers() {
+        use crate::commands::handovers as h;
+        let pool = crate::test_db().await;
+        let body = "# Tomorrow\r\n- [ ] call Åsa 📞\n[[Plan]] #idea\n";
+        h::inner_save_handover("2026-11-05", body, &pool)
+            .await
+            .unwrap();
+        h::inner_save_handover("2026-11-06", "- [x] done", &pool)
+            .await
+            .unwrap();
+        h::inner_dismiss_handover("2026-11-06", &pool)
+            .await
+            .unwrap();
+        let original = h::inner_list_handovers(&pool).await.unwrap();
+        let json = inner_backup_data(&pool).await.expect("backup failed");
+        let data: BackupData = serde_json::from_str(&json).unwrap();
+        assert_eq!(data.handovers.len(), 2, "exported");
+
+        // Replace: a handover not in the backup goes, changed ones are put back.
+        h::inner_save_handover("2026-11-05", "changed", &pool)
+            .await
+            .unwrap();
+        h::inner_save_handover("2026-11-09", "after the backup", &pool)
+            .await
+            .unwrap();
+        let fresh = crate::test_db().await;
+        for target in [&pool, &fresh] {
+            inner_restore_data(&json, target)
+                .await
+                .expect("restore failed");
+            assert_eq!(h::inner_list_handovers(target).await.unwrap(), original);
+            let hits = crate::commands::notes::inner_search_notes("call", None, target)
+                .await
+                .unwrap();
+            assert!(hits.is_empty(), "restore doesn't index handovers");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_restore_without_handovers_field_clears_handovers() {
+        let pool = crate::test_db().await;
+        crate::commands::handovers::inner_save_handover("2026-11-05", "old", &pool)
+            .await
+            .unwrap();
+        let legacy = r#"{"customers":[],"projects":[],"issues":[],"time_entries":[],"todos":[],"travel":[],"folders":[],"notes":[],"reminders":[],"scratchpad":null}"#;
+        inner_restore_data(legacy, &pool)
+            .await
+            .expect("backup without handovers must restore");
+        let list = crate::commands::handovers::inner_list_handovers(&pool)
+            .await
+            .unwrap();
+        assert!(list.is_empty(), "restore is overwrite");
+    }
+
+    #[tokio::test]
+    async fn test_restore_rejects_bad_handover_dates_and_keeps_data() {
+        let pool = crate::test_db().await;
+        crate::commands::handovers::inner_save_handover("2026-11-05", "keep", &pool)
+            .await
+            .unwrap();
+        let backup = |dates: &[&str]| {
+            let rows: Vec<String> = dates
+                .iter()
+                .map(|d| format!(r#"{{"date":"{d}","body":"x","dismissed_at":null,"created_at":"c","updated_at":"u"}}"#))
+                .collect();
+            format!(
+                r#"{{"customers":[],"projects":[],"issues":[],"time_entries":[],"handovers":[{}]}}"#,
+                rows.join(",")
+            )
+        };
+        for date in ["2026-13-01", "2026-02-30", "2026-1-5", "x"] {
+            let err = inner_restore_data(&backup(&[date]), &pool)
+                .await
+                .unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                "Backup is invalid: a handover has an invalid date",
+                "{date}"
+            );
+        }
+        let err = inner_restore_data(&backup(&["2026-11-03", "2026-11-03"]), &pool)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Backup is invalid: duplicate handover date"
+        );
+        let list = crate::commands::handovers::inner_list_handovers(&pool)
+            .await
+            .unwrap();
+        assert_eq!(list.len(), 1, "failed restore changes nothing");
+        assert_eq!(list[0].body, "keep");
     }
 
     #[tokio::test]

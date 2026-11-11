@@ -22,6 +22,9 @@
 	import { formatDue } from '#lib/todos.js';
 	import type { TimeEntryRow, TodoRow } from '#lib/types.js';
 	import TodoModal from '#lib/components/TodoModal.svelte';
+	import HandoverIncoming from '#lib/components/HandoverIncoming.svelte';
+	import HandoverToday from '#lib/components/HandoverToday.svelte';
+	import { HandoverCards } from '#lib/handover-cards.svelte.js';
 	import ReminderRow from '#lib/components/ReminderRow.svelte';
 	import { groupReminders } from '#lib/reminders.js';
 	import { clock, reminders } from '#lib/reminders-state.svelte.js';
@@ -36,10 +39,16 @@
 	const WORKDAYS = 5;
 
 	let todayIso = $state(today());
+	/** The handovers' local date: follows the clock even when a load fails. */
+	let handoverDay = $state(today());
+	/** Both handover cards share one list and save queue; they don't wait for `loaded`. */
+	const handovers = new HandoverCards(today());
+	$effect(() => handovers.setDay(handoverDay));
 	let entries = $state<TimeEntryRow[]>([]);
 	let todos = $state<TodoRow[]>([]);
 	let target = $state(8);
 	let loaded = $state(false); // true once a load has succeeded; hero stats and sections wait for it
+	let settled = $state(false); // true once a load has succeeded or failed (the handover cards wait for it)
 	let loadError = $state('');
 	let loadSeq = 0;
 	let actionError = $state('');
@@ -64,15 +73,27 @@
 			target = dailyTarget;
 			loadError = '';
 			loaded = true;
+			settle();
 		} catch (e) {
 			if (seq !== loadSeq) return;
 			loadError = String(e);
+			settle();
 		}
+	}
+
+	/** Shows the handover cards in their place (below the sections) once those rendered or failed. */
+	function settle(): void {
+		if (settled) return;
+		settled = true;
+		handovers.pageSettled();
 	}
 
 	/** The page may stay open past midnight: reload when it comes back on a new day. */
 	function reloadIfNewDay(): void {
-		if (document.visibilityState === 'visible' && today() !== todayIso) void load();
+		if (document.visibilityState !== 'visible') return;
+		const now = today();
+		if (now !== handoverDay) handoverDay = now;
+		if (now !== todayIso) void load();
 	}
 
 	// ── Derived view ──────────────────────────────────────────────────────────────
@@ -292,9 +313,9 @@
 			</div>
 		{/if}
 
-		{#if loaded}
-			<div class="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_24rem]">
-				<div class="space-y-4">
+		<div class="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_24rem]">
+			<div class="space-y-4">
+				{#if loaded}
 					{#if actionError}
 						<div
 							class="flex items-center justify-between gap-3 rounded-xl bg-red-50 px-4 py-2 text-sm text-red-700 ring-1 ring-red-200 dark:bg-red-500/10 dark:text-red-300 dark:ring-red-500/30"
@@ -332,8 +353,16 @@
 						{/if}
 					</section>
 					{@render todoSection('In progress', 'bg-sky-500 dark:bg-sky-400', active, 'Nothing in progress')}
+				{/if}
+				<!-- Handovers sit below the sections. Mounted at once (they load on their own) and shown
+				     once the page's load settled, success or failure, so they don't jump. -->
+				<div class="space-y-4" hidden={!settled}>
+					<HandoverIncoming cards={handovers} />
+					<HandoverToday cards={handovers} />
 				</div>
+			</div>
 
+			{#if loaded}
 				<aside class="today-section">
 					<header class="today-section-header">
 						<span class="h-2.5 w-2.5 rounded-full bg-slate-400 dark:bg-neutral-500"></span>
@@ -410,8 +439,8 @@
 						<kbd class="palette-kbd ml-auto">{formatShortcut(palette.shortcut)}</kbd>
 					</button>
 				</aside>
-			</div>
-		{/if}
+			{/if}
+		</div>
 	</div>
 </div>
 

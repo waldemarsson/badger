@@ -8,7 +8,7 @@ import { EditorState, type Extension } from '@codemirror/state';
 import { drawSelection, EditorView, keymap, placeholder } from '@codemirror/view';
 import { blockPreview } from '#lib/editor/blocks.js';
 import { focusTracking } from '#lib/editor/focus.js';
-import { noteLinks } from '#lib/editor/links.js';
+import { noteLinks, type LinkFollowScope } from '#lib/editor/links.js';
 import { livePreview } from '#lib/editor/live-preview.js';
 import { slashMenu } from '#lib/editor/slash.js';
 import { noteTheme } from '#lib/editor/theme.js';
@@ -18,7 +18,11 @@ import type { LinkFollow } from '#lib/note-links.js';
  * Extensions shared by every note's state; `onDocChange` gets the new body after each edit,
  * `onFollow` a ⌘-clicked tag, chip or wikilink.
  */
-export function noteExtensions(onDocChange: (body: string) => void, onFollow: (link: LinkFollow) => void): Extension[] {
+export function noteExtensions(
+	onDocChange: (body: string) => void,
+	onFollow: (link: LinkFollow) => void,
+	followScope: LinkFollowScope = 'all'
+): Extension[] {
 	return [
 		history(),
 		drawSelection(),
@@ -32,7 +36,7 @@ export function noteExtensions(onDocChange: (body: string) => void, onFollow: (l
 		placeholder('Start writing…'),
 		focusTracking,
 		livePreview,
-		noteLinks(onFollow),
+		noteLinks(onFollow, followScope),
 		blockPreview,
 		slashMenu,
 		noteTheme,

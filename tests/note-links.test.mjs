@@ -183,3 +183,65 @@ test('chipFor resolves known issue and todo ids only', () => {
 	assert.equal(chipFor('issue/3', index), null);
 	assert.equal(chipFor('acme', index), null);
 });
+
+// ── extractRefs with ranges (the editor scans only its visible lines) ──
+
+/** The full result's refs on the lines that [from, to] touches. */
+const refsOnLines = (md, from, to) => {
+	const start = md.lastIndexOf('\n', from - 1) + 1;
+	const nl = md.indexOf('\n', to);
+	const end = nl < 0 ? md.length : nl;
+	return extractRefs(md).filter((r) => r.from >= start && r.to <= end);
+};
+
+test('extractRefs with ranges equals the full result on those lines (every case, every line pair)', () => {
+	for (const c of cases.extract) {
+		const md = c.md;
+		const starts = [0];
+		for (let i = 0; i < md.length; i++) if (md[i] === '\n') starts.push(i + 1);
+		for (let a = 0; a < starts.length; a++) {
+			for (let b = a; b < starts.length; b++) {
+				// Mid-line positions on purpose: ranges widen to whole lines.
+				const from = Math.min(md.length, starts[a] + 1);
+				const to = Math.min(md.length, starts[b] + 2);
+				assert.deepEqual(extractRefs(md, undefined, [{ from, to }]), refsOnLines(md, from, to), `${c.name} [${from}, ${to}]`);
+			}
+		}
+	}
+});
+
+test('extractRefs with several unsorted, overlapping ranges merges them', () => {
+	const md = ['#a [[One]]', '```', '#code [[no]]', '```', '#b', 'text', '#c [[Two|alias]]'].join('\n');
+	const all = extractRefs(md);
+	const line = (n) => md.split('\n').slice(0, n).join('\n').length + (n ? 1 : 0); // start of line n (0-based)
+	const ranges = [
+		{ from: line(6), to: md.length },
+		{ from: line(0), to: line(0) + 3 },
+		{ from: line(2) + 1, to: line(4) },
+		{ from: line(4), to: line(4) }
+	];
+	assert.deepEqual(
+		extractRefs(md, undefined, ranges).map((r) => md.slice(r.from, r.to)),
+		['#a', '[[One]]', '#b', '#c', '[[Two|alias]]']
+	);
+	assert.deepEqual(extractRefs(md, undefined, [{ from: 0, to: md.length }]), all);
+	assert.deepEqual(extractRefs(md, undefined, []), []);
+	assert.deepEqual(extractRefs('', undefined, [{ from: 0, to: 0 }]), []);
+});
+
+test('extractRefs with ranges: a code block or reference definition outside the range still applies', () => {
+	const fence = ['```', 'x', '#inside [[in]]', '```', '#after'].join('\n');
+	const from = fence.indexOf('#inside');
+	assert.deepEqual(extractRefs(fence, undefined, [{ from, to: fence.length }]).map((r) => fence.slice(r.from, r.to)), ['#after']);
+
+	const ref = ['[[Foo]] and [Bar] #t', '', 'filler', '', '[Foo]: https://a.se'].join('\n');
+	const refs = extractRefs(ref, undefined, [{ from: 0, to: 3 }]).map((r) => ref.slice(r.from, r.to));
+	assert.deepEqual(refs, ['#t'], 'defined [Foo] is a real link, so [[Foo]] is not a wikilink');
+});
+
+test('reference definitions inside lists and quotes are found', () => {
+	for (const def of ['- [Foo]: https://a.se', '> [Foo]: https://a.se', '1. item\n\n   [Foo]: https://a.se']) {
+		const md = `[[Foo]] #t\n\n${def}`;
+		assert.deepEqual(actual(md), [{ kind: 'tag', target: 't', text: '#t' }], def);
+	}
+});

@@ -59,14 +59,21 @@ const blockedNodes = new Set([
 
 const normalizeLabel = (label: string) => label.replace(/\s+/g, ' ').trim().toLowerCase();
 
-/** Reference labels defined in the document (`[label]: url`). */
+/** Blocks that can hold a reference definition: the parser only adds them to these. */
+const labelContainers = new Set(['Document', 'Blockquote', 'BulletList', 'OrderedList', 'ListItem']);
+
+/** Reference labels defined in the document (`[label]: url`). Skips the inside of every other block. */
 function definedLabels(src: string, tree: Tree): Set<string> {
 	const labels = new Set<string>();
+	// A definition always has `]:` (no space allowed between them); most notes have none.
+	if (!src.includes(']:')) return labels;
 	tree.iterate({
 		enter(node) {
-			if (node.name !== 'LinkReference') return;
-			const label = node.node.getChild('LinkLabel');
-			if (label) labels.add(normalizeLabel(src.slice(label.from + 1, label.to - 1)));
+			if (labelContainers.has(node.name)) return;
+			if (node.name === 'LinkReference') {
+				const label = node.node.getChild('LinkLabel');
+				if (label) labels.add(normalizeLabel(src.slice(label.from + 1, label.to - 1)));
+			}
 			return false;
 		}
 	});
@@ -90,24 +97,38 @@ function isRealLink(src: string, node: SyntaxNode, labels: Set<string>): boolean
 	return labels.has(normalizeLabel(src.slice(open.to, close.from)));
 }
 
-/** All tags and wikilinks in `src`, in source order. `tree` defaults to a GFM parse. */
-export function extractRefs(src: string, tree: Tree = markdownParser.parse(src)): NoteRef[] {
-	const labels = definedLabels(src, tree);
-	const blocked: [number, number][] = [];
-	tree.iterate({
-		enter(node) {
-			if (blockedNodes.has(node.name)) {
-				blocked.push([node.from, node.to]);
-				return false;
-			}
-			if ((node.name === 'Link' || node.name === 'Image') && isRealLink(src, node.node, labels)) {
-				blocked.push([node.from, node.to]);
-				return false;
-			}
-		}
-	});
-	blocked.sort((a, b) => a[0] - b[0]);
+/** A span of the scanned text: `from` inclusive, `to` exclusive. */
+export interface TextRange {
+	from: number;
+	to: number;
+}
 
+/** `ranges` widened to whole lines (refs never cross a line), sorted and merged. */
+function wholeLines(src: string, ranges: readonly TextRange[]): TextRange[] {
+	const spans = ranges
+		.map(({ from, to }) => {
+			const at = Math.max(0, Math.min(from, src.length));
+			const start = at === 0 ? 0 : src.lastIndexOf('\n', at - 1) + 1;
+			const end = src.indexOf('\n', Math.max(start, Math.min(to, src.length)));
+			return { from: start, to: end < 0 ? src.length : end };
+		})
+		.sort((a, b) => a.from - b.from);
+	const out: TextRange[] = [];
+	for (const span of spans) {
+		const last = out[out.length - 1];
+		if (last && span.from <= last.to + 1) last.to = Math.max(last.to, span.to);
+		else out.push({ ...span });
+	}
+	return out;
+}
+
+/**
+ * All tags and wikilinks in `src`, in source order. `tree` defaults to a GFM parse.
+ * With `ranges`, only the lines they touch are walked and scanned: the result is the full
+ * result's refs on those lines (the editor passes its visible ranges).
+ */
+export function extractRefs(src: string, tree: Tree = markdownParser.parse(src), ranges?: readonly TextRange[]): NoteRef[] {
+	const labels = definedLabels(src, tree);
 	const out: NoteRef[] = [];
 	const scanSegment = (from: number, to: number) => {
 		// Lines are separate runs, as in the Rust extractor.
@@ -119,12 +140,32 @@ export function extractRefs(src: string, tree: Tree = markdownParser.parse(src))
 			}
 		}
 	};
-	let pos = 0;
-	for (const [from, to] of blocked) {
-		if (from > pos) scanSegment(pos, from);
-		pos = Math.max(pos, to);
+	for (const span of ranges ? wholeLines(src, ranges) : [{ from: 0, to: src.length }]) {
+		const blocked: [number, number][] = [];
+		tree.iterate({
+			from: span.from,
+			to: span.to,
+			enter(node) {
+				if (blockedNodes.has(node.name)) {
+					blocked.push([node.from, node.to]);
+					return false;
+				}
+				if ((node.name === 'Link' || node.name === 'Image') && isRealLink(src, node.node, labels)) {
+					blocked.push([node.from, node.to]);
+					return false;
+				}
+			}
+		});
+		blocked.sort((a, b) => a[0] - b[0]);
+
+		let pos = span.from;
+		for (const [from, to] of blocked) {
+			if (from > pos) scanSegment(pos, Math.min(from, span.to));
+			pos = Math.max(pos, to);
+			if (pos >= span.to) break;
+		}
+		if (pos < span.to) scanSegment(pos, span.to);
 	}
-	if (pos < src.length) scanSegment(pos, src.length);
 	return out;
 }
 

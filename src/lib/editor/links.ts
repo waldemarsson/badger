@@ -22,6 +22,7 @@ import {
 	type LinkIndex,
 	type LinkTargetData,
 	type NoteRef,
+	type TextRange,
 	type TagOption
 } from '#lib/note-links.js';
 import { isCodeAt } from '#lib/slash-menu.js';
@@ -53,12 +54,32 @@ export const linkDataField = StateField.define<LinkData>({
 /** Tags and wikilinks of the document, parsed once per document and syntax tree. */
 const refCache = new WeakMap<Tree, { doc: Text; refs: NoteRef[] }>();
 
+/** All of the document's refs (the `#` completion's local tags). */
 function refsOf(state: EditorState): NoteRef[] {
 	const tree = syntaxTree(state);
 	const cached = refCache.get(tree);
 	if (cached && cached.doc === state.doc) return cached.refs;
 	const refs = extractRefs(state.doc.toString(), tree);
 	refCache.set(tree, { doc: state.doc, refs });
+	return refs;
+}
+
+/** The last `refsIn` result per tree, reused while only the selection moves. */
+const visibleCache = new WeakMap<Tree, { doc: Text; key: string; refs: NoteRef[] }>();
+
+/**
+ * The refs on the lines `ranges` touch. Scanning only those keeps typing in a long note
+ * cheap: the decorations are rebuilt on every keystroke, but only for the viewport.
+ */
+function refsIn(state: EditorState, ranges: readonly TextRange[]): NoteRef[] {
+	const tree = syntaxTree(state);
+	const cached = refCache.get(tree);
+	if (cached && cached.doc === state.doc) return cached.refs;
+	const key = ranges.map((r) => `${r.from}-${r.to}`).join(',');
+	const visible = visibleCache.get(tree);
+	if (visible && visible.doc === state.doc && visible.key === key) return visible.refs;
+	const refs = extractRefs(state.doc.toString(), tree, ranges);
+	visibleCache.set(tree, { doc: state.doc, key, refs });
 	return refs;
 }
 
@@ -240,7 +261,7 @@ function build(view: EditorView): { decorations: DecorationSet; atomic: Decorati
 		atomic.push(hidden.range(from, to));
 	};
 
-	for (const ref of refsOf(state)) {
+	for (const ref of refsIn(state, visible)) {
 		if (!visible.some((r) => ref.to >= r.from && ref.from <= r.to)) continue;
 		const rendered = !isRevealed(ref.from); // markers hidden, chips drawn
 		if (ref.kind === 'tag') {

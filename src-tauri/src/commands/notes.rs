@@ -2704,4 +2704,86 @@ mod tests {
         queue_all_after_tag_rename(&pool, &state).await;
         assert!(state.queued().is_empty());
     }
+
+    // ── Timing (ignored): cargo test -p badger perf_ -- --ignored --nocapture --test-threads=1 ──
+
+    /// One ~50-line markdown section: headings, setext, lists, a table, code, #tags, [[links]].
+    fn perf_section(i: usize) -> String {
+        format!(
+            "## Section {i}\n\nNotes for sprint {i} with #planning and #team/backend, see [[Roadmap]] and [[Meeting {i}]].\n\
+             Follow-up on #issue/{} and #todo/{}; **bold**, *italic*, `code` and a [link](https://example.com/{i}).\n\n\
+             Setext heading {i}\n==================\n\n- first bullet with #tag{i}\n- second bullet [[Design doc|the design]]\n\
+             \x20 - nested bullet\n- [ ] open task\n- [x] done task\n\n1. one\n2. two\n3. three\n\n\
+             | Name | Owner | Status |\n| :--- | :---: | ---: |\n| Item {i}a | Alice | **open** |\n| Item {i}b | Bob | `done` |\n\n\
+             > A quote with #quoted-tag and [[Quoted note]].\n\n```js\nconst section = {i};\n// #not-a-tag [[not a link]]\n```\n\n\
+             Smaller heading {i}\n------------------\n\nPlain paragraph text that wraps around a bit to make the line long enough.\n\
+             An escaped \\#nottag.\n\n### Details\n\n- alpha\n- beta\n- gamma\n\nFinal paragraph with #misc and [[Unresolved page]].\n\n---\n\n",
+            i % 5 + 1,
+            i % 3 + 1
+        )
+    }
+
+    /// A body of at least `lines` lines.
+    fn perf_body(lines: usize) -> String {
+        let mut body = String::from("# Perf note\n\n");
+        let mut i = 1;
+        while body.lines().count() < lines {
+            body.push_str(&perf_section(i));
+            i += 1;
+        }
+        body
+    }
+
+    fn perf_report(name: &str, mut ms: Vec<f64>) {
+        ms.sort_by(f64::total_cmp);
+        let p = |q: f64| ms[((q * ms.len() as f64).ceil() as usize).clamp(1, ms.len()) - 1];
+        println!(
+            "{name}: n={} p50={:.2} ms p95={:.2} ms max={:.2} ms",
+            ms.len(),
+            p(0.5),
+            p(0.95),
+            ms[ms.len() - 1]
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "timing; run with --ignored --nocapture"]
+    async fn perf_update_note_body_5000_lines() {
+        let pool = crate::test_db().await;
+        let mut body = perf_body(5000);
+        println!("body: {} lines, {} bytes", body.lines().count(), body.len());
+        let id = note_with("Perf", &body, &pool).await;
+        let mut ms = Vec::new();
+        for i in 0..30 {
+            body.push(if i % 2 == 0 { 'x' } else { ' ' });
+            let start = std::time::Instant::now();
+            inner_update_note_body(id, &body, &pool).await.unwrap();
+            ms.push(start.elapsed().as_secs_f64() * 1000.0);
+        }
+        perf_report("update_note_body (5,000 lines)", ms);
+        assert_eq!(inner_get_note(id, &pool).await.unwrap().body, body);
+    }
+
+    #[tokio::test]
+    #[ignore = "timing; run with --ignored --nocapture"]
+    async fn perf_list_notes_2000_notes() {
+        let pool = crate::test_db().await;
+        let body = perf_body(50);
+        let mut tx = pool.begin().await.unwrap();
+        for i in 0..2000 {
+            insert_note_in(&format!("Note {i}"), &body, None, &mut tx)
+                .await
+                .unwrap();
+        }
+        tx.commit().await.unwrap();
+        println!("2,000 notes, {} bytes each", body.len());
+        let mut ms = Vec::new();
+        for _ in 0..20 {
+            let start = std::time::Instant::now();
+            let notes = inner_list_notes(&pool).await.unwrap();
+            ms.push(start.elapsed().as_secs_f64() * 1000.0);
+            assert_eq!(notes.len(), 2000);
+        }
+        perf_report("list_notes (2,000 notes)", ms);
+    }
 }

@@ -36,6 +36,15 @@
     "macOS": {
       "signingIdentity": "-",
       "minimumSystemVersion": "13.4"
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "REPLACE_WITH_CONTENTS_OF_BADGER_KEY_PUB",
+      "endpoints": [
+        "https://github.com/waldemarsson/badger/releases/latest/download/latest.json"
+      ]
     }
   }
 }

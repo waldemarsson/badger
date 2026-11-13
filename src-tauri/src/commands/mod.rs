@@ -17,3 +17,4 @@ pub mod settings;
 pub mod time_entries;
 pub mod todos;
 pub mod travel;
+pub mod updater;

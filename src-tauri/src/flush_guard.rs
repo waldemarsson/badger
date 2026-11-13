@@ -100,7 +100,9 @@ pub fn flush_done(guard: State<'_, FlushGuard>) {
     }
 }
 
-async fn flush_frontend<R: Runtime>(app: &AppHandle<R>) {
+/// Asks the frontend to flush and waits (bounded by [`FLUSH_TIMEOUT`]); afterwards every
+/// close or exit request passes straight through.
+pub(crate) async fn flush_frontend<R: Runtime>(app: &AppHandle<R>) {
     let Some(guard) = app.try_state::<FlushGuard>() else {
         return;
     };

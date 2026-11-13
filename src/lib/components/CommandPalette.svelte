@@ -595,6 +595,7 @@
 		<span class="min-w-0 flex-1">
 			<span class="flex min-w-0 items-center gap-2">
 				<span class="min-w-0 truncate">{@render marked(hit.title_marked)}</span>
+				{#if hit.kind === 'json'}<span class="note-kind-badge">JSON</span>{/if}
 				{#if hit.related}
 					<span class="note-related mt-0 shrink-0" title="Found by meaning: no exact word match"><Sparkles size={10} class="shrink-0" />Related</span>
 				{/if}

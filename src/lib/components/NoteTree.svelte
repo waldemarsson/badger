@@ -17,10 +17,11 @@
 		type MovePlan,
 		type TreeRow
 	} from '#lib/folders.js';
-	import type { Folder, NoteSummary } from '#lib/types.js';
+	import type { Folder, NoteKind, NoteSummary } from '#lib/types.js';
 	import NameInput from '#lib/components/NameInput.svelte';
 	import ContextMenu, { type MenuItem } from '#lib/components/ContextMenu.svelte';
 	import Bell from '@lucide/svelte/icons/bell';
+	import Braces from '@lucide/svelte/icons/braces';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import FilePlus from '@lucide/svelte/icons/file-plus';
 	import FileText from '@lucide/svelte/icons/file-text';
@@ -65,6 +66,7 @@
 		onmoveto,
 		onmove,
 		onremind,
+		onkind,
 		onexit
 	}: {
 		tree: FolderTree;
@@ -99,6 +101,8 @@
 		onmove: (item: DragItem, plan: MovePlan) => void;
 		/** Context menu "Remind me…" on a note (omitted: no item). */
 		onremind?: (note: NoteSummary) => void;
+		/** Context menu "Switch to JSON" / "Switch to Markdown" (omitted: no item). */
+		onkind?: (note: NoteSummary, kind: NoteKind) => void;
 		/** ↑ on the "Notes" root row (↑ on the first tree row focuses the root row). */
 		onexit: () => void;
 	} = $props();
@@ -378,6 +382,13 @@
 				items: [
 					{ label: n.pinned ? 'Unpin' : 'Pin', icon: n.pinned ? PinOff : Pin, run: () => onpin(n) },
 					...(onremind ? [{ label: 'Remind me…', icon: Bell, run: () => onremind(n) }] : []),
+					...(onkind
+						? [
+								n.kind === 'json'
+									? { label: 'Switch to Markdown', icon: FileText, run: () => onkind(n, 'markdown') }
+									: { label: 'Switch to JSON', icon: Braces, run: () => onkind(n, 'json') }
+							]
+						: []),
 					{ label: 'Move to…', icon: FolderInput, run: () => onmoveto({ kind: 'note', id: n.id, folderId: row.parentId }, n.title) },
 					{ label: 'Delete', icon: Trash2, danger: true, run: () => askDeleteNote(n.id) }
 				]
@@ -811,7 +822,10 @@
 								in:fade={{ duration: 150 }}
 							></span>
 						{/if}
-						<p class="note-row-title pr-6">{n.title}</p>
+						<p class="note-row-title note-row-title-line pr-6">
+							<span class="min-w-0 truncate">{n.title}</span>
+							{#if n.kind === 'json'}<span class="note-kind-badge">JSON</span>{/if}
+						</p>
 						{#if n.excerpt}
 							<p class="note-row-excerpt">{n.excerpt}</p>
 						{/if}

@@ -15,7 +15,10 @@ const {
 	splitTableRow,
 	parseTableAlign,
 	parseTable,
-	parseInline
+	parseInline,
+	utf8Bytes,
+	overJsonLimit,
+	JSON_MAX_BYTES
 } = await import('../src/lib/notes.ts');
 
 const note = (id, updated_at, extra = {}) => ({
@@ -31,6 +34,22 @@ const note = (id, updated_at, extra = {}) => ({
 });
 
 const ids = (rows) => rows.map((r) => r.id);
+
+// ── JSON notes ────────────────────────────────────────────────────────────────
+
+test('utf8Bytes counts UTF-8 bytes like Rust does', () => {
+	for (const text of ['', 'abc', 'åäö', '€', '🚀', 'a🚀b', '\ud800x', '{"k": "ö"}']) {
+		assert.equal(utf8Bytes(text), Buffer.byteLength(text, 'utf8'), JSON.stringify(text));
+	}
+});
+
+test('overJsonLimit: JSON over 5 MB in bytes; markdown never', () => {
+	const exact = 'x'.repeat(JSON_MAX_BYTES);
+	assert.equal(overJsonLimit('json', exact), false);
+	assert.equal(overJsonLimit('json', exact + 'x'), true);
+	assert.equal(overJsonLimit('json', 'å'.repeat(JSON_MAX_BYTES / 2 + 1)), true, 'counted in bytes');
+	assert.equal(overJsonLimit('markdown', exact + 'x'), false);
+});
 
 // ── List order and filter ─────────────────────────────────────────────────────
 

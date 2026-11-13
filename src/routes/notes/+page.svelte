@@ -6,7 +6,8 @@
 	import { onMount, tick, untrack } from 'svelte';
 	import { flip } from 'svelte/animate';
 	import { fade } from 'svelte/transition';
-	import { formatNoteDate, moveNoteLocally, neighborAfterRemoval, plainRows, searchRows, sortNotes, upsertNote } from '#lib/notes.js';
+	import { formatNoteDate, JSON_TOO_LARGE, moveNoteLocally, neighborAfterRemoval, overJsonLimit, plainRows, searchRows, sortNotes, upsertNote } from '#lib/notes.js';
+	import type { JsonFormatMode } from '#lib/json-format.js';
 	import type { Segment } from '#lib/notes.js';
 	import { NoteSaveQueue } from '#lib/note-save-queue.js';
 	import { registerFlushHandler } from '#lib/flush-guard.js';
@@ -27,7 +28,7 @@
 		type DragItem,
 		type MovePlan
 	} from '#lib/folders.js';
-	import type { Backlink, Folder, LinkTargets, Note, NoteHit, NoteSummary, RenamedNote, RenderMode, TagSuggestion } from '#lib/types.js';
+	import type { Backlink, Folder, LinkTargets, Note, NoteHit, NoteKind, NoteSummary, RenamedNote, RenderMode, TagSuggestion } from '#lib/types.js';
 	import NoteEditor from '#lib/components/NoteEditor.svelte';
 	import NoteReader from '#lib/components/NoteReader.svelte';
 	import NoteTree from '#lib/components/NoteTree.svelte';
@@ -36,6 +37,7 @@
 	import { formatRemindAt } from '#lib/reminders.js';
 	import { showToast } from '#lib/palette-state.svelte.js';
 	import BookOpen from '@lucide/svelte/icons/book-open';
+	import Braces from '@lucide/svelte/icons/braces';
 	import Check from '@lucide/svelte/icons/check';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import CircleAlert from '@lucide/svelte/icons/circle-exclamation-point';
@@ -89,8 +91,13 @@
 	let queueVersion = $state(0);
 	const queue = new NoteSaveQueue<NoteSummary>({
 		save: (id, body) => invoke<NoteSummary>('update_note_body', { id, body }),
-		onSaved: (_id, summary) => applySummary(summary),
-		onChange: () => queueVersion++
+		onSaved: (id, summary) => {
+			if (id === current?.id) openedOverLimit = false;
+			applySummary(summary);
+		},
+		onChange: () => queueVersion++,
+		// Over the JSON limit: resending the same text can't work; the next edit is tried.
+		isPermanent: (e) => String(e) === JSON_TOO_LARGE
 	});
 
 	const saveStatus = $derived.by(() => {
@@ -99,11 +106,13 @@
 	});
 	const failedSaves = $derived.by(() => {
 		void queueVersion;
-		return queue.failed();
+		// The open note's JSON limit error shows with its own action (capError).
+		return queue.failed().filter((f) => !(f.id === current?.id && current.kind === 'json' && f.error === JSON_TOO_LARGE));
 	});
 
 	function onBodyChange(id: number, body: string): void {
 		navError = '';
+		formatError = '';
 		queue.edit(id, body);
 	}
 
@@ -116,9 +125,56 @@
 		return notes.find((n) => n.id === id)?.title ?? 'a note';
 	}
 
+	// ── JSON notes: mode switch, Format / Minify, size limit ──────────────────────
+
+	let formatError = $state(''); // "Invalid JSON: …" from Format, Minify or ⇧⌥F
+	let kindError = $state(''); // a failed switch of the open note
+	let openedOverLimit = $state(false); // the open JSON note was already over the limit (a restore)
+
+	/** The open JSON note can't be saved: over the limit (shown with "Switch to Markdown"). */
+	const capError = $derived.by(() => {
+		void queueVersion;
+		if (current?.kind !== 'json') return false;
+		return openedOverLimit || queue.error(current.id) === JSON_TOO_LARGE;
+	});
+
+	/**
+	 * Switches a note between markdown and JSON. The open note's text (unsaved edits too) is
+	 * stored with the switch, so it can't fail on a separate save (a JSON note over the limit
+	 * can always become markdown). The text itself never changes.
+	 */
+	async function setKind(id: number, kind: NoteKind): Promise<void> {
+		const isOpen = current?.id === id;
+		actionError = '';
+		kindError = '';
+		try {
+			await queue.flush(); // a save in flight lands first; a failed one is carried below
+			const body = current?.id === id ? (editor?.text() ?? null) : null;
+			const summary = await invoke<NoteSummary>('set_note_kind', { id, kind, body });
+			if (body !== null) queue.markSaved(id, body);
+			applySummary(summary);
+			if (current?.id === id) {
+				editor?.setKind(summary.kind);
+				formatError = '';
+				if (summary.kind === 'markdown') openedOverLimit = false;
+				if (reading && summary.kind === 'markdown') void renderCurrent();
+			}
+			void refreshLinks(); // its tags left the index or came back
+		} catch (e) {
+			if (isOpen) kindError = String(e);
+			else actionError = String(e);
+		}
+	}
+
+	function formatCurrent(mode: JsonFormatMode): void {
+		formatError = editor?.format(mode) ?? '';
+	}
+
 	// ── Read view (⌘E) and copy as HTML ───────────────────────────────────────────
 
 	let reading = $state(false); // survives note switches, not page loads
+	/** JSON notes have no read view: the editor shows while `reading` stays on for markdown notes. */
+	const readView = $derived(reading && current?.kind === 'markdown');
 	let rendered = $state<{ id: number; html: string } | null>(null);
 	let renderError = $state('');
 	let renderSeq = 0;
@@ -146,7 +202,7 @@
 	}
 
 	async function toggleReading(): Promise<void> {
-		if (!current) return;
+		if (!current || current.kind === 'json') return; // ⌘E does nothing in JSON notes
 		if (titleInput && document.activeElement === titleInput) await commitTitle(true);
 		reading = !reading;
 		if (reading) {
@@ -363,15 +419,15 @@
 		const summary = local ? { ...result, folder_id: local.folder_id, position: local.position } : result;
 		notes = upsertNote(notes, summary);
 		if (current?.id === summary.id) {
-			const { title, pinned, updated_at, folder_id } = summary;
-			current = { ...current, title, pinned, updated_at, folder_id };
+			const { title, pinned, updated_at, folder_id, kind } = summary;
+			current = { ...current, title, pinned, updated_at, folder_id, kind };
 		}
 	}
 
 	/** List row for a just-created (empty) note. */
 	function summaryOf(note: Note): NoteSummary {
-		const { id, folder_id, title, pinned, created_at, updated_at, position } = note;
-		return { id, folder_id, title, excerpt: '', pinned, created_at, updated_at, position };
+		const { id, folder_id, title, pinned, created_at, updated_at, position, kind } = note;
+		return { id, folder_id, title, excerpt: '', pinned, created_at, updated_at, position, kind };
 	}
 
 	// ── Folders ───────────────────────────────────────────────────────────────────
@@ -595,9 +651,12 @@
 		lastFailedTitle = null;
 		confirmingDelete = false;
 		viewError = '';
-		editor?.open(note.id, note.body);
+		formatError = '';
+		kindError = '';
+		openedOverLimit = overJsonLimit(note.kind, note.body);
+		editor?.open(note.id, note.body, note.kind);
 		setUrl(note.id);
-		if (reading) void renderCurrent();
+		if (reading && note.kind === 'markdown') void renderCurrent();
 		void loadBacklinks(note.id);
 		void refreshLinks(); // other notes' tags and titles may have changed since
 	}
@@ -609,6 +668,9 @@
 		titleError = '';
 		confirmingDelete = false;
 		viewError = '';
+		formatError = '';
+		kindError = '';
+		openedOverLimit = false;
 		renderSeq++;
 		rendered = null;
 		renderError = '';
@@ -807,7 +869,7 @@
 		if (e.isComposing) return;
 		if (e.key === 'Enter') {
 			e.preventDefault();
-			if (await commitTitle()) (reading ? reader : editor)?.focus();
+			if (await commitTitle()) (readView ? reader : editor)?.focus();
 		} else if (e.key === 'Escape' && current) {
 			e.preventDefault();
 			titleDraft = current.title;
@@ -987,6 +1049,20 @@
 	{/each}
 {/snippet}
 
+{#snippet kindToggle(note: Note)}
+	<!-- Pressed: a JSON note. The text never changes when switching. -->
+	<button
+		type="button"
+		class="btn-icon-ghost {note.kind === 'json' ? 'text-sky-600 dark:text-sky-400' : ''}"
+		title={note.kind === 'json' ? 'JSON note: switch to Markdown' : 'Switch to JSON'}
+		aria-label={note.kind === 'json' ? 'Switch note to Markdown' : 'Switch note to JSON'}
+		aria-pressed={note.kind === 'json'}
+		onclick={() => void setKind(note.id, note.kind === 'json' ? 'markdown' : 'json')}
+	>
+		<Braces size={16} />
+	</button>
+{/snippet}
+
 {#snippet marked(segments: Segment[])}
 	{#each segments as seg, i (i)}{#if seg.hit}<mark class="search-hit">{seg.text}</mark>{:else}{seg.text}{/if}{/each}
 {/snippet}
@@ -1086,6 +1162,7 @@
 							ondeletenote={deleteNote}
 							onmoveto={openMove}
 							onremind={openRemind}
+							onkind={(n, kind) => void setKind(n.id, kind)}
 							onmove={(item, plan) => void moveItem(item, plan)}
 							onexit={() => searchInput?.focus()}
 						/>
@@ -1126,7 +1203,10 @@
 										onclick={() => void select(n.id)}
 										onkeydown={(e) => onRowKeydown(e, n.id)}
 									>
-										<p class="note-row-title pr-6">{@render marked(title)}</p>
+										<p class="note-row-title note-row-title-line pr-6">
+											<span class="min-w-0 truncate">{@render marked(title)}</span>
+											{#if n.kind === 'json'}<span class="note-kind-badge">JSON</span>{/if}
+										</p>
 										{#if related}
 											<p class="note-related" title="Found by meaning: no exact word match"><Sparkles size={11} class="shrink-0" />Related</p>
 										{/if}
@@ -1212,29 +1292,36 @@
 								</div>
 							{:else}
 								<div class="flex shrink-0 items-center gap-0.5">
-									<button
-										type="button"
-										class="btn-icon-ghost"
-										title={copied ? 'Copied' : 'Copy as HTML'}
-										aria-label={copied ? 'Copied as HTML' : 'Copy as HTML'}
-										onclick={copyHtml}
-									>
-										{#if copied}
-											<span class="inline-flex text-emerald-500 dark:text-emerald-400" in:fade={{ duration: 150 }}><Check size={16} /></span>
-										{:else}
-											<Copy size={16} />
-										{/if}
-									</button>
-									<button
-										type="button"
-										class="btn-icon-ghost {reading ? 'text-sky-600 dark:text-sky-400' : ''}"
-										title={reading ? 'Edit (⌘E)' : 'Read (⌘E)'}
-										aria-label={reading ? 'Edit note' : 'Read note'}
-										aria-pressed={reading}
-										onclick={() => void toggleReading()}
-									>
-										{#if reading}<PencilLine size={16} />{:else}<BookOpen size={16} />{/if}
-									</button>
+									{#if current.kind === 'json'}
+										<button type="button" class="json-action" title="Format JSON (⇧⌥F)" onclick={() => formatCurrent('format')}>Format</button>
+										<button type="button" class="json-action" title="Minify JSON" onclick={() => formatCurrent('minify')}>Minify</button>
+									{/if}
+									{@render kindToggle(current)}
+									{#if current.kind === 'markdown'}
+										<button
+											type="button"
+											class="btn-icon-ghost"
+											title={copied ? 'Copied' : 'Copy as HTML'}
+											aria-label={copied ? 'Copied as HTML' : 'Copy as HTML'}
+											onclick={copyHtml}
+										>
+											{#if copied}
+												<span class="inline-flex text-emerald-500 dark:text-emerald-400" in:fade={{ duration: 150 }}><Check size={16} /></span>
+											{:else}
+												<Copy size={16} />
+											{/if}
+										</button>
+										<button
+											type="button"
+											class="btn-icon-ghost {reading ? 'text-sky-600 dark:text-sky-400' : ''}"
+											title={reading ? 'Edit (⌘E)' : 'Read (⌘E)'}
+											aria-label={reading ? 'Edit note' : 'Read note'}
+											aria-pressed={reading}
+											onclick={() => void toggleReading()}
+										>
+											{#if reading}<PencilLine size={16} />{:else}<BookOpen size={16} />{/if}
+										</button>
+									{/if}
 									<button
 										type="button"
 										class="btn-icon-ghost"
@@ -1269,6 +1356,21 @@
 						{#if titleError}
 							<p class="form-error -mt-1.5 pb-2" role="alert" transition:fade={{ duration: 150 }}>{titleError}</p>
 						{/if}
+						{#if capError}
+							<div class="pb-3">
+								<div class="notes-inline-error" role="alert" transition:fade={{ duration: 150 }}>
+									<CircleAlert size={14} class="mt-0.5 shrink-0" />
+									<span class="min-w-0 flex-1">{JSON_TOO_LARGE}, so changes to this note aren't saved. Shorten it, or switch it to Markdown, which has no limit.</span>
+									<button type="button" class="shrink-0 font-semibold underline-offset-2 hover:underline" onclick={() => current && void setKind(current.id, 'markdown')}>Switch to Markdown</button>
+								</div>
+							</div>
+						{/if}
+						{#if kindError}
+							<div class="pb-3">{@render dismissible(kindError, () => (kindError = ''))}</div>
+						{/if}
+						{#if formatError}
+							<div class="pb-3">{@render dismissible(formatError, () => (formatError = ''))}</div>
+						{/if}
 						{#if navError || failedSaves.length}
 							<div class="pb-3">{@render saveAlerts()}</div>
 						{/if}
@@ -1297,7 +1399,7 @@
 						</button>
 					</div>
 				{/if}
-				{#if current && reading}
+				{#if current && readView}
 					{#if renderError}
 						<div class="px-6 pt-4">{@render dismissible(`Couldn't show the read view: ${renderError}`, () => void toggleReading())}</div>
 					{:else if rendered?.id === current.id}
@@ -1305,7 +1407,13 @@
 					{/if}
 				{/if}
 				<!-- Hidden, not unmounted, while reading: it keeps each note's state and mounts the code colors. -->
-				<NoteEditor bind:this={editor} onchange={onBodyChange} onfollow={follow} class={current && !reading ? 'min-h-0 flex-1' : 'hidden'} />
+				<NoteEditor
+					bind:this={editor}
+					onchange={onBodyChange}
+					onfollow={follow}
+					onformat={(error) => (formatError = error ?? '')}
+					class={current && !readView ? 'min-h-0 flex-1' : 'hidden'}
+				/>
 				{#if current}
 					<!-- Notes linking here ([[this title]]); collapsed to a one-line bar by default. -->
 					<div class="notes-backlinks">

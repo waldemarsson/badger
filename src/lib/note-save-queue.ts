@@ -6,6 +6,8 @@
 // - One save per note is in flight; edits made meanwhile queue and the latest body wins.
 // - A body equal to the last saved body is never sent.
 // - Failed saves keep the body dirty (with an error) until a later save succeeds.
+// - A body rejected for good (a validation error, e.g. over the JSON size limit) is not
+//   sent again; the next different body is.
 // - A "Note not found" response, or any response for a forgotten note, is ignored.
 
 export const SAVE_DELAY_MS = 800;
@@ -21,6 +23,8 @@ export interface SaveQueueOptions<T> {
 	onChange?: () => void;
 	/** True when the error means the note no longer exists. */
 	isGone?: (error: unknown) => boolean;
+	/** True when the error rejects this body for good: it isn't retried, a new edit is. */
+	isPermanent?: (error: unknown) => boolean;
 }
 
 export class NoteSaveQueue<T> {
@@ -31,6 +35,8 @@ export class NoteSaveQueue<T> {
 	/** Latest body not yet stored (debouncing, queued behind a save, or failed). */
 	private readonly dirty = new Map<number, string>();
 	private readonly errors = new Map<number, string>();
+	/** Body last rejected for good, per note (not sent again). */
+	private readonly rejected = new Map<number, string>();
 	private readonly runners = new Map<number, Promise<void>>();
 	/** Bumped by forget(), so responses for an older generation are dropped. */
 	private readonly epochs = new Map<number, number>();
@@ -69,12 +75,28 @@ export class NoteSaveQueue<T> {
 		return this.errors.size === 0;
 	}
 
+	/**
+	 * Records that `body` was stored by another command (e.g. a kind switch that saved the
+	 * pending text): it is no longer dirty, and its error clears.
+	 */
+	markSaved(id: number, body: string): void {
+		this.saved.set(id, body);
+		this.rejected.delete(id);
+		if (this.dirty.get(id) === body) {
+			this.dirty.delete(id);
+			this.errors.delete(id);
+		}
+		if (!this.dirty.has(id)) this.errors.delete(id);
+		this.changed();
+	}
+
 	/** Drops a deleted note: cancels its pending save and ignores any late response. */
 	forget(id: number): void {
 		this.epochs.set(id, (this.epochs.get(id) ?? 0) + 1);
 		this.saved.delete(id);
 		this.dirty.delete(id);
 		this.errors.delete(id);
+		this.rejected.delete(id);
 		this.runners.delete(id);
 		if (this.dirty.size === 0) this.clearTimer();
 		this.changed();
@@ -147,6 +169,8 @@ export class NoteSaveQueue<T> {
 					this.errors.delete(id);
 					return;
 				}
+				if (body === this.rejected.get(id)) return; // stays dirty with its error
+				this.rejected.delete(id);
 				try {
 					const result = await this.opts.save(id, body);
 					if (!current()) return;
@@ -160,6 +184,7 @@ export class NoteSaveQueue<T> {
 						this.forget(id);
 						return;
 					}
+					if (this.opts.isPermanent?.(error)) this.rejected.set(id, body);
 					this.errors.set(id, String(error));
 					return;
 				} finally {

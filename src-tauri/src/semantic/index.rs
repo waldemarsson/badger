@@ -33,6 +33,8 @@ pub enum Outcome {
     Stale,
     /// No model loaded; the note was left queued.
     NotReady,
+    /// A JSON note: never embedded (any rows it has are deleted).
+    Skipped,
 }
 
 pub fn content_hash(title: &str, body: &str) -> String {
@@ -59,19 +61,43 @@ pub fn decode_vector(bytes: &[u8]) -> Vec<f32> {
         .collect()
 }
 
-async fn note_text(
-    id: i64,
-    conn: &mut sqlx::SqliteConnection,
-) -> sqlx::Result<Option<(String, String)>> {
-    sqlx::query_as("SELECT Title, Body FROM notes WHERE id = ?")
+/// What gets embedded: `Embed(title, body)` for a markdown note, `Json` for a JSON note
+/// (its body is not read).
+enum NoteText {
+    Embed(String, String),
+    Json,
+}
+
+async fn note_text(id: i64, conn: &mut sqlx::SqliteConnection) -> sqlx::Result<Option<NoteText>> {
+    let row: Option<(String, String, String)> = sqlx::query_as(
+        "SELECT Title, CASE WHEN Kind = 'json' THEN '' ELSE Body END, Kind FROM notes WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(conn)
+    .await?;
+    Ok(row.map(|(title, body, kind)| {
+        if kind == crate::commands::notes::KIND_JSON {
+            NoteText::Json
+        } else {
+            NoteText::Embed(title, body)
+        }
+    }))
+}
+
+/// Deletes a JSON note's leftover rows (from before it was switched, or written by an
+/// older build). The switch deletes them too; this covers every other path.
+async fn delete_rows(id: i64, pool: &Pool<Sqlite>) -> sqlx::Result<()> {
+    sqlx::query("DELETE FROM note_embeddings WHERE NoteId = ?")
         .bind(id)
-        .fetch_optional(conn)
-        .await
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 impl SemanticState {
     /// Embeds one note if its text or the model changed, then replaces its rows and cache
-    /// entry. The write re-checks the epoch and the note's hash inside its transaction.
+    /// entry. The write re-checks the epoch, the note's hash and its kind inside its
+    /// transaction. JSON notes are skipped, before embedding and again at the write.
     pub async fn process_note(&self, id: i64, pool: &Pool<Sqlite>) -> Result<Outcome, String> {
         let epoch = self.epoch();
         let Some(embedder) = self.embedder() else {
@@ -81,9 +107,18 @@ impl SemanticState {
         let db = |e: sqlx::Error| e.to_string();
 
         let mut conn = pool.acquire().await.map_err(db)?;
-        let Some((title, body)) = note_text(id, &mut conn).await.map_err(db)? else {
-            self.evict(id);
-            return Ok(Outcome::Missing);
+        let (title, body) = match note_text(id, &mut conn).await.map_err(db)? {
+            None => {
+                self.evict(id);
+                return Ok(Outcome::Missing);
+            }
+            Some(NoteText::Json) => {
+                drop(conn);
+                self.evict_cache(id);
+                delete_rows(id, pool).await.map_err(db)?;
+                return Ok(Outcome::Skipped);
+            }
+            Some(NoteText::Embed(title, body)) => (title, body),
         };
         let hash = content_hash(&title, &body);
         let stored: Vec<(String, String)> =
@@ -139,7 +174,13 @@ impl SemanticState {
                 self.evict(id);
                 return Ok(Outcome::Missing);
             }
-            Some((t, b)) if content_hash(&t, &b) != hash => {
+            // Switched to JSON while it was being embedded: keep the switch's delete.
+            Some(NoteText::Json) => {
+                drop(tx);
+                self.evict_cache(id);
+                return Ok(Outcome::Skipped);
+            }
+            Some(NoteText::Embed(t, b)) if content_hash(&t, &b) != hash => {
                 drop(tx);
                 self.requeue_front(id);
                 return Ok(Outcome::Stale);
@@ -224,12 +265,15 @@ impl SemanticState {
         Ok(())
     }
 
-    /// Fills the cache from stored rows of `model_id` (startup).
+    /// Fills the cache from stored rows of `model_id` (startup). Rows of JSON notes are
+    /// left out.
     pub async fn load_cache(&self, model_id: &str, pool: &Pool<Sqlite>) -> Result<(), String> {
         let epoch = self.epoch();
         let rows: Vec<(i64, i64, Vec<u8>)> = sqlx::query_as(
-            "SELECT NoteId, ChunkIndex, Vector FROM note_embeddings WHERE ModelId = ? \
-             ORDER BY NoteId, ChunkIndex",
+            "SELECT e.NoteId, e.ChunkIndex, e.Vector FROM note_embeddings e \
+             JOIN notes n ON n.id = e.NoteId \
+             WHERE e.ModelId = ? AND n.Kind = 'markdown' \
+             ORDER BY e.NoteId, e.ChunkIndex",
         )
         .bind(model_id)
         .fetch_all(pool)
@@ -268,11 +312,24 @@ impl SemanticState {
         }
     }
 
-    /// Queues every note (catch-up: unchanged notes are skipped by hash).
+    /// Queues every markdown note (catch-up: unchanged notes are skipped by hash). JSON
+    /// notes are never embedded: their leftover rows (from an older build) are deleted in
+    /// one statement and their cache entries dropped instead of queueing each one.
     pub async fn enqueue_all(&self, pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
-        let ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM notes ORDER BY UpdatedAt DESC, id")
-            .fetch_all(pool)
-            .await?;
+        let stale: Vec<i64> = sqlx::query_scalar(
+            "DELETE FROM note_embeddings \
+             WHERE NoteId IN (SELECT id FROM notes WHERE Kind = 'json') RETURNING NoteId",
+        )
+        .fetch_all(pool)
+        .await?;
+        for id in stale {
+            self.evict_cache(id);
+        }
+        let ids: Vec<i64> = sqlx::query_scalar(
+            "SELECT id FROM notes WHERE Kind = 'markdown' ORDER BY UpdatedAt DESC, id",
+        )
+        .fetch_all(pool)
+        .await?;
         self.enqueue(ids);
         Ok(())
     }
@@ -602,6 +659,73 @@ pub(crate) mod tests {
         assert!(rows(&pool).await.is_empty());
         assert_eq!(state.progress().1, 0);
         assert_eq!(state.next_queued(), Some(a), "re-queued");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn switch_to_json_during_embedding_writes_nothing() {
+        let pool = crate::test_db().await;
+        let (state, _) = ready_state(&pool).await;
+        let a = note("A", "alpha", &pool).await;
+        struct Switching(Pool<Sqlite>, i64, FakeEmbedder);
+        impl crate::semantic::embedder::Embedder for Switching {
+            fn model_id(&self) -> &str {
+                self.2.model_id()
+            }
+            fn embed(&self, t: &[String]) -> Result<Vec<Vec<f32>>, String> {
+                let (pool, id) = (self.0.clone(), self.1);
+                // The body is unchanged, so only the kind re-check can stop the write.
+                tokio::runtime::Handle::current().block_on(async {
+                    notes::inner_set_note_kind(id, "json", None, &pool)
+                        .await
+                        .unwrap();
+                });
+                self.2.embed(t)
+            }
+            fn count_tokens(&self, t: &str) -> usize {
+                self.2.count_tokens(t)
+            }
+        }
+        state.set_embedder(Some(Arc::new(Switching(
+            pool.clone(),
+            a,
+            FakeEmbedder::new("f"),
+        ))));
+        assert_eq!(state.process_note(a, &pool).await, Ok(Outcome::Skipped));
+        assert!(rows(&pool).await.is_empty());
+        assert_eq!(state.indexed_notes(), 0);
+        assert_eq!(state.next_queued(), None, "not re-queued");
+    }
+
+    #[tokio::test]
+    async fn json_rows_left_by_an_older_build_are_not_loaded_and_get_deleted() {
+        let pool = crate::test_db().await;
+        let (state, fake) = ready_state(&pool).await;
+        let a = note("A", "alpha", &pool).await;
+        let b = note("B", "beta", &pool).await;
+        state.enqueue([a, b]);
+        state.drain(&pool).await;
+        // As if an older build embedded b after it became JSON.
+        sqlx::query("UPDATE notes SET Kind = 'json' WHERE id = ?")
+            .bind(b)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let fresh = SemanticState::new("/nonexistent".into());
+        fresh.load_cache("fake-1", &pool).await.unwrap();
+        assert_eq!(fresh.indexed_notes(), 1);
+
+        let before = fake.embedded().len();
+        state.enqueue_all(&pool).await.unwrap();
+        // Deleted by enqueue_all itself; only the markdown note is queued.
+        assert_eq!(state.queued(), vec![a]);
+        let ids: Vec<i64> = rows(&pool).await.into_iter().map(|r| r.0).collect();
+        assert_eq!(ids, vec![a]);
+        assert_eq!(state.indexed_notes(), 1);
+        state.drain(&pool).await;
+        assert_eq!(fake.embedded().len(), before);
+        let ids: Vec<i64> = rows(&pool).await.into_iter().map(|r| r.0).collect();
+        assert_eq!(ids, vec![a]);
+        assert_eq!(state.indexed_notes(), 1);
     }
 
     #[tokio::test]

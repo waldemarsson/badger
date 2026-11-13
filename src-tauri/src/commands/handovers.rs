@@ -134,7 +134,14 @@ pub async fn inner_save_handover_as_note(
     check_date(date)?;
     let mut tx = pool.begin().await?;
     let handover = fetch(date, &mut *tx).await?.ok_or_else(not_found)?;
-    let id = notes::insert_titled_note(&note_title(date), &handover.body, None, &mut tx).await?;
+    let id = notes::insert_titled_note(
+        &note_title(date),
+        &handover.body,
+        notes::KIND_MARKDOWN,
+        None,
+        &mut tx,
+    )
+    .await?;
     tx.commit().await?;
     notes::inner_get_note(id, pool).await
 }

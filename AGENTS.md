@@ -45,6 +45,7 @@ Gotchas:
 - **Reminder-affecting write paths must call `reminders_scheduler::reminders_changed(&app, pool)`** after committing (reminder commands, and todo/note wrappers that cascade-delete, complete or retitle linked reminders; restore). It emits `reminders-changed` and recomputes the dock badge; without it the UI and badge go stale until the next 30 s tick. Todo-done completion of reminders belongs inside `inner_move_todo`'s transaction. See `docs/architecture.md` (Reminders).
 - **Semantic tests never download or load the model.** Use `FakeEmbedder` and `semantic::index::tests::ready_state`. Real-model tests are `#[ignore]`d; run them with `BADGER_MODEL_DIR=<dir> cargo test -p badger real_model -- --ignored --test-threads=1`.
 - **`ort` downloads ONNX Runtime from `cdn.pyke.io` at build time**, so the first build (and any clean `target/`) needs network. Never add `unwrap`/`expect` on tokenizer, inference or download paths: release is `panic = "abort"`.
+- **`js_runner` runs untrusted JS and release is `panic = "abort"`:** no `unwrap`/`expect`/panics on the run path, and host callbacks return `Result`. Never add a host function that reaches the DB or IPC beyond read-only `note()`: isolation is the point (see `docs/architecture.md`, Playground). Tests that use `Handle::block_on` need `#[tokio::test(flavor = "multi_thread")]`.
 - **Quit/close must go through `flush_guard.rs`** (flushes unsaved notes). Don't restore the native macOS Quit menu item or exit via `std::process::exit`; both bypass `RunEvent::ExitRequested`.
 
 ### Schema changes

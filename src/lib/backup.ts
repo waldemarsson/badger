@@ -1,4 +1,36 @@
-// Pure helpers for the automatic backup settings.
+// Pure helpers for the backup settings (automatic backups and restore).
+
+/** What a backup holds, counted for the restore preview. */
+export interface RestorePreview {
+  customers: number;
+  projects: number;
+  issues: number;
+  time_entries: number;
+  notes: number;
+  scripts: number;
+}
+
+/** Counts a backup's rows; null when the text is not JSON. Missing arrays count 0 (older backups). */
+export function parseBackupPreview(jsonText: string): RestorePreview | null {
+  let data: unknown;
+  try {
+    data = JSON.parse(jsonText);
+  } catch {
+    return null;
+  }
+  const count = (key: string) => {
+    const value = data !== null && typeof data === 'object' ? (data as Record<string, unknown>)[key] : undefined;
+    return Array.isArray(value) ? value.length : 0;
+  };
+  return {
+    customers: count('customers'),
+    projects: count('projects'),
+    issues: count('issues'),
+    time_entries: count('time_entries'),
+    notes: count('notes'),
+    scripts: count('scripts'),
+  };
+}
 
 /** `age1abcdef…uvwxyz`: enough of a public key to recognise it. */
 export function shortKey(key: string): string {

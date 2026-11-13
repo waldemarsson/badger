@@ -38,6 +38,8 @@ The Seed button (Settings › Dev) also adds 16 bilingual sample notes (100–20
 
 Reminders are seeded too, whenever the `reminders` table is empty (also when customers or notes already exist): six samples anchored to now, namely an overdue one (fired), one for in three hours linked to the "Weekly sync" note when that note exists, one tomorrow at 14:00, a weekday "Standup" at 09:00, a monthly "Pay rent" on the 25th, and a done one. The overdue row shows up in the Overdue group, the Today card, a toast, and the nav count straight away. Seeded times are relative to the moment you click Seed, so a row can already be overdue by the time you look.
 
+A sample playground script ("Tasks in Weekly sync", which reads the seeded "Weekly sync" note through `note()`) is seeded whenever the `scripts` table is empty, also when customers or notes already exist.
+
 ## Semantic search tests
 
 Unit tests never download or load the embedding model. Embedding sits behind the `Embedder` trait and tests use `FakeEmbedder` (deterministic vectors, a word-count token counter); `semantic::index::tests::ready_state` builds a ready `SemanticState` around one. Download tests run against a local fake source, not the network.
@@ -49,6 +51,14 @@ BADGER_MODEL_DIR=<dir> cargo test -p badger real_model -- --ignored --nocapture 
 ```
 
 `real_model_spike` also compares against the fp32 export when `model.onnx` is in the same directory, and prints the timing, int8-vs-fp32 overlap and the similarity-floor sweeps (fixed floor, then the relative rule's `MARGIN` and `ABSOLUTE_FLOOR` over topic and off-topic queries); rerun it when the model, chunker or prefixes change (see `similarity_floor` in `semantic/fusion.rs`). `real_model_sample_notes` checks the rule on the dev seed's 16 sample notes through hybrid search and prints every note's score, the median and the floor per query.
+
+## Playground engine tests
+
+`js_runner` tests (`src-tauri/src/js_runner/tests.rs`) run real QuickJS with short injected limits and need no network or model. Tests that reach `note()` through `Handle::block_on` (`commands/playground.rs`) must use `#[tokio::test(flavor = "multi_thread")]`. One `#[ignore]`d test stresses out-of-memory handling in a release build, to show the engine's OOM assert can't abort the app:
+
+```bash
+cargo test --release js_runner::tests::oom_stress -- --ignored
+```
 
 ## Report and restore behavior worth knowing
 

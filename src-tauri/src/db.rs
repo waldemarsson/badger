@@ -132,6 +132,16 @@ CREATE TABLE IF NOT EXISTS handovers (
     UpdatedAt   TEXT    NOT NULL
 );
 
+-- Playground scripts: saved JavaScript snippets. Not notes: they stay out of notes search,
+-- the link index and the semantic index. Titles are not unique.
+CREATE TABLE IF NOT EXISTS scripts (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    Title     TEXT    NOT NULL,
+    Body      TEXT    NOT NULL DEFAULT '',
+    CreatedAt TEXT    NOT NULL,
+    UpdatedAt TEXT    NOT NULL
+);
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_title ON notes(Title COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_notes_folder ON notes(FolderId);
 CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(ParentId);

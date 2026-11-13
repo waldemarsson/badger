@@ -93,6 +93,7 @@
 		{ id: 'new-todo', label: 'New todo', group: 'Actions', run: () => goTo('todo') },
 		{ id: 'log-time', label: 'Log time', group: 'Actions', run: () => void startLogTime() },
 		{ id: 'new-note', label: 'New note', group: 'Actions', run: createNote },
+		{ id: 'new-script', label: 'New script', group: 'Actions', run: createScript },
 		{ id: 'new-reminder', label: 'New reminder', group: 'Actions', run: startRemind },
 		{ id: 'scratchpad', label: 'Scratchpad', group: 'Actions', run: showScratchpad },
 		{ id: 'write-handover', label: 'Write handover', group: 'Actions', run: writeHandover },
@@ -396,6 +397,13 @@
 		close();
 		// eslint-disable-next-line svelte/no-navigation-without-resolve -- resolved path plus a query string
 		void goto(`${resolve('/notes')}?new=1`);
+	}
+
+	/** The playground creates the script on `?new=1` (like New note), so its title gets focus. */
+	function createScript(): void {
+		close();
+		// eslint-disable-next-line svelte/no-navigation-without-resolve -- resolved path plus a query string
+		void goto(`${resolve('/playground')}?new=1`);
 	}
 
 	/** After close() restored focus, so the drawer returns there and its caret lands in the pad. */

@@ -29,6 +29,7 @@
     { href: '/', label: 'Today' },
     { href: '/todos', label: 'Todos' },
     { href: '/notes', label: 'Notes' },
+    { href: '/playground', label: 'Playground' },
     { href: '/reminders', label: 'Reminders' },
     { href: '/timesheet', label: 'Timesheet' },
     { href: '/travel', label: 'Travel' },
@@ -52,6 +53,7 @@
     [
       { href: '/todos', label: 'Todos' },
       { href: '/notes', label: 'Notes' },
+      { href: '/playground', label: 'Playground' },
       { href: '/reminders', label: 'Reminders' },
     ],
     [

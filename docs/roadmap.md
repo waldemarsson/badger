@@ -14,11 +14,7 @@ Markdown notes stored in SQLite, written in Obsidian-compatible markdown so note
 6. **Semantic search** — done, see Done below
 7. **Chat that edits notes** — deferred; local model with tool calls proposing diffs to accept or reject
 
-## 2. JS playground
-
-A `/playground` page with an editor, Run (⌘↵) and a console pane; nothing is persisted. Needs a sandbox, because code in the main WebView could reach the database through IPC: `rquickjs` (pure JS, fully isolated, new cargo dependency) or a sandboxed iframe (browser APIs, but needs a CSP/IPC isolation spike first). Basic scope and globals completion comes almost free; full TypeScript IntelliSense is optional (~1–2 days). JSON notes can be passed in as variables through an input picker (JSON notes now exist).
-
-## 3. JSONC
+## 2. JSONC
 
 Comments (and trailing commas) in JSON notes; today they show as lint errors and Format refuses them. Findings from a spike on the current dependencies:
 
@@ -27,20 +23,21 @@ Comments (and trailing commas) in JSON notes; today they show as lint errors and
 - `@codemirror/legacy-modes` (a transitive dependency) has a `json` stream mode that tokenizes `//` and `/* */` comments correctly. Highlighting is therefore possible through `StreamLanguage` (a new direct dependency), but a stream mode gives no syntax tree, so there would be no tree-based lint, folding or Format.
 - Lossless JSONC formatting needs a JSONC parser (a new dependency, for example `jsonc-parser`), because custom parsers are ruled out. ```` ```jsonc ```` and ```` ```json5 ```` blocks in markdown notes are not formatted either, for the same reason.
 
-## 4. Release pipeline hardening
+## 3. Release pipeline hardening
 
 `release.yml` publishes a release on every `v*` tag push without running the gates. Add a gate job (`cargo test`, `cargo clippy --all -- -D warnings`, `cargo fmt --check`, `npm run check`, `npm run lint`, `node --test tests/*.mjs`) that the release job `needs:`; pin third-party actions (`actions/*`, `dtolnay/rust-toolchain`, `swatinem/rust-cache`, `tauri-apps/tauri-action`) to commit SHAs; default the workflow to `permissions: contents: read` and grant `contents: write` only to the release job.
 
-## 5. Dependency monitoring
+## 4. Dependency monitoring
 
 Dependabot for npm, cargo and GitHub Actions (grouped weekly updates), plus a `cargo deny check advisories` (or `cargo audit`) step and `npm audit --omit=dev` in the gate job.
 
-## 6. Major dependency upgrades
+## 5. Major dependency upgrades
 
 Each on its own branch: `sqlx` 0.9, `sha2` 0.11, `tokenizers` 0.23 first; then `typescript` 7, `prettier-plugin-svelte` 4, `@types/node` 26 and `tailwind-merge` 3; Tailwind 4 last (touches all styling and `app.css`).
 
 ## Done
 
+- JS playground — a `/playground` page (nav tab beside Notes, ⌘K "Go to Playground" and "New script") to write, save and run JavaScript, for munging JSON notes; scripts are saved documents in their own `scripts` table (not notes: no search, links or semantic index; titles are not unique), listed with a title filter and ⌘N, autosaved and flushed on quit, and included in backup/restore (older backups restore with none); Run (⌘↵) executes the editor's current text, including unsaved edits, in a sandboxed QuickJS engine (`rquickjs`, a direct dependency) that has no DOM, network, timers, modules or Tauri access; `note("Title")` is the only host input (JSON note → parsed value, markdown note → string, unknown → error; case-insensitive) and `note("` autocompletes titles; output (`console.*` with levels plus the last expression value, REPL-style) shows when the run ends, never streams and is kept in memory per script, not persisted; each run is limited to 10 s, 256 MB and a 1 MB stack, and output to 1 MB or 10,000 lines; Stop button or Esc cancels; one run at a time app-wide; JavaScript only, no TypeScript
 - JSON notes — a note or the scratchpad can be switched between markdown and JSON (header toggle, or "Switch to JSON" / "Switch to Markdown" in the note context menu; the body is never rewritten, new notes start as markdown); JSON mode is a code editor with highlighting, folding, bracket matching and closing, and a lint gutter showing the first parse error, without live preview, `#`/`[[` completion or the slash menu, and ⌘E and Copy as HTML are hidden; Format and Minify are lossless (a printer over the Lezer JSON syntax tree that copies number, string and key text verbatim, so big integers, `1.0`, escapes and duplicate keys survive; 2-space indent; invalid JSON is refused with "Invalid JSON: line L, col C"); bodies are capped at 5 MB (markdown is not); JSON notes are title-only in search, have no tags or links and are never embedded, show no excerpt, and carry a "JSON" badge in the tree, search list and ⌘K; in markdown editors (notes, scratchpad, handovers) a ```` ```json ```` block gets Format and Minify chips on its fence line while the cursor is inside it, and ⇧⌥F formats the block; stored in a `Kind` column on `notes` and `scratchpad`, with a `kind` field in backups (older backups restore as markdown); `@codemirror/lang-json` and `@codemirror/lint` are direct dependencies
 - Encrypted backups — one automatic backup folder, `backups/` beside the database by default or any writable folder (iCloud Drive, Dropbox) picked in Settings; flat `badger-YYYY-MM-DD.json.gz` files, only files matching that name are listed, trimmed or deleted, and old dated-folder backups are left alone; optional `age` encryption (`.json.gz.age`, decrypts with `age -d … | gunzip`) with a generated key pair whose secret is shown once and must be pasted back before encryption turns on, or your own `age1…` key; restore asks for the secret key for encrypted files; Back up now, last success and last error in Settings, no fallback to another folder or to plaintext when a backup fails; "Delete unencrypted" after turning encryption on; `age` is a direct dependency
 - Notes performance — measured on a mocked 5,000-line note (built SPA in headless Chromium, keystroke → editor update settled, p50/p95 over 120 samples, 108 for opening): typing 15.9/26.6 ms → 6.6/11.5 ms and opening a note 27.7/38.3 ms → 19.6/25.9 ms; arrow-key moves were already within the 16 ms budget (5.3/11.5 ms) and stay there. The live-preview link decorations now scan only the visible lines for tags and wikilinks (`extractRefs` takes ranges) instead of the whole note on every keystroke, and the reference-definition walk is skipped for notes without `]:`. The old premise was stale: `list_notes` already returns excerpts, not bodies, and takes ~23 ms for 2,000 notes; `update_note_body` on a 5,000-line note takes ~14 ms (optimized build, `#[ignore]`d `perf_*` tests in `commands/notes.rs`), so the backend is unchanged. Deferring `doc.toString()` (~0.1 ms per keystroke) and range-limiting the `blocks.ts` walk (~1.3 ms) were not needed

@@ -136,7 +136,8 @@ fn duplicate(title: &str) -> AppError {
     AppError::Custom(format!("A note named \"{title}\" already exists"))
 }
 
-fn now() -> String {
+/// Local time as stored in `CreatedAt`/`UpdatedAt` (notes, scripts).
+pub(crate) fn now() -> String {
     chrono::Local::now()
         .format("%Y-%m-%dT%H:%M:%S%.3f")
         .to_string()

@@ -5,6 +5,7 @@ pub mod commands;
 pub mod db;
 pub mod error;
 pub mod flush_guard;
+pub mod js_runner;
 pub mod logger;
 pub mod note_links;
 pub mod reminders_scheduler;
@@ -78,6 +79,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .manage(flush_guard::FlushGuard::default())
+        .manage(commands::playground::RunState::default())
         .on_menu_event(|app, event| {
             if event.id() == flush_guard::QUIT_MENU_ID {
                 app.exit(0); // goes through RunEvent::ExitRequested → flush guard
@@ -241,6 +243,16 @@ pub fn run() {
                     commands::scratchpad::set_scratchpad_body,
                     commands::scratchpad::set_scratchpad_kind,
                     commands::scratchpad::save_scratchpad_as_note,
+                    // Playground scripts
+                    commands::scripts::list_scripts,
+                    commands::scripts::get_script,
+                    commands::scripts::create_script,
+                    commands::scripts::update_script_title,
+                    commands::scripts::update_script_body,
+                    commands::scripts::delete_script,
+                    commands::playground::run_script,
+                    commands::playground::stop_script,
+                    commands::playground::script_running,
                     // Handovers
                     commands::handovers::get_handover,
                     commands::handovers::list_handovers,
@@ -361,6 +373,16 @@ pub fn run() {
                     commands::scratchpad::set_scratchpad_body,
                     commands::scratchpad::set_scratchpad_kind,
                     commands::scratchpad::save_scratchpad_as_note,
+                    // Playground scripts
+                    commands::scripts::list_scripts,
+                    commands::scripts::get_script,
+                    commands::scripts::create_script,
+                    commands::scripts::update_script_title,
+                    commands::scripts::update_script_body,
+                    commands::scripts::delete_script,
+                    commands::playground::run_script,
+                    commands::playground::stop_script,
+                    commands::playground::script_running,
                     // Handovers
                     commands::handovers::get_handover,
                     commands::handovers::list_handovers,

@@ -285,3 +285,55 @@ export interface GeneratedBackupKey {
   public_key: string;
   secret_key: string;
 }
+
+// ── Playground ────────────────────────────────────────────────────────────────
+
+/** A saved playground script (`get_script`, `create_script`). */
+export interface Script {
+	id: number;
+	title: string;
+	body: string;
+	created_at: string;
+	updated_at: string;
+}
+
+/** A script in the playground list (`list_scripts`, `update_script_title`, `update_script_body`). */
+export interface ScriptSummary {
+	id: number;
+	title: string;
+	updated_at: string;
+}
+
+export type OutputLevel = 'log' | 'info' | 'warn' | 'error' | 'debug';
+
+/** One captured `console.*` call. */
+export interface OutputLine {
+	level: OutputLevel;
+	text: string;
+}
+
+export type RunErrorKind = 'user' | 'timeout' | 'stopped' | 'oom' | 'stack' | 'syntax';
+
+/** Why a run failed; `line`/`col` (1-based) point into the script when known. */
+export interface RunError {
+	kind: RunErrorKind;
+	message: string;
+	line: number | null;
+	col: number | null;
+}
+
+/** What a run produced. `value` is the formatted last expression (absent when undefined). */
+export interface RunOutcome {
+	lines: OutputLine[];
+	value: string | null;
+	error: RunError | null;
+	/** Output hit the cap; later console output was dropped. */
+	truncated: boolean;
+	duration_ms: number;
+}
+
+/** `run_script` result. */
+export interface RunResult {
+	run_id: number;
+	outcome: RunOutcome;
+}

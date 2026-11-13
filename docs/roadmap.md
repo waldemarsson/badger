@@ -33,7 +33,7 @@ In-app updates through `tauri-plugin-updater`, served from GitHub Releases. Need
 
 Prerequisites:
 
-- [ ] Scan the full git history for secrets and personal data (`gitleaks` or `trufflehog`), check what Releases and Issues expose, then make the repo public
+- [x] Scan the full git history for secrets and personal data (`gitleaks` or `trufflehog`), check what Releases and Issues expose, then make the repo public
 - [ ] Release gates from section 3 in place
 - [ ] Generate the update signing key (`npm run tauri signer generate -- -w ~/.tauri/badger.key`; separate from Apple code signing), store key and password as the `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` GitHub secrets, and back the key up offline (losing it strands every install); never commit it
 

@@ -337,3 +337,10 @@ export interface RunResult {
 	run_id: number;
 	outcome: RunOutcome;
 }
+
+/** `check_for_update` result: a newer release than the running one. */
+export interface UpdateInfo {
+	version: string;
+	current_version: string;
+	notes: string | null;
+}

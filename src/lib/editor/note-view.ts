@@ -1,11 +1,16 @@
 // One EditorView that shows one note at a time. Each note keeps its own EditorState
-// (unsaved edits, undo history) and scroll position while the view lives.
+// (unsaved edits, undo history) and scroll position while the view lives. A note's kind
+// picks its mode (markdown or JSON) through a compartment, re-synced on every open like
+// the editable flag, so cached states follow a switch.
 import { Compartment, EditorState, type Extension } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { syncFocus } from '#lib/editor/focus.js';
+import { formatDocument } from '#lib/editor/json-mode.js';
 import { emptyLinkData, linkDataField, setLinkData, type LinkData, type LinkFollowScope } from '#lib/editor/links.js';
-import { createNoteState, noteExtensions } from '#lib/editor/setup.js';
+import { createNoteState, noteExtensions, noteModes } from '#lib/editor/setup.js';
+import type { JsonFormatMode } from '#lib/json-format.js';
 import type { LinkFollow } from '#lib/note-links.js';
+import type { NoteKind } from '#lib/types.js';
 
 export class NoteView {
 	private readonly view: EditorView;
@@ -18,21 +23,32 @@ export class NoteView {
 	/** False while the host is committing the text elsewhere (no edits can slip in). */
 	private editable = true;
 	private readonly editableConf = new Compartment();
+	/** The shown note's kind (markdown when none is shown). */
+	private kind: NoteKind = 'markdown';
+	private readonly modeConf = new Compartment();
+	private readonly modes: Record<NoteKind, Extension>;
 
 	constructor(
 		parent: HTMLElement,
 		onchange: (id: number, body: string) => void,
 		onfollow: (link: LinkFollow) => void,
-		followScope: LinkFollowScope = 'all'
+		followScope: LinkFollowScope = 'all',
+		onformat: (error: string | null) => void = () => {}
 	) {
+		this.modes = noteModes(onfollow);
 		this.extensions = noteExtensions(
 			(body) => {
 				if (this.currentId !== null) onchange(this.currentId, body);
 			},
-			onfollow,
-			followScope
+			followScope,
+			onformat
 		).concat(this.editableConf.of(editableExtension(true)));
-		this.view = new EditorView({ parent, state: createNoteState('', this.extensions) });
+		this.view = new EditorView({ parent, state: this.createState('', 'markdown') });
+	}
+
+	/** A fresh state already in `kind`'s mode. */
+	private createState(body: string, kind: NoteKind): EditorState {
+		return createNoteState(body, [...this.extensions, this.modeConf.of(this.modes[kind])]);
 	}
 
 	/** Updates link resolution and `#` suggestions (redraws chips and wikilinks). */
@@ -41,15 +57,17 @@ export class NoteView {
 		this.syncLinks();
 	}
 
-	/** Shows note `id`. Its cached state wins over `body`. */
-	open(id: number, body: string): void {
-		if (id === this.currentId) return;
+	/** Shows note `id` in `kind`'s mode. Its cached state wins over `body`. */
+	open(id: number, body: string, kind: NoteKind = 'markdown'): void {
+		if (id === this.currentId) return this.setKind(kind);
 		this.stash();
 		this.currentId = id;
-		this.view.setState(this.states.get(id) ?? createNoteState(body, this.extensions));
+		this.kind = kind;
+		this.view.setState(this.states.get(id) ?? this.createState(body, kind));
 		syncFocus(this.view);
 		this.syncLinks();
 		this.syncEditable();
+		this.syncMode();
 		const top = this.scrolls.get(id) ?? 0;
 		requestAnimationFrame(() => {
 			if (this.currentId === id) this.view.scrollDOM.scrollTop = top;
@@ -84,13 +102,30 @@ export class NoteView {
 		return this.view.state.doc.toString();
 	}
 
+	/** Switches the shown note's mode; the text stays as it is. */
+	setKind(kind: NoteKind): void {
+		this.kind = kind;
+		this.syncMode();
+	}
+
+	/**
+	 * Formats or minifies the shown JSON note (one undo step). Returns "Invalid JSON: …"
+	 * when it can't, else null.
+	 */
+	format(mode: JsonFormatMode): string | null {
+		const error = formatDocument(this.view, mode);
+		this.view.focus();
+		return error;
+	}
+
 	destroy(): void {
 		this.view.destroy();
 	}
 
 	private reset(): void {
 		this.currentId = null;
-		this.view.setState(createNoteState('', this.extensions));
+		this.kind = 'markdown';
+		this.view.setState(this.createState('', 'markdown'));
 		this.syncEditable();
 	}
 
@@ -105,6 +140,12 @@ export class NoteView {
 		if (this.view.state.facet(EditorView.editable) !== this.editable) {
 			this.view.dispatch({ effects: this.editableConf.reconfigure(editableExtension(this.editable)) });
 		}
+	}
+
+	/** A cached state may be in the other mode (the note was switched meanwhile). */
+	private syncMode(): void {
+		const mode = this.modes[this.kind];
+		if (this.modeConf.get(this.view.state) !== mode) this.view.dispatch({ effects: this.modeConf.reconfigure(mode) });
 	}
 
 	/** A cached state may hold older link data. */

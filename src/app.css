@@ -60,6 +60,7 @@
     --note-popup-active-fg: theme('colors.sky.700');
     --note-snippet-field: rgb(14 165 233 / 0.12);
     --note-snippet-marker: theme('colors.sky.500');
+    --note-match-outline: rgb(14 165 233 / 0.45);
   }
 
   .dark {
@@ -96,6 +97,7 @@
     --note-popup-active-fg: theme('colors.sky.300');
     --note-snippet-field: rgb(56 189 248 / 0.16);
     --note-snippet-marker: theme('colors.sky.400');
+    --note-match-outline: rgb(56 189 248 / 0.45);
   }
 }
 
@@ -624,6 +626,21 @@
   /* Folder path under a search hit ("Projects / Archive"). */
   .note-row-path {
     @apply mt-0.5 flex min-w-0 items-center gap-1 text-xs text-slate-400 dark:text-neutral-500;
+  }
+
+  /* "JSON" beside a JSON note's title (tree, search results, ⌘K). */
+  .note-kind-badge {
+    @apply shrink-0 rounded bg-slate-100 px-1 py-px text-[9px] font-semibold uppercase leading-3 tracking-wide text-slate-500 dark:bg-neutral-800 dark:text-neutral-400;
+  }
+
+  /* A note row title that may carry a kind badge: the title truncates, the badge stays. */
+  .note-row-title-line {
+    @apply flex min-w-0 items-center gap-1.5;
+  }
+
+  /* Format / Minify in a JSON note's header. */
+  .json-action {
+    @apply rounded-md px-2 py-1 text-xs font-medium text-slate-500 transition-colors duration-150 hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100;
   }
 
   /* Semantic-only search hit: found by meaning, no exact word match. */
@@ -1277,6 +1294,10 @@
 
   .scratchpad-editor .cm-editor .cm-line {
     padding: 0 1.25rem;
+  }
+
+  .scratchpad-editor .cm-editor.cm-json-mode .cm-line {
+    padding: 0 1.25rem 0 0.25rem;
   }
 
   .scratchpad-footer {

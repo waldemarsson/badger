@@ -220,6 +220,7 @@ pub fn run() {
                     commands::notes::rename_note,
                     commands::notes::update_note_body,
                     commands::notes::set_note_pinned,
+                    commands::notes::set_note_kind,
                     commands::notes::delete_note,
                     commands::notes::search_notes,
                     commands::notes::search_index_stats,
@@ -238,6 +239,7 @@ pub fn run() {
                     // Scratchpad
                     commands::scratchpad::get_scratchpad,
                     commands::scratchpad::set_scratchpad_body,
+                    commands::scratchpad::set_scratchpad_kind,
                     commands::scratchpad::save_scratchpad_as_note,
                     // Handovers
                     commands::handovers::get_handover,
@@ -338,6 +340,7 @@ pub fn run() {
                     commands::notes::rename_note,
                     commands::notes::update_note_body,
                     commands::notes::set_note_pinned,
+                    commands::notes::set_note_kind,
                     commands::notes::delete_note,
                     commands::notes::search_notes,
                     commands::notes::search_index_stats,
@@ -356,6 +359,7 @@ pub fn run() {
                     // Scratchpad
                     commands::scratchpad::get_scratchpad,
                     commands::scratchpad::set_scratchpad_body,
+                    commands::scratchpad::set_scratchpad_kind,
                     commands::scratchpad::save_scratchpad_as_note,
                     // Handovers
                     commands::handovers::get_handover,

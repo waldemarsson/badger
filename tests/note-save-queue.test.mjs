@@ -304,3 +304,56 @@ test('flush resolves true when edits arrive mid-flush but nothing failed', async
 	assert.equal(h.queue.status(2), 'pending');
 	assert.equal(h.queue.busy, true);
 });
+
+test('a body rejected for good is not sent again; a different body is', async (t) => {
+	const h = harness(t, { isPermanent: (e) => String(e) === 'too big' });
+	h.queue.track(1, '');
+	h.queue.edit(1, 'huge');
+	const first = h.queue.flush();
+	h.calls[0].reject('too big');
+	assert.equal(await first, false);
+	assert.equal(h.queue.status(1), 'error');
+	assert.equal(h.queue.error(1), 'too big');
+
+	// Flushes (switching notes, leaving) don't resend it; it stays dirty with its error.
+	assert.equal(await h.queue.flush(), false);
+	h.tick(SAVE_DELAY_MS);
+	await settle();
+	assert.equal(h.calls.length, 1);
+	assert.equal(h.queue.busy, true);
+
+	// A transient error is still retried.
+	h.queue.edit(1, 'smaller');
+	h.tick(SAVE_DELAY_MS);
+	await settle();
+	assert.equal(h.calls.length, 2);
+	h.calls[1].reject('disk full');
+	await settle();
+	const retry = h.queue.flush();
+	assert.equal(h.calls.length, 3);
+	h.calls[2].resolve({});
+	assert.equal(await retry, true);
+	assert.equal(h.queue.status(1), 'saved');
+});
+
+test('markSaved: a body stored by another command is clean, later edits stay dirty', async (t) => {
+	const h = harness(t, { isPermanent: () => true });
+	h.queue.track(1, '');
+	h.queue.edit(1, 'pending');
+	const flushing = h.queue.flush();
+	h.calls[0].reject('too big');
+	await flushing;
+	h.queue.markSaved(1, 'pending'); // e.g. a switch to markdown stored it
+	assert.equal(h.queue.status(1), 'saved');
+	assert.equal(h.queue.busy, false);
+	assert.equal(await h.queue.flush(), true);
+
+	h.queue.edit(1, 'pending more');
+	h.queue.markSaved(1, 'pending'); // stored text is older than the editor's
+	assert.equal(h.queue.status(1), 'pending');
+	h.tick(SAVE_DELAY_MS);
+	assert.deepEqual(
+		h.calls.map((c) => c.body),
+		['pending', 'pending more']
+	);
+});

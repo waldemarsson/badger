@@ -15,10 +15,13 @@
 	import { closeScratchpad, scratchpad, takeReturnFocus } from '#lib/scratchpad-state.svelte.js';
 	import { palette, showToast } from '#lib/palette-state.svelte.js';
 	import { SCRATCHPAD_SHORTCUT } from '#lib/palette.js';
-	import type { LinkTargets, Note, RenderMode, Scratchpad, TagSuggestion } from '#lib/types.js';
+	import { JSON_TOO_LARGE, overJsonLimit } from '#lib/notes.js';
+	import type { JsonFormatMode } from '#lib/json-format.js';
+	import type { LinkTargets, Note, NoteKind, RenderMode, Scratchpad, TagSuggestion } from '#lib/types.js';
 	import NoteEditor from '#lib/components/NoteEditor.svelte';
 	import NoteReader from '#lib/components/NoteReader.svelte';
 	import BookOpen from '@lucide/svelte/icons/book-open';
+	import Braces from '@lucide/svelte/icons/braces';
 	import Check from '@lucide/svelte/icons/check';
 	import CircleAlert from '@lucide/svelte/icons/circle-exclamation-point';
 	import Copy from '@lucide/svelte/icons/copy';
@@ -34,6 +37,8 @@
 
 	/** The pad's live text (edits included); the editor is recreated from it on each open. */
 	let text = $state('');
+	/** Markdown or JSON; kept by Clear and Save as note. */
+	let kind = $state<NoteKind>('markdown');
 	let loadError = $state('');
 	let loading: Promise<void> | null = null;
 	let loadSeq = 0;
@@ -44,8 +49,11 @@
 	let queueVersion = $state(0);
 	const queue = new NoteSaveQueue<Scratchpad>({
 		save: (_id, body) => invoke<Scratchpad>('set_scratchpad_body', { body }),
+		onSaved: () => (openedOverLimit = false),
 		onChange: () => queueVersion++,
-		isGone: () => false
+		isGone: () => false,
+		// Over the JSON limit: resending the same text can't work; the next edit is tried.
+		isPermanent: (e) => String(e) === JSON_TOO_LARGE
 	});
 	const saveStatus = $derived.by(() => {
 		void queueVersion;
@@ -58,7 +66,41 @@
 
 	function onBodyChange(_id: number, body: string): void {
 		text = body;
+		formatError = '';
 		queue.edit(PAD_ID, body);
+	}
+
+	// ── JSON mode ─────────────────────────────────────────────────────────────────
+
+	let formatError = $state(''); // "Invalid JSON: …" from Format, Minify or ⇧⌥F
+	let switching = $state(false);
+	let openedOverLimit = $state(false); // the JSON pad was already over the limit when shown (a restore)
+	const overLimit = $derived(kind === 'json' && (openedOverLimit || saveError === JSON_TOO_LARGE));
+
+	/** Switches the pad's editor; its text (unsaved edits too) is stored with the switch, unchanged. */
+	async function setKind(next: NoteKind): Promise<void> {
+		if (next === kind || switching) return;
+		switching = true;
+		actionError = '';
+		formatError = '';
+		try {
+			await queue.flush(); // a save in flight lands first; a failed one is carried below
+			const body = text;
+			const pad = await invoke<Scratchpad>('set_scratchpad_kind', { kind: next, body });
+			queue.markSaved(PAD_ID, body);
+			kind = pad.kind;
+			openedOverLimit = overJsonLimit(kind, body);
+			editor?.setKind(kind);
+			if (reading && kind === 'markdown') void renderCurrent();
+		} catch (e) {
+			actionError = String(e);
+		} finally {
+			switching = false;
+		}
+	}
+
+	function formatPad(mode: JsonFormatMode): void {
+		formatError = editor?.format(mode) ?? '';
 	}
 
 	/**
@@ -87,6 +129,7 @@
 				if (seq !== loadSeq) return;
 				queue.track(PAD_ID, pad.body);
 				text = pad.body;
+				kind = pad.kind;
 				loadError = '';
 			} catch (e) {
 				if (seq === loadSeq) loadError = String(e);
@@ -98,13 +141,16 @@
 	/** Shows `body` in a fresh editor state (no undo back to the old text). */
 	function showText(body: string): void {
 		text = body;
+		openedOverLimit = overJsonLimit(kind, body);
 		editor?.forget(PAD_ID);
-		editor?.open(PAD_ID, body);
+		editor?.open(PAD_ID, body, kind);
 	}
 
 	// ── Open / close ──────────────────────────────────────────────────────────────
 
 	let reading = $state(false);
+	/** JSON has no read view: the editor shows while `reading` stays on for markdown. */
+	const readView = $derived(reading && kind === 'markdown');
 	let rendered = $state<string | null>(null);
 	let renderError = $state('');
 	let renderSeq = 0;
@@ -137,11 +183,13 @@
 		titleError = '';
 		confirmingClear = false;
 		actionError = '';
+		formatError = '';
 		if (loadError) await load(); // retry: never let typing overwrite a pad we couldn't read
 		else if (loading) await loading;
 		await tick();
 		if (!scratchpad.open) return;
-		editor?.open(PAD_ID, text);
+		openedOverLimit = overJsonLimit(kind, text);
+		editor?.open(PAD_ID, text, kind);
 		editor?.focusEnd();
 		void refreshLinks();
 	}
@@ -181,9 +229,9 @@
 	async function reloadAfterRestore(): Promise<void> {
 		queue.forget(PAD_ID);
 		await load();
-		if (scratchpad.open && !reading) showText(text);
+		if (scratchpad.open && !readView) showText(text);
 		else editor?.forget(PAD_ID);
-		if (reading) void renderCurrent();
+		if (readView) void renderCurrent();
 	}
 
 	/** What wikilinks and chips resolve to, and the `#` suggestions (following stays off). */
@@ -213,7 +261,7 @@
 	}
 
 	async function toggleReading(): Promise<void> {
-		if (naming) return;
+		if (naming || kind === 'json') return; // ⌘E does nothing in JSON
 		reading = !reading;
 		if (reading) {
 			await renderCurrent();
@@ -229,7 +277,7 @@
 	}
 
 	async function copyHtml(): Promise<void> {
-		if (blank) return;
+		if (blank || kind === 'json') return;
 		viewError = '';
 		const markdown = text;
 		const html = invoke<string>('render_markdown', { markdown, mode: 'copy' satisfies RenderMode });
@@ -268,7 +316,7 @@
 		naming = false;
 		titleError = '';
 		await tick();
-		if (reading) reader?.focus();
+		if (readView) reader?.focus();
 		else editor?.focus();
 	}
 
@@ -322,7 +370,7 @@
 	async function cancelClear(): Promise<void> {
 		confirmingClear = false;
 		await tick();
-		if (reading) reader?.focus();
+		if (readView) reader?.focus();
 		else editor?.focus();
 	}
 
@@ -430,29 +478,45 @@
 					{/if}
 				</span>
 				<div class="ml-auto flex shrink-0 items-center gap-0.5">
+					{#if kind === 'json'}
+						<button type="button" class="json-action" title="Format JSON (⇧⌥F)" onclick={() => formatPad('format')}>Format</button>
+						<button type="button" class="json-action" title="Minify JSON" onclick={() => formatPad('minify')}>Minify</button>
+					{:else}
+						<button
+							type="button"
+							class="btn-icon-ghost disabled:pointer-events-none disabled:opacity-40"
+							title={copied ? 'Copied' : 'Copy as HTML'}
+							aria-label={copied ? 'Copied as HTML' : 'Copy as HTML'}
+							disabled={blank}
+							onclick={copyHtml}
+						>
+							{#if copied}
+								<span class="inline-flex text-emerald-500 dark:text-emerald-400" in:fade={{ duration: 150 }}><Check size={16} /></span>
+							{:else}
+								<Copy size={16} />
+							{/if}
+						</button>
+						<button
+							type="button"
+							class="btn-icon-ghost {reading ? 'text-sky-600 dark:text-sky-400' : ''}"
+							title={reading ? 'Edit (⌘E)' : 'Read (⌘E)'}
+							aria-label={reading ? 'Edit scratchpad' : 'Read scratchpad'}
+							aria-pressed={reading}
+							onclick={() => void toggleReading()}
+						>
+							{#if reading}<PencilLine size={16} />{:else}<BookOpen size={16} />{/if}
+						</button>
+					{/if}
 					<button
 						type="button"
-						class="btn-icon-ghost disabled:pointer-events-none disabled:opacity-40"
-						title={copied ? 'Copied' : 'Copy as HTML'}
-						aria-label={copied ? 'Copied as HTML' : 'Copy as HTML'}
-						disabled={blank}
-						onclick={copyHtml}
+						class="btn-icon-ghost disabled:pointer-events-none disabled:opacity-40 {kind === 'json' ? 'text-sky-600 dark:text-sky-400' : ''}"
+						title={kind === 'json' ? 'JSON: switch to Markdown' : 'Switch to JSON'}
+						aria-label={kind === 'json' ? 'Switch scratchpad to Markdown' : 'Switch scratchpad to JSON'}
+						aria-pressed={kind === 'json'}
+						disabled={switching || savingNote || clearing || !!loadError}
+						onclick={() => void setKind(kind === 'json' ? 'markdown' : 'json')}
 					>
-						{#if copied}
-							<span class="inline-flex text-emerald-500 dark:text-emerald-400" in:fade={{ duration: 150 }}><Check size={16} /></span>
-						{:else}
-							<Copy size={16} />
-						{/if}
-					</button>
-					<button
-						type="button"
-						class="btn-icon-ghost {reading ? 'text-sky-600 dark:text-sky-400' : ''}"
-						title={reading ? 'Edit (⌘E)' : 'Read (⌘E)'}
-						aria-label={reading ? 'Edit scratchpad' : 'Read scratchpad'}
-						aria-pressed={reading}
-						onclick={() => void toggleReading()}
-					>
-						{#if reading}<PencilLine size={16} />{:else}<BookOpen size={16} />{/if}
+						<Braces size={16} />
 					</button>
 					<button
 						type="button"
@@ -525,12 +589,21 @@
 					<button type="button" class="shrink-0 font-semibold underline-offset-2 hover:underline" onclick={() => void load().then(() => showText(text))}>Retry</button>
 				</div>
 			{/if}
-			{#if saveError}
+			{#if overLimit}
+				<div class="notes-inline-error mt-3" role="alert" transition:fade={{ duration: 150 }}>
+					<CircleAlert size={14} class="mt-0.5 shrink-0" />
+					<span class="min-w-0 flex-1">{JSON_TOO_LARGE}, so changes aren't saved. Shorten the text, or switch to Markdown, which has no limit.</span>
+					<button type="button" class="shrink-0 font-semibold underline-offset-2 hover:underline" onclick={() => void setKind('markdown')}>Switch to Markdown</button>
+				</div>
+			{:else if saveError}
 				<div class="notes-inline-error mt-3" role="alert" transition:fade={{ duration: 150 }}>
 					<CircleAlert size={14} class="mt-0.5 shrink-0" />
 					<span class="min-w-0 flex-1">Couldn't save: {saveError}. Your text is kept and saving retries as you type.</span>
 					<button type="button" class="shrink-0 font-semibold underline-offset-2 hover:underline" onclick={() => void queue.flush()}>Retry</button>
 				</div>
+			{/if}
+			{#if formatError}
+				{@render dismissible(formatError, () => (formatError = ''))}
 			{/if}
 			{#if actionError}
 				{@render dismissible(actionError, () => (actionError = ''))}
@@ -540,7 +613,7 @@
 			{/if}
 		</header>
 
-		{#if reading}
+		{#if readView}
 			{#if renderError}
 				<div class="px-5 pt-4">
 					<div class="notes-inline-error" role="alert">
@@ -554,11 +627,19 @@
 			{/if}
 		{/if}
 		<!-- Hidden, not unmounted, while reading: it keeps the undo history. Following links is off. -->
-		<NoteEditor bind:this={editor} onchange={onBodyChange} onfollow={() => {}} class="scratchpad-editor {reading || loadError ? 'hidden' : 'min-h-0 flex-1'}" />
+		<NoteEditor
+			bind:this={editor}
+			onchange={onBodyChange}
+			onfollow={() => {}}
+			onformat={(error) => (formatError = error ?? '')}
+			class="scratchpad-editor {readView || loadError ? 'hidden' : 'min-h-0 flex-1'}"
+		/>
 
 		<footer class="scratchpad-footer">
-			{#if blank && !reading}
+			{#if blank && !readView}
 				<span class="min-w-0 truncate">Kept until you clear it. Not in search.</span>
+			{:else if kind === 'json'}
+				<span><kbd class="palette-kbd">⇧⌥F</kbd> format</span>
 			{:else}
 				<span><kbd class="palette-kbd">⌘E</kbd> {reading ? 'edit' : 'read'}</span>
 			{/if}

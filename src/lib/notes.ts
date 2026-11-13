@@ -2,6 +2,37 @@
 // markdown table/inline parsing the editor's table widget renders from.
 import type { NoteHit, NoteSummary } from '#lib/types.js';
 
+// ── JSON notes ────────────────────────────────────────────────────────────────
+
+/** Largest JSON body Rust accepts, in UTF-8 bytes (markdown has no limit). */
+export const JSON_MAX_BYTES = 5 * 1024 * 1024;
+/** Rust's error for a JSON body over the limit (a save or a switch to JSON). */
+export const JSON_TOO_LARGE = 'JSON notes are limited to 5 MB';
+
+/** UTF-8 length of `text` without encoding it. */
+export function utf8Bytes(text: string): number {
+	let bytes = 0;
+	for (let i = 0; i < text.length; i++) {
+		const c = text.charCodeAt(i);
+		if (c < 0x80) bytes += 1;
+		else if (c < 0x800) bytes += 2;
+		else if (c >= 0xd800 && c <= 0xdbff && i + 1 < text.length) {
+			const next = text.charCodeAt(i + 1);
+			if (next >= 0xdc00 && next <= 0xdfff) {
+				bytes += 4;
+				i++;
+			} else bytes += 3;
+		} else bytes += 3;
+	}
+	return bytes;
+}
+
+/** A JSON body Rust won't store (possible after a restore, or typed past the limit). */
+export function overJsonLimit(kind: string, body: string): boolean {
+	// A UTF-16 unit is at most 3 UTF-8 bytes: short texts need no count.
+	return kind === 'json' && body.length * 3 > JSON_MAX_BYTES && utf8Bytes(body) > JSON_MAX_BYTES;
+}
+
 // ── List ──────────────────────────────────────────────────────────────────────
 
 /** Pinned first, then manual position, then id (same order as list_notes). */

@@ -60,8 +60,11 @@ pub async fn inner_semantic_status(
     };
     let (indexing_done, indexing_total) = state.progress();
     let (indexed_notes, notes): (i64, i64) = sqlx::query_as(
-        "SELECT (SELECT COUNT(DISTINCT NoteId) FROM note_embeddings WHERE ModelId = ?),
-                (SELECT COUNT(*) FROM notes)",
+        // Only markdown notes are embedded, so only they count.
+        "SELECT (SELECT COUNT(DISTINCT e.NoteId) FROM note_embeddings e
+                 JOIN notes n ON n.id = e.NoteId
+                 WHERE e.ModelId = ? AND n.Kind = 'markdown'),
+                (SELECT COUNT(*) FROM notes WHERE Kind = 'markdown')",
     )
     .bind(model_files::MODEL_ID)
     .fetch_one(pool)
@@ -580,6 +583,30 @@ mod tests {
         assert!(!model_files::model_dir(&tmp.0).exists());
         assert_eq!(embedding_rows(&pool).await, 0);
         assert_eq!(state.progress(), (0, 0));
+    }
+
+    #[tokio::test]
+    async fn status_counts_only_markdown_notes() {
+        let pool = crate::test_db().await;
+        let tmp = TempDir::new("kinds");
+        let state = SemanticState::new(tmp.0.clone());
+        notes::inner_create_note_titled("Prose", None, &pool)
+            .await
+            .unwrap();
+        let data = notes::inner_create_note_titled("Data", None, &pool)
+            .await
+            .unwrap();
+        notes::inner_set_note_kind(data.id, "json", None, &pool)
+            .await
+            .unwrap();
+        let (files, source) = fake_files();
+        inner_enable_semantic_search(&state, &pool, &source, &files, fake_loader)
+            .await
+            .unwrap();
+        state.drain(&pool).await;
+        let s = status(&state, &pool).await;
+        assert_eq!((s.indexed_notes, s.notes), (1, 1));
+        assert_eq!(embedding_rows(&pool).await, 1);
     }
 
     #[tokio::test]

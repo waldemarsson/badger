@@ -414,7 +414,15 @@ function following(onFollow: (link: LinkFollow) => void) {
 	);
 }
 
-/** Decorations, resolution data and ⌘-click. Completion sources are wired in slash.ts. */
-export function noteLinks(onFollow: (link: LinkFollow) => void, scope: LinkFollowScope = 'all') {
-	return [linkDataField, linkFollowScope.of(scope), linkPreview, following(onFollow)];
+/**
+ * Resolution data and what ⌘-click may follow: in every note state, whatever its mode, so
+ * the page can push link data into JSON notes too.
+ */
+export function linkState(scope: LinkFollowScope = 'all') {
+	return [linkDataField, linkFollowScope.of(scope)];
+}
+
+/** Decorations and ⌘-click (markdown mode). Completion sources are wired in slash.ts. */
+export function noteLinks(onFollow: (link: LinkFollow) => void) {
+	return [linkPreview, following(onFollow)];
 }

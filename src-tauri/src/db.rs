@@ -83,7 +83,9 @@ CREATE TABLE IF NOT EXISTS notes (
     CreatedAt TEXT    NOT NULL,
     UpdatedAt TEXT    NOT NULL,
     -- Manual order within the folder; shown as Pinned DESC, Position, id.
-    Position  INTEGER NOT NULL DEFAULT 0
+    Position  INTEGER NOT NULL DEFAULT 0,
+    -- Editor mode: 'markdown' or 'json'. JSON notes are title-only in the derived indexes.
+    Kind      TEXT    NOT NULL DEFAULT 'markdown' CHECK (Kind IN ('markdown', 'json'))
 );
 
 -- Reminders: the current occurrence (RemindAt, naive local time), the recurrence anchor
@@ -114,7 +116,9 @@ CREATE INDEX IF NOT EXISTS idx_reminders_note ON reminders(NoteId);
 CREATE TABLE IF NOT EXISTS scratchpad (
     id        INTEGER PRIMARY KEY CHECK (id = 1),
     Body      TEXT    NOT NULL DEFAULT '',
-    UpdatedAt TEXT    NOT NULL
+    UpdatedAt TEXT    NOT NULL,
+    -- Editor mode: 'markdown' or 'json'.
+    Kind      TEXT    NOT NULL DEFAULT 'markdown' CHECK (Kind IN ('markdown', 'json'))
 );
 
 -- Handovers: one end-of-day note per local date (YYYY-MM-DD, the day it was written),
@@ -183,6 +187,8 @@ pub async fn init_db(db_path: &Path) -> Result<Pool<Sqlite>, sqlx::Error> {
     migrate_todos_status(&pool).await?;
     migrate_issues_drop_external_id(&pool).await?;
     migrate_notes_position(&pool).await?;
+    migrate_notes_kind(&pool).await?;
+    migrate_scratchpad_kind(&pool).await?;
     backfill_notes_fts(&pool).await?;
     backfill_note_refs(&pool).await?;
 
@@ -248,6 +254,36 @@ pub async fn migrate_notes_position(pool: &Pool<Sqlite>) -> Result<(), sqlx::Err
     backfill_positions(&mut tx).await?;
     tx.commit().await?;
     Ok(())
+}
+
+/// Column definition shared by the `Kind` migrations (same as in `SCHEMA_SQL`).
+const KIND_COLUMN: &str =
+    "Kind TEXT NOT NULL DEFAULT 'markdown' CHECK (Kind IN ('markdown', 'json'))";
+
+/// Adds `Kind` to `table` unless it has it; existing rows read as `markdown`.
+async fn add_kind_column(pool: &Pool<Sqlite>, table: &str) -> Result<(), sqlx::Error> {
+    let columns: Vec<(String,)> =
+        sqlx::query_as(&format!("SELECT name FROM pragma_table_info('{table}')"))
+            .fetch_all(pool)
+            .await?;
+    if columns.iter().any(|(name,)| name == "Kind") {
+        return Ok(());
+    }
+    sqlx::query(&format!("ALTER TABLE {table} ADD COLUMN {KIND_COLUMN}"))
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Adds `notes.Kind` (markdown or JSON editor) to databases created before JSON notes.
+/// Idempotent: does nothing once the column exists.
+pub async fn migrate_notes_kind(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
+    add_kind_column(pool, "notes").await
+}
+
+/// Adds `scratchpad.Kind` to databases created before JSON notes. Idempotent.
+pub async fn migrate_scratchpad_kind(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
+    add_kind_column(pool, "scratchpad").await
 }
 
 /// Numbers notes and folders densely (0..n per folder / parent) in the order the tree
@@ -397,8 +433,9 @@ pub async fn backfill_notes_fts(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> 
     Ok(())
 }
 
-/// Rebuilds the link index when its stored version differs from the code's: the first
-/// start after it was added, or after the extraction rules changed. Idempotent.
+/// Rebuilds the link and search indexes when the stored link-index version differs from
+/// the code's: the first start after it was added, after the extraction rules changed, or
+/// after an older build (which indexes JSON bodies as markdown) reset it. Idempotent.
 pub async fn backfill_note_refs(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
     let stored: Option<String> = sqlx::query_scalar("SELECT Value FROM app_settings WHERE Key = ?")
         .bind(crate::commands::notes::NOTE_REFS_VERSION_KEY)
@@ -408,7 +445,7 @@ pub async fn backfill_note_refs(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> 
         return Ok(());
     }
     let mut tx = pool.begin().await?;
-    crate::commands::notes::rebuild_refs(&mut tx).await?;
+    crate::commands::notes::rebuild_index(&mut tx).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -688,6 +725,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_init_db_clears_json_bodies_from_indexes_after_a_downgrade() {
+        let db = TempDb::new("downgrade");
+        let pool = super::init_db(&db.0).await.unwrap();
+        assert_eq!(
+            refs_version(&pool).await.as_deref(),
+            Some(crate::commands::notes::NOTE_REFS_VERSION)
+        );
+        // An older build ran: it indexed a JSON note's body as markdown and reset the
+        // version to its own.
+        sqlx::raw_sql(
+            "INSERT INTO notes (id, Title, Body, CreatedAt, UpdatedAt, Kind)
+                 VALUES (1, 'Data', '{\"k\": \"zebracorn #tag [[Plan]]\"}', 'x', 'x', 'json');
+             INSERT INTO notes_fts (rowid, Title, Body) VALUES (1, 'Data', 'zebracorn');
+             INSERT INTO note_refs (NoteId, Kind, Target) VALUES (1, 'tag', 'tag');
+             UPDATE app_settings SET Value = '1' WHERE Key = 'note_refs_version';",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+
+        let pool = super::init_db(&db.0).await.unwrap();
+        assert!(ref_rows(&pool).await.is_empty());
+        let body: String = sqlx::query_scalar("SELECT Body FROM notes_fts WHERE rowid = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(body, "");
+        let hits = crate::commands::notes::inner_search_notes("data", None, &pool)
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 1, "title still searchable");
+        assert_eq!(
+            refs_version(&pool).await.as_deref(),
+            Some(crate::commands::notes::NOTE_REFS_VERSION)
+        );
+        pool.close().await;
+    }
+
+    #[tokio::test]
     async fn test_deleting_note_cascades_to_its_embeddings() {
         let pool = crate::test_db().await;
         sqlx::raw_sql(
@@ -914,6 +991,108 @@ mod tests {
                 .unwrap();
         assert_eq!(rows, vec![("b".into(), 0), ("a".into(), 1)]);
         pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn test_migrate_kind_adds_markdown_default_to_notes_and_scratchpad() {
+        use sqlx::sqlite::SqlitePoolOptions;
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        // Old shape: no Kind on either table.
+        sqlx::raw_sql(
+            "CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, FolderId INTEGER,
+                 Title TEXT NOT NULL, Body TEXT NOT NULL DEFAULT '',
+                 Pinned INTEGER NOT NULL DEFAULT 0, CreatedAt TEXT NOT NULL,
+                 UpdatedAt TEXT NOT NULL, Position INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE scratchpad (id INTEGER PRIMARY KEY CHECK (id = 1),
+                 Body TEXT NOT NULL DEFAULT '', UpdatedAt TEXT NOT NULL);
+             INSERT INTO notes (Title, Body, CreatedAt, UpdatedAt) VALUES ('a', '{}', 'x', 'x');
+             INSERT INTO scratchpad (id, Body, UpdatedAt) VALUES (1, 'pad', 'x');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        for _ in 0..2 {
+            // second run is a no-op
+            super::migrate_notes_kind(&pool).await.unwrap();
+            super::migrate_scratchpad_kind(&pool).await.unwrap();
+        }
+        let note: (String, String) = sqlx::query_as("SELECT Body, Kind FROM notes")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(note, ("{}".into(), "markdown".into()));
+        let pad: (String, String) = sqlx::query_as("SELECT Body, Kind FROM scratchpad")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(pad, ("pad".into(), "markdown".into()));
+        // New rows default to markdown; unknown kinds are rejected.
+        sqlx::query("INSERT INTO notes (Title, CreatedAt, UpdatedAt) VALUES ('b', 'x', 'x')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let kinds: Vec<(String,)> = sqlx::query_as("SELECT Kind FROM notes ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(kinds, vec![("markdown".into(),), ("markdown".into(),)]);
+        assert!(sqlx::query("UPDATE notes SET Kind = 'yaml'")
+            .execute(&pool)
+            .await
+            .is_err());
+        sqlx::query("UPDATE scratchpad SET Kind = 'json'")
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_init_db_migrates_notes_and_scratchpad_without_kind() {
+        let db = TempDb::new("pre-kind");
+        {
+            use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+            let opts = SqliteConnectOptions::new()
+                .filename(&db.0)
+                .create_if_missing(true);
+            let pool = SqlitePoolOptions::new().connect_with(opts).await.unwrap();
+            let kind_line = ",\n    -- Editor mode: 'markdown' or 'json'. JSON notes are title-only in the derived indexes.\n    Kind      TEXT    NOT NULL DEFAULT 'markdown' CHECK (Kind IN ('markdown', 'json'))";
+            let pad_line = ",\n    -- Editor mode: 'markdown' or 'json'.\n    Kind      TEXT    NOT NULL DEFAULT 'markdown' CHECK (Kind IN ('markdown', 'json'))";
+            let old_schema = super::SCHEMA_SQL
+                .replace(kind_line, "")
+                .replace(pad_line, "");
+            assert_eq!(
+                old_schema
+                    .matches("Kind      TEXT    NOT NULL DEFAULT 'markdown'")
+                    .count(),
+                0,
+                "old shape must drop both Kind columns"
+            );
+            sqlx::raw_sql(&old_schema).execute(&pool).await.unwrap();
+            sqlx::raw_sql(
+                "INSERT INTO notes (Title, Body, CreatedAt, UpdatedAt) VALUES ('Old', 'see #tag', 'x', 'x');
+                 INSERT INTO scratchpad (id, Body, UpdatedAt) VALUES (1, 'jot', 'x');",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            pool.close().await;
+        }
+        for _ in 0..2 {
+            let pool = super::init_db(&db.0).await.unwrap();
+            let note = crate::commands::notes::inner_get_note(1, &pool)
+                .await
+                .unwrap();
+            assert_eq!(note.kind, "markdown");
+            let pad = crate::commands::scratchpad::inner_get_scratchpad(&pool)
+                .await
+                .unwrap();
+            assert_eq!((pad.body.as_str(), pad.kind.as_str()), ("jot", "markdown"));
+            pool.close().await;
+        }
     }
 
     #[tokio::test]

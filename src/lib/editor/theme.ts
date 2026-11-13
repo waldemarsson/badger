@@ -205,7 +205,70 @@ const editorTheme = EditorView.theme({
 		backgroundColor: 'var(--note-snippet-field)',
 		borderRadius: '0.25rem'
 	},
-	'.cm-content .cm-snippetFieldPosition': { borderLeft: '1.5px dotted var(--note-snippet-marker)' }
+	'.cm-content .cm-snippetFieldPosition': { borderLeft: '1.5px dotted var(--note-snippet-marker)' },
+
+	// JSON mode: monospace code with a lint and fold gutter.
+	'&.cm-json-mode .cm-content': { fontFamily: mono, fontSize: '13.5px', lineHeight: '1.6', paddingTop: '0.75rem' },
+	'&.cm-json-mode .cm-line': { padding: '0 1.5rem 0 0.25rem' },
+	// No vertical padding here: gutter markers already line up with the content's padding.
+	'.cm-gutters': { backgroundColor: 'transparent', border: 'none', color: 'var(--note-muted)', paddingLeft: '0.75rem' },
+	'.cm-foldGutter .cm-gutterElement': { padding: '0 0.25rem', cursor: 'pointer', transition: 'color 150ms' },
+	'.cm-foldGutter .cm-gutterElement:hover': { color: 'var(--note-fg)' },
+	'.cm-foldPlaceholder': {
+		backgroundColor: 'var(--note-code-bg)',
+		border: '1px solid var(--note-border)',
+		borderRadius: '0.35rem',
+		color: 'var(--note-muted)',
+		padding: '0 0.35em',
+		margin: '0 0.15em'
+	},
+	'&.cm-focused .cm-matchingBracket': {
+		backgroundColor: 'var(--note-selection)',
+		outline: '1px solid var(--note-match-outline)',
+		borderRadius: '2px'
+	},
+	'&.cm-focused .cm-nonmatchingBracket': { color: 'var(--note-code-invalid)', backgroundColor: 'transparent' },
+	// Lint and fold tooltips (the selectors outweigh the base theme's light/dark colors)
+	'.cm-tooltip.cm-tooltip-lint, .cm-tooltip.cm-tooltip-hover': {
+		border: 'none',
+		borderRadius: '0.6rem',
+		padding: '0.25rem',
+		color: 'var(--note-fg)',
+		backgroundColor: 'var(--note-popup-bg)',
+		boxShadow: '0 0 0 1px var(--note-popup-ring), 0 10px 15px -3px var(--note-popup-shadow)'
+	},
+	'.cm-tooltip .cm-diagnostic': { fontSize: '0.8125rem', padding: '0.25rem 0.5rem', borderRadius: '0.35rem' },
+	'.cm-tooltip .cm-diagnostic-error': { borderLeft: '3px solid var(--note-code-invalid)' },
+
+	// Format / Minify chips on a ```json fence line
+	'.cm-json-chips': {
+		display: 'inline-flex',
+		alignItems: 'center',
+		gap: '0.3rem',
+		marginLeft: '0.75rem',
+		verticalAlign: '0.1em',
+		fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+		userSelect: 'none'
+	},
+	'.cm-json-chip': {
+		borderRadius: '9999px',
+		border: '1px solid var(--note-border)',
+		backgroundColor: 'var(--note-popup-bg)',
+		color: 'var(--note-muted)',
+		padding: '0 0.55rem',
+		fontSize: '0.7rem',
+		fontWeight: '600',
+		lineHeight: '1.35rem',
+		cursor: 'pointer',
+		transition: 'background-color 150ms, color 150ms, border-color 150ms'
+	},
+	'.cm-json-chip:hover': {
+		backgroundColor: 'var(--note-popup-active-bg)',
+		color: 'var(--note-popup-active-fg)',
+		borderColor: 'var(--note-popup-active-bg)'
+	},
+	'.cm-json-chip:focus-visible': { outline: '2px solid var(--note-caret)', outlineOffset: '1px' },
+	'.cm-json-chip-error': { fontSize: '0.75rem', fontWeight: '500', color: 'var(--note-code-invalid)' }
 });
 
 /** Colors for markdown source that shows while editing (markers, URLs). */

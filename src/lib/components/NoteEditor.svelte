@@ -4,11 +4,14 @@
 	import { onMount } from 'svelte';
 	import type { LinkData, LinkFollowScope } from '#lib/editor/links.js';
 	import { NoteView } from '#lib/editor/note-view.js';
+	import type { JsonFormatMode } from '#lib/json-format.js';
 	import type { LinkFollow } from '#lib/note-links.js';
+	import type { NoteKind } from '#lib/types.js';
 
 	let {
 		onchange,
 		onfollow,
+		onformat,
 		followScope = 'all',
 		class: className = ''
 	}: {
@@ -16,6 +19,8 @@
 		onchange: (id: number, body: string) => void;
 		/** A tag, chip or wikilink was ⌘-clicked. */
 		onfollow: (link: LinkFollow) => void;
+		/** ⇧⌥F in a JSON note: an "Invalid JSON: …" message, or null when it formatted. */
+		onformat?: (error: string | null) => void;
 		/** What ⌘-click can follow (read once, at mount): everything, or resolved wikilinks only. */
 		followScope?: LinkFollowScope;
 		class?: string;
@@ -26,9 +31,19 @@
 	let host: HTMLDivElement;
 	let editor: NoteView | undefined;
 
-	/** Shows note `id`; its cached state (unsaved edits, undo history) wins over `body`. */
-	export function open(id: number, body: string): void {
-		editor?.open(id, body);
+	/** Shows note `id` in `kind`'s mode; its cached state (unsaved edits, undo history) wins over `body`. */
+	export function open(id: number, body: string, kind: NoteKind = 'markdown'): void {
+		editor?.open(id, body, kind);
+	}
+
+	/** Switches the shown note between the markdown and JSON editors (the text stays). */
+	export function setKind(kind: NoteKind): void {
+		editor?.setKind(kind);
+	}
+
+	/** Formats or minifies the shown JSON note; returns "Invalid JSON: …" or null. */
+	export function format(mode: JsonFormatMode): string | null {
+		return editor?.format(mode) ?? null;
 	}
 
 	/** Shows nothing (no note selected). */
@@ -71,7 +86,8 @@
 			host,
 			(id, body) => onchange(id, body),
 			(link) => onfollow(link),
-			followScope
+			followScope,
+			(error) => onformat?.(error)
 		);
 		if (links) editor.setLinks(links);
 		return () => {

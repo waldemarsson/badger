@@ -14,9 +14,40 @@ pub const MAX_EXCERPT_CHARS: usize = 120;
 const FORBIDDEN_TITLE_CHARS: [char; 5] = ['[', ']', '|', '#', '`'];
 const UNTITLED: &str = "Untitled";
 /// Version of the link extraction rules. Bump it when they change: the next start
-/// rebuilds `note_refs` (see `db::backfill_note_refs`).
-pub const NOTE_REFS_VERSION: &str = "1";
+/// rebuilds `note_refs` and `notes_fts` (see `db::backfill_note_refs`). 2: JSON notes are
+/// title-only. Older builds reset it to 1 when they rebuild, so after a downgrade (which
+/// indexes JSON bodies as markdown) the next start of this build rebuilds again.
+pub const NOTE_REFS_VERSION: &str = "2";
 pub const NOTE_REFS_VERSION_KEY: &str = "note_refs_version";
+/// Note (and scratchpad) kinds: the editor mode stored in `Kind`.
+pub const KIND_MARKDOWN: &str = "markdown";
+pub const KIND_JSON: &str = "json";
+/// Largest JSON body in UTF-8 bytes. Markdown bodies have no limit.
+pub const MAX_JSON_BYTES: usize = 5 * 1024 * 1024;
+pub const JSON_TOO_LARGE: &str = "JSON notes are limited to 5 MB";
+
+/// Serde default for `kind` fields: rows and backups from before JSON notes.
+pub fn default_kind() -> String {
+    KIND_MARKDOWN.to_string()
+}
+
+/// Rejects anything but `markdown` and `json`.
+pub fn check_kind(kind: &str) -> Result<(), AppError> {
+    if kind == KIND_MARKDOWN || kind == KIND_JSON {
+        Ok(())
+    } else {
+        Err(AppError::Custom(format!("Unknown note kind \"{kind}\"")))
+    }
+}
+
+/// Rejects a JSON body over [`MAX_JSON_BYTES`].
+pub fn check_json_size(kind: &str, body: &str) -> Result<(), AppError> {
+    if kind == KIND_JSON && body.len() > MAX_JSON_BYTES {
+        Err(AppError::Custom(JSON_TOO_LARGE.to_string()))
+    } else {
+        Ok(())
+    }
+}
 
 /// A full note, including its body.
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq)]
@@ -30,6 +61,9 @@ pub struct Note {
     pub updated_at: String,
     /// Manual order within the folder (display: pinned first, then `position`, then id).
     pub position: i64,
+    /// `markdown` or `json`.
+    #[serde(default = "default_kind")]
+    pub kind: String,
 }
 
 /// A note for the list: the body is replaced by a short plain-text excerpt.
@@ -43,12 +77,19 @@ pub struct NoteSummary {
     pub created_at: String,
     pub updated_at: String,
     pub position: i64,
+    #[serde(default = "default_kind")]
+    pub kind: String,
 }
 
 impl From<Note> for NoteSummary {
+    /// JSON notes have no excerpt.
     fn from(n: Note) -> Self {
         NoteSummary {
-            excerpt: excerpt(&n.body, &n.title),
+            excerpt: if n.kind == KIND_JSON {
+                String::new()
+            } else {
+                excerpt(&n.body, &n.title)
+            },
             id: n.id,
             folder_id: n.folder_id,
             title: n.title,
@@ -56,10 +97,12 @@ impl From<Note> for NoteSummary {
             created_at: n.created_at,
             updated_at: n.updated_at,
             position: n.position,
+            kind: n.kind,
         }
     }
 }
 
+/// Full notes (`get_note`): every column, the whole body.
 const SELECT_NOTES: &str = "SELECT id,
         FolderId  AS folder_id,
         Title     AS title,
@@ -67,7 +110,20 @@ const SELECT_NOTES: &str = "SELECT id,
         Pinned    AS pinned,
         CreatedAt AS created_at,
         UpdatedAt AS updated_at,
-        Position  AS position
+        Position  AS position,
+        Kind      AS kind
+ FROM notes";
+
+/// The list (`list_notes` only): JSON bodies are never read, their excerpt is empty.
+const SELECT_NOTE_LIST: &str = "SELECT id,
+        FolderId  AS folder_id,
+        Title     AS title,
+        CASE WHEN Kind = 'json' THEN '' ELSE Body END AS body,
+        Pinned    AS pinned,
+        CreatedAt AS created_at,
+        UpdatedAt AS updated_at,
+        Position  AS position,
+        Kind      AS kind
  FROM notes";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -386,31 +442,35 @@ async fn insert_note(
     pool: &Pool<Sqlite>,
 ) -> Result<i64, AppError> {
     let mut tx = pool.begin().await?;
-    let id = insert_note_in(title, "", folder_id, &mut tx).await?;
+    let id = insert_note_in(title, "", KIND_MARKDOWN, folder_id, &mut tx).await?;
     tx.commit().await?;
     Ok(id)
 }
 
-/// Inserts a note with `body` and indexes it (search and links) inside the caller's
-/// transaction, without the Rust-side duplicate check. The note goes to the top of its
-/// folder (pinned notes still show above it).
+/// Inserts a note of `kind` with `body` and indexes it (search and links) inside the
+/// caller's transaction, without the Rust-side duplicate check. The note goes to the top
+/// of its folder (pinned notes still show above it). JSON bodies obey the size limit.
 async fn insert_note_in(
     title: &str,
     body: &str,
+    kind: &str,
     folder_id: Option<i64>,
     conn: &mut SqliteConnection,
 ) -> Result<i64, AppError> {
+    check_kind(kind)?;
+    check_json_size(kind, body)?;
     let ts = now();
     super::folders::ensure_folder_exists(folder_id, &mut *conn).await?;
     let row: (i64,) = sqlx::query_as(
-        "INSERT INTO notes (FolderId, Title, Body, Pinned, CreatedAt, UpdatedAt, Position) \
-         VALUES (?, ?, ?, 0, ?, ?, \
+        "INSERT INTO notes (FolderId, Title, Body, Kind, Pinned, CreatedAt, UpdatedAt, Position) \
+         VALUES (?, ?, ?, ?, 0, ?, ?, \
                  (SELECT COALESCE(MIN(Position) - 1, 0) FROM notes WHERE FolderId IS ?)) \
          RETURNING id",
     )
     .bind(folder_id)
     .bind(title)
     .bind(body)
+    .bind(kind)
     .bind(&ts)
     .bind(&ts)
     .bind(folder_id)
@@ -421,12 +481,13 @@ async fn insert_note_in(
     Ok(row.0)
 }
 
-/// Creates a note titled `title` with `body` inside the caller's transaction: the title
-/// is validated and must be unique case-insensitively (non-ASCII too). Returns its id.
-/// The caller queues it for the semantic index after committing.
+/// Creates a note of `kind` titled `title` with `body` inside the caller's transaction:
+/// the title is validated and must be unique case-insensitively (non-ASCII too). Returns
+/// its id. The caller queues it for the semantic index after committing.
 pub(crate) async fn insert_titled_note(
     title: &str,
     body: &str,
+    kind: &str,
     folder_id: Option<i64>,
     conn: &mut SqliteConnection,
 ) -> Result<i64, AppError> {
@@ -437,7 +498,7 @@ pub(crate) async fn insert_titled_note(
     {
         return Err(duplicate(&title));
     }
-    insert_note_in(&title, body, folder_id, conn).await
+    insert_note_in(&title, body, kind, folder_id, conn).await
 }
 
 // ── Inner functions (testable without Tauri) ──────────────────────────────────
@@ -445,7 +506,7 @@ pub(crate) async fn insert_titled_note(
 /// All notes without bodies: pinned first, then manual position, then id (the tree order
 /// within each folder).
 pub async fn inner_list_notes(pool: &Pool<Sqlite>) -> Result<Vec<NoteSummary>, AppError> {
-    let sql = format!("{SELECT_NOTES} ORDER BY Pinned DESC, Position, id");
+    let sql = format!("{SELECT_NOTE_LIST} ORDER BY Pinned DESC, Position, id");
     let notes = sqlx::query_as::<_, Note>(&sql).fetch_all(pool).await?;
     Ok(notes.into_iter().map(NoteSummary::from).collect())
 }
@@ -482,7 +543,7 @@ pub async fn inner_create_note_titled(
     pool: &Pool<Sqlite>,
 ) -> Result<Note, AppError> {
     let mut tx = pool.begin().await?;
-    let id = insert_titled_note(title, "", folder_id, &mut tx).await?;
+    let id = insert_titled_note(title, "", KIND_MARKDOWN, folder_id, &mut tx).await?;
     tx.commit().await?;
     inner_get_note(id, pool).await
 }
@@ -518,23 +579,99 @@ pub async fn inner_rename_note(
     })
 }
 
-/// Replaces the body. An identical body is a no-op that keeps `UpdatedAt`.
+/// Replaces the body. An identical body is a no-op that keeps `UpdatedAt`. A JSON
+/// note's body is limited to [`MAX_JSON_BYTES`].
 pub async fn inner_update_note_body(
     id: i64,
     body: &str,
     pool: &Pool<Sqlite>,
 ) -> Result<NoteSummary, AppError> {
-    // 0 rows affected means unchanged or missing; get_summary tells them apart.
+    // 0 rows affected means unchanged, missing or over the JSON limit; the kind check and
+    // get_summary tell them apart. The limit is in the statement, so a concurrent kind
+    // switch can't slip an oversized body past it.
+    let over_json_limit = body.len() > MAX_JSON_BYTES;
     let mut tx = pool.begin().await?;
-    let result =
-        sqlx::query("UPDATE notes SET Body = ?, UpdatedAt = ? WHERE id = ? AND Body IS NOT ?")
-            .bind(body)
-            .bind(now())
+    let result = sqlx::query(
+        "UPDATE notes SET Body = ?, UpdatedAt = ? \
+         WHERE id = ? AND Body IS NOT ? AND NOT (? AND Kind = 'json')",
+    )
+    .bind(body)
+    .bind(now())
+    .bind(id)
+    .bind(body)
+    .bind(over_json_limit)
+    .execute(&mut *tx)
+    .await?;
+    if result.rows_affected() > 0 {
+        index_note(id, &mut tx).await?;
+    } else if over_json_limit {
+        let kind: Option<String> = sqlx::query_scalar("SELECT Kind FROM notes WHERE id = ?")
             .bind(id)
-            .bind(body)
+            .fetch_optional(&mut *tx)
+            .await?;
+        if kind.as_deref() == Some(KIND_JSON) {
+            return Err(AppError::Custom(JSON_TOO_LARGE.to_string()));
+        }
+    }
+    tx.commit().await?;
+    get_summary(id, pool).await
+}
+
+/// Switches a note between markdown and JSON, first storing `body` (the editor's pending
+/// text, so a switch can't fail on a separate flush) when given. The body is never
+/// converted. Switching to JSON checks the size limit, makes the note title-only in the
+/// search index, drops its tags and links and deletes its embeddings; switching to
+/// markdown indexes the body again. One transaction; `UpdatedAt` only moves with the body.
+pub async fn inner_set_note_kind(
+    id: i64,
+    kind: &str,
+    body: Option<&str>,
+    pool: &Pool<Sqlite>,
+) -> Result<NoteSummary, AppError> {
+    check_kind(kind)?;
+    if let Some(body) = body {
+        check_json_size(kind, body)?;
+    }
+    let mut tx = pool.begin().await?;
+    let mut changed = false;
+    if let Some(body) = body {
+        let result =
+            sqlx::query("UPDATE notes SET Body = ?, UpdatedAt = ? WHERE id = ? AND Body IS NOT ?")
+                .bind(body)
+                .bind(now())
+                .bind(id)
+                .bind(body)
+                .execute(&mut *tx)
+                .await?;
+        changed |= result.rows_affected() > 0;
+    }
+    let result = sqlx::query("UPDATE notes SET Kind = ? WHERE id = ? AND Kind IS NOT ?")
+        .bind(kind)
+        .bind(id)
+        .bind(kind)
+        .execute(&mut *tx)
+        .await?;
+    changed |= result.rows_affected() > 0;
+    // Bytes, not characters: SQLite's length() of a BLOB.
+    let stored_bytes: Option<i64> =
+        sqlx::query_scalar("SELECT length(CAST(Body AS BLOB)) FROM notes WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some(stored_bytes) = stored_bytes else {
+        return Err(not_found());
+    };
+    if kind == KIND_JSON {
+        if usize::try_from(stored_bytes).unwrap_or(usize::MAX) > MAX_JSON_BYTES {
+            return Err(AppError::Custom(JSON_TOO_LARGE.to_string()));
+        }
+        // Eviction alone would leave rows that the next start loads into the cache.
+        sqlx::query("DELETE FROM note_embeddings WHERE NoteId = ?")
+            .bind(id)
             .execute(&mut *tx)
             .await?;
-    if result.rows_affected() > 0 {
+    }
+    if changed {
         index_note(id, &mut tx).await?;
     }
     tx.commit().await?;
@@ -626,30 +763,44 @@ fn strip_hit_markers(text: &str) -> String {
     text.replace([HIT_START, HIT_END], "")
 }
 
-/// Writes (or rewrites) one note's index row from its stored title and body.
+/// Body as the derived indexes read it: JSON bodies are skipped (never loaded).
+const INDEXED_BODY: &str = "CASE WHEN Kind = 'json' THEN '' ELSE Body END";
+
+/// Writes (or rewrites) one note's index rows (search and links) from its stored title,
+/// body and kind.
 async fn index_note(id: i64, conn: &mut SqliteConnection) -> Result<(), sqlx::Error> {
     sqlx::query("DELETE FROM notes_fts WHERE rowid = ?")
         .bind(id)
         .execute(&mut *conn)
         .await?;
-    let row: Option<(String, String)> =
-        sqlx::query_as("SELECT Title, Body FROM notes WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&mut *conn)
-            .await?;
-    if let Some((title, body)) = row {
-        insert_index_row(id, &title, &body, conn).await?;
-        index_refs(id, &body, conn).await?;
+    let row: Option<(String, String, String)> = sqlx::query_as(&format!(
+        "SELECT Title, {INDEXED_BODY}, Kind FROM notes WHERE id = ?"
+    ))
+    .bind(id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    if let Some((title, body, kind)) = row {
+        insert_index_row(id, &title, &body, &kind, conn).await?;
+        index_refs(id, &body, &kind, conn).await?;
     }
     Ok(())
 }
 
-/// Replaces one note's rows in `note_refs` with the tags and links in `body`.
-async fn index_refs(id: i64, body: &str, conn: &mut SqliteConnection) -> Result<(), sqlx::Error> {
+/// Replaces one note's rows in `note_refs` with the tags and links in `body`. JSON notes
+/// have none.
+async fn index_refs(
+    id: i64,
+    body: &str,
+    kind: &str,
+    conn: &mut SqliteConnection,
+) -> Result<(), sqlx::Error> {
     sqlx::query("DELETE FROM note_refs WHERE NoteId = ?")
         .bind(id)
         .execute(&mut *conn)
         .await?;
+    if kind == KIND_JSON {
+        return Ok(());
+    }
     let mut seen = std::collections::HashSet::new();
     for r in note_links::extract(body) {
         if !seen.insert((r.kind, r.target.clone())) {
@@ -670,11 +821,12 @@ pub(crate) async fn rebuild_refs(conn: &mut SqliteConnection) -> Result<(), sqlx
     sqlx::query("DELETE FROM note_refs")
         .execute(&mut *conn)
         .await?;
-    let notes: Vec<(i64, String)> = sqlx::query_as("SELECT id, Body FROM notes")
-        .fetch_all(&mut *conn)
-        .await?;
-    for (id, body) in notes {
-        index_refs(id, &body, conn).await?;
+    let notes: Vec<(i64, String, String)> =
+        sqlx::query_as(&format!("SELECT id, {INDEXED_BODY}, Kind FROM notes"))
+            .fetch_all(&mut *conn)
+            .await?;
+    for (id, body, kind) in notes {
+        index_refs(id, &body, &kind, conn).await?;
     }
     sqlx::query(
         "INSERT INTO app_settings (Key, Value) VALUES (?, ?)
@@ -687,16 +839,23 @@ pub(crate) async fn rebuild_refs(conn: &mut SqliteConnection) -> Result<(), sqlx
     Ok(())
 }
 
+/// One `notes_fts` row: the title and the body as plain text. JSON notes are title-only.
 async fn insert_index_row(
     id: i64,
     title: &str,
     body: &str,
+    kind: &str,
     conn: &mut SqliteConnection,
 ) -> Result<(), sqlx::Error> {
+    let plain = if kind == KIND_JSON {
+        String::new()
+    } else {
+        strip_hit_markers(&super::markdown::to_plain_text(body))
+    };
     sqlx::query("INSERT INTO notes_fts (rowid, Title, Body) VALUES (?, ?, ?)")
         .bind(id)
         .bind(strip_hit_markers(title))
-        .bind(strip_hit_markers(&super::markdown::to_plain_text(body)))
+        .bind(plain)
         .execute(conn)
         .await?;
     Ok(())
@@ -708,11 +867,13 @@ pub(crate) async fn rebuild_index(conn: &mut SqliteConnection) -> Result<(), sql
     sqlx::query("DELETE FROM notes_fts")
         .execute(&mut *conn)
         .await?;
-    let notes: Vec<(i64, String, String)> = sqlx::query_as("SELECT id, Title, Body FROM notes")
-        .fetch_all(&mut *conn)
-        .await?;
-    for (id, title, body) in notes {
-        insert_index_row(id, &title, &body, conn).await?;
+    let notes: Vec<(i64, String, String, String)> = sqlx::query_as(&format!(
+        "SELECT id, Title, {INDEXED_BODY}, Kind FROM notes"
+    ))
+    .fetch_all(&mut *conn)
+    .await?;
+    for (id, title, body, kind) in notes {
+        insert_index_row(id, &title, &body, &kind, conn).await?;
     }
     rebuild_refs(conn).await
 }
@@ -760,9 +921,11 @@ pub async fn inner_search_notes(
         .partition(|t| t.chars().count() >= MIN_TRIGRAM_CHARS);
 
     let mut sql = String::from(
-        "SELECT n.id, n.FolderId AS folder_id, n.Title AS title, n.Body AS body,
+        "SELECT n.id, n.FolderId AS folder_id, n.Title AS title,
+                CASE WHEN n.Kind = 'json' THEN '' ELSE n.Body END AS body,
                 n.Pinned AS pinned, n.CreatedAt AS created_at, n.UpdatedAt AS updated_at,
-                n.Position AS position, notes_fts.Title AS plain_title, notes_fts.Body AS plain_body,",
+                n.Position AS position, n.Kind AS kind,
+                notes_fts.Title AS plain_title, notes_fts.Body AS plain_body,",
     );
     if long.is_empty() {
         sql.push_str(" n.Title AS title_marked, '' AS snippet");
@@ -1332,7 +1495,27 @@ pub async fn update_note_body_and_queue(
     semantic: &SemanticState,
 ) -> Result<NoteSummary, AppError> {
     let summary = inner_update_note_body(id, body, pool).await?;
-    semantic.enqueue([id]);
+    if summary.kind != KIND_JSON {
+        semantic.enqueue([id]);
+    }
+    Ok(summary)
+}
+
+/// After a switch to JSON the note leaves the vector cache and the queue (its rows were
+/// deleted in the switch); after a switch to markdown it is queued for embedding.
+pub async fn set_note_kind_and_queue(
+    id: i64,
+    kind: &str,
+    body: Option<&str>,
+    pool: &Pool<Sqlite>,
+    semantic: &SemanticState,
+) -> Result<NoteSummary, AppError> {
+    let summary = inner_set_note_kind(id, kind, body, pool).await?;
+    if summary.kind == KIND_JSON {
+        semantic.evict(id);
+    } else {
+        semantic.enqueue([id]);
+    }
     Ok(summary)
 }
 
@@ -1411,6 +1594,18 @@ pub async fn update_note_body(
     semantic: State<'_, SemanticState>,
 ) -> Result<NoteSummary, AppError> {
     update_note_body_and_queue(id, &body, pool.inner(), semantic.inner()).await
+}
+
+/// `body`: the editor's unsaved text, stored in the same transaction.
+#[tauri::command]
+pub async fn set_note_kind(
+    id: i64,
+    kind: String,
+    body: Option<String>,
+    pool: State<'_, Pool<Sqlite>>,
+    semantic: State<'_, SemanticState>,
+) -> Result<NoteSummary, AppError> {
+    set_note_kind_and_queue(id, &kind, body.as_deref(), pool.inner(), semantic.inner()).await
 }
 
 #[tauri::command]
@@ -2705,6 +2900,308 @@ mod tests {
         assert!(state.queued().is_empty());
     }
 
+    // ── JSON notes ────────────────────────────────────────────────────────────
+
+    async fn fts_body(id: i64, pool: &Pool<Sqlite>) -> String {
+        sqlx::query_scalar("SELECT Body FROM notes_fts WHERE rowid = ?")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    async fn embedding_rows(id: i64, pool: &Pool<Sqlite>) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM note_embeddings WHERE NoteId = ?")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    const JSON_BODY: &str = "{\"q\": \"zebracorn #jsontag [[Target]]\"}";
+
+    #[tokio::test]
+    async fn new_notes_are_markdown_and_set_kind_validates() {
+        let pool = crate::test_db().await;
+        let n = inner_create_note(None, &pool).await.unwrap();
+        assert_eq!(n.kind, "markdown");
+        assert_eq!(
+            err_msg(inner_set_note_kind(n.id, "yaml", None, &pool).await),
+            "Unknown note kind \"yaml\""
+        );
+        assert_eq!(
+            err_msg(inner_set_note_kind(999, "json", None, &pool).await),
+            "Note not found"
+        );
+        let s = inner_set_note_kind(n.id, "json", None, &pool)
+            .await
+            .unwrap();
+        assert_eq!(s.kind, "json");
+        assert_eq!(inner_get_note(n.id, &pool).await.unwrap().kind, "json");
+        assert_eq!(
+            inner_set_note_kind(n.id, "markdown", None, &pool)
+                .await
+                .unwrap()
+                .kind,
+            "markdown"
+        );
+    }
+
+    #[tokio::test]
+    async fn switching_never_converts_the_body_and_only_a_new_body_bumps_updated_at() {
+        let pool = crate::test_db().await;
+        let id = note_with("Data", "not json at all", &pool).await;
+        set_updated_at(id, OLD, &pool).await;
+        inner_set_note_kind(id, "json", None, &pool).await.unwrap();
+        let n = inner_get_note(id, &pool).await.unwrap();
+        assert_eq!(
+            (n.body.as_str(), n.updated_at.as_str()),
+            ("not json at all", OLD)
+        );
+
+        // The pending body is stored with the switch.
+        let s = inner_set_note_kind(id, "markdown", Some("[1, 2]"), &pool)
+            .await
+            .unwrap();
+        assert_ne!(s.updated_at, OLD);
+        assert_eq!(inner_get_note(id, &pool).await.unwrap().body, "[1, 2]");
+    }
+
+    #[tokio::test]
+    async fn json_limit_is_5_mb_in_bytes_and_markdown_has_none() {
+        let pool = crate::test_db().await;
+        let id = note_titled("Big", &pool).await.id;
+        let exact = "x".repeat(MAX_JSON_BYTES);
+        let over = "x".repeat(MAX_JSON_BYTES + 1);
+        // Multi-byte: fewer characters than the limit, more bytes.
+        let multibyte = "å".repeat(MAX_JSON_BYTES / 2 + 1);
+        assert!(multibyte.chars().count() < MAX_JSON_BYTES);
+
+        // Markdown: no limit.
+        inner_update_note_body(id, &over, &pool).await.unwrap();
+        // Switching an oversized note to JSON fails and changes nothing.
+        assert_eq!(
+            err_msg(inner_set_note_kind(id, "json", None, &pool).await),
+            JSON_TOO_LARGE
+        );
+        assert_eq!(inner_get_note(id, &pool).await.unwrap().kind, "markdown");
+        assert_eq!(
+            err_msg(inner_set_note_kind(id, "json", Some(&multibyte), &pool).await),
+            JSON_TOO_LARGE
+        );
+        assert_eq!(inner_get_note(id, &pool).await.unwrap().body, over);
+
+        // Exactly 5 MB is allowed, as a pending body and as a save.
+        inner_set_note_kind(id, "json", Some(&exact), &pool)
+            .await
+            .unwrap();
+        set_updated_at(id, OLD, &pool).await;
+        assert_eq!(
+            err_msg(inner_update_note_body(id, &over, &pool).await),
+            JSON_TOO_LARGE
+        );
+        assert_eq!(
+            err_msg(inner_update_note_body(id, &multibyte, &pool).await),
+            JSON_TOO_LARGE
+        );
+        let n = inner_get_note(id, &pool).await.unwrap();
+        assert_eq!((n.body.len(), n.updated_at.as_str()), (MAX_JSON_BYTES, OLD));
+        inner_update_note_body(id, "[]", &pool).await.unwrap();
+        inner_update_note_body(id, &exact, &pool).await.unwrap();
+        assert_eq!(
+            err_msg(inner_update_note_body(999, &over, &pool).await),
+            "Note not found"
+        );
+
+        // An oversized JSON note (restore) can switch to markdown with its pending body.
+        sqlx::query("UPDATE notes SET Body = ? WHERE id = ?")
+            .bind(&over)
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let s = inner_set_note_kind(id, "markdown", Some(&format!("{over}y")), &pool)
+            .await
+            .unwrap();
+        assert_eq!(s.kind, "markdown");
+    }
+
+    #[tokio::test]
+    async fn json_notes_are_title_only_without_refs_and_switching_back_restores_both() {
+        let pool = crate::test_db().await;
+        let target = note_titled("Target", &pool).await.id;
+        let id = note_with("Payload", JSON_BODY, &pool).await;
+        assert_eq!(hit_ids("zebracorn", &pool).await, vec![id]);
+        assert_eq!(refs_of(id, &pool).await.len(), 2);
+
+        inner_set_note_kind(id, "json", None, &pool).await.unwrap();
+        assert!(
+            hit_ids("zebracorn", &pool).await.is_empty(),
+            "body not indexed"
+        );
+        assert!(hit_ids("#jsontag", &pool).await.is_empty());
+        assert_eq!(hit_ids("payload", &pool).await, vec![id], "title still is");
+        assert_eq!(fts_body(id, &pool).await, "");
+        assert!(refs_of(id, &pool).await.is_empty());
+        assert!(inner_list_backlinks(target, &pool)
+            .await
+            .unwrap()
+            .is_empty());
+
+        // Saving a JSON body keeps it out too.
+        inner_update_note_body(id, "{\"q\": \"quokka #other [[Target]]\"}", &pool)
+            .await
+            .unwrap();
+        assert!(hit_ids("quokka", &pool).await.is_empty());
+        assert!(refs_of(id, &pool).await.is_empty());
+        let hits = inner_search_notes("payload", None, &pool).await.unwrap();
+        assert_eq!(hits[0].note.excerpt, "");
+        assert_eq!(hits[0].note.kind, "json");
+
+        // Rebuilds keep it title-only.
+        let mut conn = pool.acquire().await.unwrap();
+        rebuild_index(&mut conn).await.unwrap();
+        rebuild_refs(&mut conn).await.unwrap();
+        drop(conn);
+        inner_rebuild_search_index(&pool).await.unwrap();
+        assert_eq!(fts_body(id, &pool).await, "");
+        assert!(refs_of(id, &pool).await.is_empty());
+        assert_eq!(hit_ids("payload", &pool).await, vec![id]);
+
+        // Back to markdown: body and refs indexed again.
+        inner_set_note_kind(id, "markdown", None, &pool)
+            .await
+            .unwrap();
+        assert_eq!(hit_ids("quokka", &pool).await, vec![id]);
+        assert_eq!(
+            refs_of(id, &pool).await,
+            rows(&[("link", "target"), ("tag", "other")])
+        );
+        assert_eq!(inner_list_backlinks(target, &pool).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn renames_never_rewrite_json_bodies_and_links_still_reach_json_notes() {
+        let pool = crate::test_db().await;
+        let linker = note_with("Linker", "see [[Data]]", &pool).await;
+        let data = note_with("Data", "{\"see\": \"[[Data]] [[Linker]]\"}", &pool).await;
+        inner_set_note_kind(data, "json", None, &pool)
+            .await
+            .unwrap();
+
+        // Renaming the JSON note retargets markdown links to it, not its own body.
+        let renamed = inner_rename_note(data, "Dataset", &pool).await.unwrap();
+        assert_eq!(renamed.rewritten_ids, vec![linker]);
+        assert_eq!(body_of(linker, &pool).await, "see [[Dataset]]");
+        assert_eq!(
+            body_of(data, &pool).await,
+            "{\"see\": \"[[Data]] [[Linker]]\"}"
+        );
+        assert_eq!(fts_body(data, &pool).await, "");
+        assert!(refs_of(data, &pool).await.is_empty());
+        // The new title is indexed (the linker's rewritten body matches too).
+        assert_eq!(hit_ids("dataset", &pool).await, vec![data, linker]);
+        // Backlinks to the JSON note come from markdown notes.
+        let backlinks = inner_list_backlinks(data, &pool).await.unwrap();
+        assert_eq!(
+            backlinks.iter().map(|b| b.id).collect::<Vec<_>>(),
+            vec![linker]
+        );
+
+        // Renaming a note a JSON body mentions leaves that body alone.
+        let renamed = inner_rename_note(linker, "Linker 2", &pool).await.unwrap();
+        assert!(renamed.rewritten_ids.is_empty());
+        assert_eq!(
+            body_of(data, &pool).await,
+            "{\"see\": \"[[Data]] [[Linker]]\"}"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_has_no_json_excerpt_and_get_returns_the_full_body() {
+        let pool = crate::test_db().await;
+        let md = note_with("Md", "first line", &pool).await;
+        let js = note_with("Js", "{\"first\": \"line\"}", &pool).await;
+        inner_set_note_kind(js, "json", None, &pool).await.unwrap();
+        let list = inner_list_notes(&pool).await.unwrap();
+        let by_id = |id: i64| list.iter().find(|n| n.id == id).unwrap().clone();
+        assert_eq!(
+            (by_id(md).excerpt.as_str(), by_id(md).kind.as_str()),
+            ("first line", "markdown")
+        );
+        assert_eq!(
+            (by_id(js).excerpt.as_str(), by_id(js).kind.as_str()),
+            ("", "json")
+        );
+        assert!(SELECT_NOTE_LIST.contains("CASE WHEN Kind = 'json' THEN '' ELSE Body END"));
+        assert!(
+            !SELECT_NOTES.contains("CASE"),
+            "get_note reads the whole body"
+        );
+        let full = inner_get_note(js, &pool).await.unwrap();
+        assert_eq!(full.body, "{\"first\": \"line\"}");
+        assert_eq!(
+            NoteSummary::from(full).excerpt,
+            "",
+            "same rule for search and get"
+        );
+    }
+
+    #[tokio::test]
+    async fn json_switch_deletes_embeddings_and_back_queues_the_note() {
+        let pool = crate::test_db().await;
+        let (state, fake) = crate::semantic::index::tests::ready_state(&pool).await;
+        let id = note_with("Data", "plain words", &pool).await;
+        state.enqueue([id]);
+        state.drain(&pool).await;
+        assert_eq!(
+            (embedding_rows(id, &pool).await, state.indexed_notes()),
+            (1, 1)
+        );
+
+        state.enqueue([id]);
+        set_note_kind_and_queue(id, "json", None, &pool, &state)
+            .await
+            .unwrap();
+        assert_eq!(
+            embedding_rows(id, &pool).await,
+            0,
+            "rows deleted in the switch"
+        );
+        assert_eq!(state.indexed_notes(), 0, "evicted");
+        assert!(state.queued().is_empty(), "queue entry dropped");
+
+        // A JSON body save doesn't queue it; queued anyway, the worker skips it.
+        update_note_body_and_queue(id, "{\"a\": 1}", &pool, &state)
+            .await
+            .unwrap();
+        assert!(state.queued().is_empty());
+        state.enqueue([id]);
+        let before = fake.embedded().len();
+        assert_eq!(
+            state.process_note(id, &pool).await,
+            Ok(crate::semantic::index::Outcome::Skipped)
+        );
+        state.drain(&pool).await;
+        assert_eq!(fake.embedded().len(), before, "never embedded");
+        assert_eq!(embedding_rows(id, &pool).await, 0);
+        state.enqueue_all(&pool).await.unwrap();
+        state.drain(&pool).await;
+        assert_eq!(fake.embedded().len(), before);
+
+        // A failed switch queues and evicts nothing.
+        assert!(set_note_kind_and_queue(id, "nope", None, &pool, &state)
+            .await
+            .is_err());
+        set_note_kind_and_queue(id, "markdown", None, &pool, &state)
+            .await
+            .unwrap();
+        assert_eq!(state.queued(), vec![id]);
+        state.drain(&pool).await;
+        assert_eq!(embedding_rows(id, &pool).await, 1);
+        assert_eq!(fake.embedded().last().unwrap(), "Data\n\n{\"a\": 1}");
+    }
+
     // ── Timing (ignored): cargo test -p badger perf_ -- --ignored --nocapture --test-threads=1 ──
 
     /// One ~50-line markdown section: headings, setext, lists, a table, code, #tags, [[links]].
@@ -2771,7 +3268,7 @@ mod tests {
         let body = perf_body(50);
         let mut tx = pool.begin().await.unwrap();
         for i in 0..2000 {
-            insert_note_in(&format!("Note {i}"), &body, None, &mut tx)
+            insert_note_in(&format!("Note {i}"), &body, KIND_MARKDOWN, None, &mut tx)
                 .await
                 .unwrap();
         }

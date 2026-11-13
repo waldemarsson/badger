@@ -95,6 +95,10 @@ pub struct BackupNote {
     /// restore then backfills the old order (pinned, then most recently updated).
     #[serde(default)]
     pub position: Option<i64>,
+    /// `markdown` or `json`. Missing in backups from before JSON notes (markdown);
+    /// restore reads any unknown value as markdown.
+    #[serde(default = "crate::commands::notes::default_kind")]
+    pub kind: String,
 }
 
 /// A reminder as stored in a backup file (`weekdays` as stored, e.g. `"1,4"`).
@@ -119,6 +123,9 @@ pub struct BackupReminder {
 pub struct BackupScratchpad {
     pub body: String,
     pub updated_at: String,
+    /// Like [`BackupNote::kind`].
+    #[serde(default = "crate::commands::notes::default_kind")]
+    pub kind: String,
 }
 
 /// A handover as stored in a backup file (`date` is its local YYYY-MM-DD primary key).
@@ -148,6 +155,16 @@ const FOLDER_CYCLE: &str = "Backup is invalid: folders form a cycle";
 
 /// Shown when two restored notes have titles that differ only in case.
 const DUPLICATE_NOTE_TITLE: &str = "Backup is invalid: duplicate note title";
+
+/// A backed-up note or pad kind as stored: unknown values (a newer build's kinds, hand
+/// edits) restore as markdown. Restore does not enforce the JSON size limit.
+fn restored_kind(kind: &str) -> &'static str {
+    if kind == crate::commands::notes::KIND_JSON {
+        crate::commands::notes::KIND_JSON
+    } else {
+        crate::commands::notes::KIND_MARKDOWN
+    }
+}
 
 fn default_todo_status() -> String {
     "not_started".to_string()
@@ -229,7 +246,7 @@ pub async fn inner_backup_data(pool: &Pool<Sqlite>) -> Result<String, AppError> 
     .await?;
 
     let notes = sqlx::query_as::<_, BackupNote>(
-        "SELECT id, FolderId as folder_id, Title as title, Body as body, Pinned as pinned, CreatedAt as created_at, UpdatedAt as updated_at, Position as position FROM notes ORDER BY id",
+        "SELECT id, FolderId as folder_id, Title as title, Body as body, Pinned as pinned, CreatedAt as created_at, UpdatedAt as updated_at, Position as position, Kind as kind FROM notes ORDER BY id",
     )
     .fetch_all(pool)
     .await?;
@@ -241,7 +258,7 @@ pub async fn inner_backup_data(pool: &Pool<Sqlite>) -> Result<String, AppError> 
     .await?;
 
     let scratchpad = sqlx::query_as::<_, BackupScratchpad>(
-        "SELECT Body as body, UpdatedAt as updated_at FROM scratchpad WHERE id = 1",
+        "SELECT Body as body, UpdatedAt as updated_at, Kind as kind FROM scratchpad WHERE id = 1",
     )
     .fetch_optional(pool)
     .await?;
@@ -347,9 +364,10 @@ pub async fn inner_restore_data(json: &str, pool: &Pool<Sqlite>) -> Result<(), A
     insert_folders_and_notes(&data.folders, &data.notes, &mut tx).await?;
     insert_reminders(&data.reminders, &mut tx).await?;
     if let Some(pad) = &data.scratchpad {
-        sqlx::query("INSERT INTO scratchpad (id, Body, UpdatedAt) VALUES (1, ?, ?)")
+        sqlx::query("INSERT INTO scratchpad (id, Body, UpdatedAt, Kind) VALUES (1, ?, ?, ?)")
             .bind(&pad.body)
             .bind(&pad.updated_at)
+            .bind(restored_kind(&pad.kind))
             .execute(&mut *tx)
             .await?;
     }
@@ -493,7 +511,7 @@ async fn insert_folders_and_notes(
     }
     for n in notes {
         sqlx::query(
-            "INSERT INTO notes (id, FolderId, Title, Body, Pinned, CreatedAt, UpdatedAt, Position) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO notes (id, FolderId, Title, Body, Pinned, CreatedAt, UpdatedAt, Position, Kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(n.id)
         .bind(n.folder_id)
@@ -503,6 +521,7 @@ async fn insert_folders_and_notes(
         .bind(&n.created_at)
         .bind(&n.updated_at)
         .bind(n.position.unwrap_or(0))
+        .bind(restored_kind(&n.kind))
         .execute(&mut **tx)
         .await?;
     }
@@ -1415,6 +1434,104 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(pad.body, "");
+    }
+
+    #[tokio::test]
+    async fn test_backup_restore_roundtrips_note_and_scratchpad_kind() {
+        let pool = crate::test_db().await;
+        // Oversized JSON (possible only via restore) must survive the round trip.
+        let big = format!(
+            "[\"{}\"]",
+            "x".repeat(crate::commands::notes::MAX_JSON_BYTES)
+        );
+        sqlx::query(
+            "INSERT INTO notes (id, Title, Body, CreatedAt, UpdatedAt, Kind) VALUES
+               (1, 'Md', '# hi #tag', 'x', 'x', 'markdown'),
+               (2, 'Data', '{\"a\": [[1]]}', 'x', 'x', 'json'),
+               (3, 'Huge', ?, 'x', 'x', 'json')",
+        )
+        .bind(&big)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO scratchpad (id, Body, UpdatedAt, Kind) VALUES (1, '[]', 'x', 'json')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let json = inner_backup_data(&pool).await.unwrap();
+        let original: BackupData = serde_json::from_str(&json).unwrap();
+        let kinds: Vec<&str> = original.notes.iter().map(|n| n.kind.as_str()).collect();
+        assert_eq!(kinds, ["markdown", "json", "json"]);
+        assert_eq!(original.scratchpad.as_ref().unwrap().kind, "json");
+
+        sqlx::raw_sql(
+            "UPDATE notes SET Kind = 'markdown'; UPDATE scratchpad SET Kind = 'markdown';",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let fresh = crate::test_db().await;
+        for target in [&pool, &fresh] {
+            inner_restore_data(&json, target)
+                .await
+                .expect("restore failed");
+            let result: BackupData =
+                serde_json::from_str(&inner_backup_data(target).await.unwrap()).unwrap();
+            assert_eq!(result.notes, original.notes);
+            assert_eq!(result.scratchpad, original.scratchpad);
+            let pad = crate::commands::scratchpad::inner_get_scratchpad(target)
+                .await
+                .unwrap();
+            assert_eq!(pad.kind, "json");
+            // Restore rebuilds the indexes title-only for JSON notes.
+            let refs: Vec<(i64,)> = sqlx::query_as("SELECT DISTINCT NoteId FROM note_refs")
+                .fetch_all(target)
+                .await
+                .unwrap();
+            assert_eq!(refs, vec![(1,)]);
+            let bodies: Vec<(i64, String)> =
+                sqlx::query_as("SELECT rowid, Body FROM notes_fts ORDER BY rowid")
+                    .fetch_all(target)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                bodies,
+                vec![
+                    (1, "hi #tag".into()),
+                    (2, String::new()),
+                    (3, String::new())
+                ]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_restore_without_kind_or_with_unknown_kind_reads_markdown() {
+        let pool = crate::test_db().await;
+        let legacy = r#"{"customers":[],"projects":[],"issues":[],"time_entries":[],"folders":[],
+            "notes":[
+              {"id":1,"folder_id":null,"title":"Old","body":"x","pinned":false,"created_at":"x","updated_at":"x","position":0},
+              {"id":2,"folder_id":null,"title":"Odd","body":"x","pinned":false,"created_at":"x","updated_at":"x","position":1,"kind":"yaml"}],
+            "scratchpad":{"body":"pad","updated_at":"x"}}"#;
+        inner_restore_data(legacy, &pool).await.unwrap();
+        let kinds: Vec<(String,)> = sqlx::query_as("SELECT Kind FROM notes ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(kinds, vec![("markdown".into(),), ("markdown".into(),)]);
+        let pad = crate::commands::scratchpad::inner_get_scratchpad(&pool)
+            .await
+            .unwrap();
+        assert_eq!((pad.body.as_str(), pad.kind.as_str()), ("pad", "markdown"));
+        let odd = r#"{"customers":[],"projects":[],"issues":[],"time_entries":[],
+            "scratchpad":{"body":"pad","updated_at":"x","kind":"xml"}}"#;
+        inner_restore_data(odd, &pool).await.unwrap();
+        let pad = crate::commands::scratchpad::inner_get_scratchpad(&pool)
+            .await
+            .unwrap();
+        assert_eq!(pad.kind, "markdown");
     }
 
     #[tokio::test]

@@ -77,7 +77,41 @@ pub(crate) async fn seed_test_data_if_empty_with_anchor(
         seed_core_data(pool, today).await?;
     }
     seed_notes_if_empty(pool).await?;
+    seed_scripts_if_empty(pool).await?;
     seed_reminders_if_empty(pool, crate::commands::reminders::local_now()).await
+}
+
+#[cfg(debug_assertions)]
+const SEED_SCRIPT: &str = r#"// Scripts run in a sandbox: no network, no timers, no DOM.
+// note("Title") reads a note: JSON notes come back parsed, markdown notes as text.
+const text = note("Weekly sync");
+const tasks = text
+  .split("\n")
+  .filter((line) => /^- \[[ x]\]/.test(line))
+  .map((line) => ({ done: line[3] === "x", title: line.slice(6) }));
+
+console.log(`${tasks.length} tasks, ${tasks.filter((t) => t.done).length} done`);
+tasks
+"#;
+
+/// One sample playground script. Runs whenever the `scripts` table is empty.
+#[cfg(debug_assertions)]
+async fn seed_scripts_if_empty(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
+    let existing: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM scripts")
+        .fetch_one(pool)
+        .await?;
+    if existing.0 > 0 {
+        return Ok(());
+    }
+    let ts = crate::commands::notes::now();
+    sqlx::query("INSERT INTO scripts (Title, Body, CreatedAt, UpdatedAt) VALUES (?, ?, ?, ?)")
+        .bind("Tasks in Weekly sync")
+        .bind(SEED_SCRIPT)
+        .bind(&ts)
+        .bind(&ts)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 /// A few sample reminders around `now`: overdue, later today, tomorrow, recurring, one
@@ -1287,6 +1321,29 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(in_folders.0, 0, "seeded notes go to the root");
+    }
+
+    #[tokio::test]
+    async fn test_seed_adds_one_script_only_when_scripts_is_empty() {
+        let pool = crate::test_db().await;
+        let anchor = NaiveDate::from_ymd_opt(2026, 4, 6).unwrap();
+        seed_test_data_if_empty_with_anchor(&pool, anchor)
+            .await
+            .unwrap();
+        assert_eq!(count(&pool, "scripts").await, 1);
+        seed_test_data_if_empty_with_anchor(&pool, anchor)
+            .await
+            .unwrap();
+        assert_eq!(count(&pool, "scripts").await, 1, "not reseeded");
+
+        let other = crate::test_db().await;
+        crate::commands::scripts::inner_create_script(&other)
+            .await
+            .unwrap();
+        seed_test_data_if_empty_with_anchor(&other, anchor)
+            .await
+            .unwrap();
+        assert_eq!(count(&other, "scripts").await, 1, "existing scripts kept");
     }
 
     #[tokio::test]

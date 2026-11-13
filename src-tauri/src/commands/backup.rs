@@ -138,6 +138,16 @@ pub struct BackupHandover {
     pub updated_at: String,
 }
 
+/// A playground script as stored in a backup file.
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow, PartialEq)]
+pub struct BackupScript {
+    pub id: i64,
+    pub title: String,
+    pub body: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 /// Shown when a restored handover's date is not a real YYYY-MM-DD date.
 const INVALID_HANDOVER_DATE: &str = "Backup is invalid: a handover has an invalid date";
 
@@ -199,6 +209,9 @@ pub struct BackupData {
     /// Absent in backups made before handovers existed.
     #[serde(default)]
     pub handovers: Vec<BackupHandover>,
+    /// Absent in backups made before the playground existed.
+    #[serde(default)]
+    pub scripts: Vec<BackupScript>,
 }
 
 /// Reads all data from the database and serialises it to a JSON string.
@@ -269,6 +282,12 @@ pub async fn inner_backup_data(pool: &Pool<Sqlite>) -> Result<String, AppError> 
     .fetch_all(pool)
     .await?;
 
+    let scripts = sqlx::query_as::<_, BackupScript>(
+        "SELECT id, Title as title, Body as body, CreatedAt as created_at, UpdatedAt as updated_at FROM scripts ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await?;
+
     let backup = BackupData {
         customers,
         projects,
@@ -281,6 +300,7 @@ pub async fn inner_backup_data(pool: &Pool<Sqlite>) -> Result<String, AppError> 
         reminders,
         scratchpad,
         handovers,
+        scripts,
     };
     serde_json::to_string(&backup).map_err(|e| AppError::Custom(e.to_string()))
 }
@@ -288,8 +308,8 @@ pub async fn inner_backup_data(pool: &Pool<Sqlite>) -> Result<String, AppError> 
 /// Replaces all data with the contents of a JSON backup.
 ///
 /// Deletes everything first (customers cascade via FK; reminders, todos, travel, notes,
-/// folders, the scratchpad and handovers are cleared explicitly), then re-inserts the backup in one
-/// transaction.
+/// folders, the scratchpad, handovers and scripts are cleared explicitly), then re-inserts the
+/// backup in one transaction.
 pub async fn inner_restore_data(json: &str, pool: &Pool<Sqlite>) -> Result<(), AppError> {
     let mut data: BackupData = serde_json::from_str(json)
         .map_err(|e| AppError::Custom(format!("Invalid backup JSON: {}", e)))?;
@@ -319,6 +339,7 @@ pub async fn inner_restore_data(json: &str, pool: &Pool<Sqlite>) -> Result<(), A
     sqlx::query("DELETE FROM handovers")
         .execute(&mut *tx)
         .await?;
+    sqlx::query("DELETE FROM scripts").execute(&mut *tx).await?;
 
     for c in &data.customers {
         sqlx::query("INSERT INTO customers (id, Name, UseAsDefault) VALUES (?, ?, ?)")
@@ -380,6 +401,18 @@ pub async fn inner_restore_data(json: &str, pool: &Pool<Sqlite>) -> Result<(), A
         .bind(&h.dismissed_at)
         .bind(&h.created_at)
         .bind(&h.updated_at)
+        .execute(&mut *tx)
+        .await?;
+    }
+    for s in &data.scripts {
+        sqlx::query(
+            "INSERT INTO scripts (id, Title, Body, CreatedAt, UpdatedAt) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(s.id)
+        .bind(&s.title)
+        .bind(&s.body)
+        .bind(&s.created_at)
+        .bind(&s.updated_at)
         .execute(&mut *tx)
         .await?;
     }
@@ -1601,6 +1634,66 @@ mod tests {
             .await
             .expect("backup without handovers must restore");
         let list = crate::commands::handovers::inner_list_handovers(&pool)
+            .await
+            .unwrap();
+        assert!(list.is_empty(), "restore is overwrite");
+    }
+
+    #[tokio::test]
+    async fn test_backup_restore_roundtrips_scripts() {
+        use crate::commands::scripts as sc;
+        let pool = crate::test_db().await;
+        let a = sc::inner_create_script(&pool).await.unwrap();
+        sc::inner_update_script_title(a.id, "Tally Åsa 🦡", &pool)
+            .await
+            .unwrap();
+        sc::inner_update_script_body(a.id, "const zebracorn = note(\"Data\");\r\n1 + 2\n", &pool)
+            .await
+            .unwrap();
+        let b = sc::inner_create_script(&pool).await.unwrap();
+        let original: Vec<sc::Script> = vec![
+            sc::inner_get_script(a.id, &pool).await.unwrap(),
+            sc::inner_get_script(b.id, &pool).await.unwrap(),
+        ];
+        let json = inner_backup_data(&pool).await.expect("backup failed");
+        let data: BackupData = serde_json::from_str(&json).unwrap();
+        assert_eq!(data.scripts.len(), 2, "exported");
+
+        // Replace: a script not in the backup goes, changed ones are put back.
+        sc::inner_update_script_body(a.id, "changed", &pool)
+            .await
+            .unwrap();
+        sc::inner_delete_script(b.id, &pool).await.unwrap();
+        sc::inner_create_script(&pool).await.unwrap();
+        let fresh = crate::test_db().await;
+        for target in [&pool, &fresh] {
+            inner_restore_data(&json, target)
+                .await
+                .expect("restore failed");
+            let mut restored = Vec::new();
+            for s in sc::inner_list_scripts(target).await.unwrap() {
+                restored.push(sc::inner_get_script(s.id, target).await.unwrap());
+            }
+            restored.sort_by_key(|s| s.id);
+            assert_eq!(restored, original);
+            let hits = crate::commands::notes::inner_search_notes("zebracorn", None, target)
+                .await
+                .unwrap();
+            assert!(hits.is_empty(), "restore doesn't index scripts");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_restore_without_scripts_field_clears_scripts() {
+        let pool = crate::test_db().await;
+        crate::commands::scripts::inner_create_script(&pool)
+            .await
+            .unwrap();
+        let legacy = r#"{"customers":[],"projects":[],"issues":[],"time_entries":[],"todos":[],"travel":[],"folders":[],"notes":[],"reminders":[],"scratchpad":null,"handovers":[]}"#;
+        inner_restore_data(legacy, &pool)
+            .await
+            .expect("backup without scripts must restore");
+        let list = crate::commands::scripts::inner_list_scripts(&pool)
             .await
             .unwrap();
         assert!(list.is_empty(), "restore is overwrite");

@@ -16,6 +16,8 @@
   import { applyTheme, theme } from '#lib/theme-state.svelte.js';
   import { DEFAULT_SHORTCUT, formatShortcut, recorderProblem, shortcutFromEvent } from '#lib/palette.js';
   import { scratchpadRestored } from '#lib/scratchpad-state.svelte.js';
+  import { playgroundRestored } from '#lib/playground-state.svelte.js';
+  import { parseBackupPreview, type RestorePreview } from '#lib/backup.js';
   import { runFlushHandlers } from '#lib/flush-guard.js';
   import { palette } from '#lib/palette-state.svelte.js';
   import { formatHours, parseDailyTarget } from '#lib/today.js';
@@ -216,7 +218,6 @@
   let seedError = $state('');
 
   // ── Restore state ─────────────────────────────────────────────────────────────
-  type RestorePreview = { customers: number; projects: number; issues: number; time_entries: number; notes: number };
 
   let restoreFileName   = $state<string>('');
   let restoreJsonText   = $state<string>('');
@@ -229,19 +230,6 @@
   let restoreKeyBusy    = $state(false);
   let restoreError      = $state('');
   let currentNoteCount  = $state(0); // notes in the database, for the "backup has no notes" warning
-
-  function parseBackupPreview(jsonText: string): RestorePreview | null {
-    try {
-      const data = JSON.parse(jsonText);
-      return {
-        customers:    Array.isArray(data.customers)    ? data.customers.length    : 0,
-        projects:     Array.isArray(data.projects)     ? data.projects.length     : 0,
-        issues:       Array.isArray(data.issues)       ? data.issues.length       : 0,
-        time_entries: Array.isArray(data.time_entries) ? data.time_entries.length : 0,
-        notes:        Array.isArray(data.notes)        ? data.notes.length        : 0,
-      };
-    } catch { return null; }
-  }
 
   function formatBackupDate(date: string) {
     const parsed = new Date(`${date}T00:00:00`);
@@ -357,6 +345,7 @@
       await invoke<void>('restore_data', { json: restoreJsonText });
       restoreState = 'success';
       scratchpadRestored(); // the drawer reloads the restored pad
+      playgroundRestored(); // run output belongs to the replaced scripts
     } catch (e) {
       restoreError = String(e);
       restoreState = 'error';
@@ -750,7 +739,7 @@
               {#if restorePreview}
                 <div class="panel-muted">
                   <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-neutral-400 mb-3">Backup Contents</p>
-                  <div class="grid grid-cols-5 gap-2 py-6 text-center">
+                  <div class="grid grid-cols-6 gap-2 py-6 text-center">
                     <div class="restore-stat">
                       <span class="restore-stat-number">{restorePreview.customers}</span>
                       <span class="restore-stat-label">Customers</span>
@@ -771,13 +760,17 @@
                       <span class="restore-stat-number">{restorePreview.notes}</span>
                       <span class="restore-stat-label">Notes</span>
                     </div>
+                    <div class="restore-stat">
+                      <span class="restore-stat-number">{restorePreview.scripts}</span>
+                      <span class="restore-stat-label">Scripts</span>
+                    </div>
                   </div>
                 </div>
               {/if}
 
               {#if restoreState !== 'key'}
               <div class="alert-panel alert-warning">
-                <p class="alert-warning-copy">⚠ This will permanently delete all current data — customers, projects, issues, time entries, todos, travel, and notes — and replace it with the backup.</p>
+                <p class="alert-warning-copy">⚠ This will permanently delete all current data — customers, projects, issues, time entries, todos, travel, notes, and scripts — and replace it with the backup.</p>
               </div>
 
               {#if restorePreview && restorePreview.notes === 0 && currentNoteCount > 0}

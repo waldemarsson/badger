@@ -906,6 +906,100 @@
     @apply ml-1 rounded border border-white/25 px-1 font-sans text-[10px] font-medium text-white/70 dark:border-neutral-950/20 dark:text-neutral-950/60;
   }
 
+  /* ── Playground: script list, Run/Stop, console ── */
+  .script-row-time {
+    @apply mt-0.5 flex items-center gap-1.5 truncate text-xs text-slate-400 dark:text-neutral-500;
+  }
+
+  .script-running-dot {
+    @apply h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-sky-500 dark:bg-sky-400;
+  }
+
+  .playground-run {
+    @apply inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-slate-950 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-300 disabled:cursor-not-allowed disabled:bg-slate-400 disabled:hover:translate-y-0 dark:bg-neutral-100 dark:text-neutral-950 dark:hover:bg-white dark:focus-visible:ring-neutral-600 dark:disabled:bg-neutral-600 dark:disabled:text-neutral-300;
+  }
+
+  .playground-stop {
+    @apply inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-medium text-red-700 shadow-sm transition hover:-translate-y-0.5 hover:border-red-300 hover:bg-red-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-100 dark:border-red-500/30 dark:bg-neutral-900 dark:text-red-400 dark:hover:border-red-500/50 dark:hover:bg-red-500/10 dark:focus-visible:ring-red-500/20;
+  }
+
+  .playground-kbd {
+    @apply rounded border border-current px-1 font-sans text-[10px] font-medium leading-4 opacity-60;
+  }
+
+  .playground-console {
+    @apply flex h-[38%] min-h-[9rem] shrink-0 flex-col border-t border-slate-200 bg-slate-50/70 dark:border-neutral-800 dark:bg-neutral-950/50;
+  }
+
+  .playground-console-bar {
+    @apply flex h-9 shrink-0 items-center gap-2 border-b border-slate-100 px-4 text-xs font-medium text-slate-500 dark:border-neutral-800 dark:text-neutral-400;
+  }
+
+  .playground-console-body {
+    @apply min-h-0 flex-1 overflow-y-auto px-4 py-2 font-mono text-[12.5px] leading-relaxed focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-400;
+  }
+
+  .console-line {
+    @apply -mx-2 whitespace-pre-wrap break-words rounded px-2 py-px text-slate-800 dark:text-neutral-200;
+  }
+
+  .console-line-info {
+    @apply text-sky-700 dark:text-sky-300;
+  }
+
+  .console-line-warn {
+    @apply bg-amber-50 text-amber-800 dark:bg-amber-500/10 dark:text-amber-300;
+  }
+
+  .console-line-error {
+    @apply bg-red-50 text-red-700 dark:bg-red-500/10 dark:text-red-300;
+  }
+
+  .console-line-debug {
+    @apply text-slate-400 dark:text-neutral-500;
+  }
+
+  .console-value {
+    @apply -mx-2 mt-1 flex gap-2 whitespace-pre-wrap break-words rounded px-2 py-px font-medium text-slate-950 dark:text-neutral-50;
+  }
+
+  .console-value-mark {
+    @apply shrink-0 select-none text-slate-400 dark:text-neutral-500;
+  }
+
+  .console-truncated {
+    @apply my-1.5 inline-flex items-center gap-1.5 rounded-md bg-amber-50 px-2 py-0.5 font-sans text-xs font-medium text-amber-700 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/30;
+  }
+
+  .console-error {
+    @apply my-1.5 rounded-lg bg-red-50 px-3 py-2 text-red-800 ring-1 ring-red-200 dark:bg-red-500/10 dark:text-red-200 dark:ring-red-500/30;
+  }
+
+  /* Time-outs are the script's fault but not a crash; Stop was the user's choice. */
+  .console-error-timeout {
+    @apply bg-amber-50 text-amber-900 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-200 dark:ring-amber-500/30;
+  }
+
+  .console-error-stopped {
+    @apply bg-slate-100 text-slate-700 ring-slate-200 dark:bg-neutral-800/60 dark:text-neutral-300 dark:ring-neutral-700;
+  }
+
+  .console-error-head {
+    @apply flex items-center gap-2 font-sans text-xs font-semibold;
+  }
+
+  .console-error-location {
+    @apply ml-auto font-medium underline-offset-2 opacity-80 hover:underline hover:opacity-100 focus:outline-none focus-visible:underline;
+  }
+
+  .console-error-message {
+    @apply mt-0.5 whitespace-pre-wrap break-words;
+  }
+
+  .console-empty {
+    @apply flex h-full flex-col items-center justify-center gap-1 text-center font-sans text-xs text-slate-400 dark:text-neutral-500;
+  }
+
   .note-editor {
     @apply flex flex-col;
   }

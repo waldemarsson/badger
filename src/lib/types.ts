@@ -251,3 +251,31 @@ export interface ReminderInput {
 	todoId: number | null;
 	noteId: number | null;
 }
+
+/** Backup folder and encryption settings (`get_backup_settings`). */
+export interface BackupSettings {
+  dir: string;
+  is_default_dir: boolean;
+  /** `age1…` key automatic backups are encrypted to; null when encryption is off. */
+  public_key: string | null;
+}
+
+/** One automatic backup file in the backup folder (`list_startup_backups`). */
+export interface StoredBackup {
+  date: string;
+  size_bytes: number;
+  encrypted: boolean;
+}
+
+/** Outcome of backups in this run of the app (`get_backup_status`). */
+export interface BackupStatus {
+  /** Local `YYYY-MM-DDTHH:MM:SS`. */
+  last_success: string | null;
+  last_error: string | null;
+}
+
+/** A key pair from `generate_backup_key`; the secret is shown once and never stored. */
+export interface GeneratedBackupKey {
+  public_key: string;
+  secret_key: string;
+}

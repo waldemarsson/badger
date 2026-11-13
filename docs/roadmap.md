@@ -14,32 +14,29 @@ Markdown notes stored in SQLite, written in Obsidian-compatible markdown so note
 6. **Semantic search** — done, see Done below
 7. **Chat that edits notes** — deferred; local model with tool calls proposing diffs to accept or reject
 
-## 2. Encrypted backups
-
-Off-site copies written to a synced folder (iCloud Drive, Dropbox) chosen in Settings; no network code. Encrypted with an `age` key pair: the public key in settings, the secret key shown once and kept in a password manager. Automatic backups run unattended, and the files decrypt with the `age` CLI without Badger. A lost secret key means the backups are unrecoverable, so setup confirms the key before turning encryption on. Builds on gzipped backups.
-
-## 3. JSON notes
+## 2. JSON notes
 
 A per-note type toggle (`markdown | json`). JSON mode uses `lang-json` with folding, bracket matching and parse-error lint, without the markdown extensions. JSON notes skip embedding, get title-only FTS, and have a size cap (e.g. 5 MB). Needs a schema migration, a backup field, and `@codemirror/lang-json` as a direct dependency. Cheaper first step: a Format/Minify action for ```` ```json ```` blocks in markdown notes.
 
-## 4. JS playground
+## 3. JS playground
 
 A `/playground` page with an editor, Run (⌘↵) and a console pane; nothing is persisted. Needs a sandbox, because code in the main WebView could reach the database through IPC: `rquickjs` (pure JS, fully isolated, new cargo dependency) or a sandboxed iframe (browser APIs, but needs a CSP/IPC isolation spike first). Basic scope and globals completion comes almost free; full TypeScript IntelliSense is optional (~1–2 days). JSON notes can be passed in as variables through an input picker (depends on JSON notes).
 
-## 5. Release pipeline hardening
+## 4. Release pipeline hardening
 
 `release.yml` publishes a release on every `v*` tag push without running the gates. Add a gate job (`cargo test`, `cargo clippy --all -- -D warnings`, `cargo fmt --check`, `npm run check`, `npm run lint`, `node --test tests/*.mjs`) that the release job `needs:`; pin third-party actions (`actions/*`, `dtolnay/rust-toolchain`, `swatinem/rust-cache`, `tauri-apps/tauri-action`) to commit SHAs; default the workflow to `permissions: contents: read` and grant `contents: write` only to the release job.
 
-## 6. Dependency monitoring
+## 5. Dependency monitoring
 
 Dependabot for npm, cargo and GitHub Actions (grouped weekly updates), plus a `cargo deny check advisories` (or `cargo audit`) step and `npm audit --omit=dev` in the gate job.
 
-## 7. Major dependency upgrades
+## 6. Major dependency upgrades
 
 Each on its own branch: `sqlx` 0.9, `sha2` 0.11, `tokenizers` 0.23 first; then `typescript` 7, `prettier-plugin-svelte` 4, `@types/node` 26 and `tailwind-merge` 3; Tailwind 4 last (touches all styling and `app.css`).
 
 ## Done
 
+- Encrypted backups — one automatic backup folder, `backups/` beside the database by default or any writable folder (iCloud Drive, Dropbox) picked in Settings; flat `badger-YYYY-MM-DD.json.gz` files, only files matching that name are listed, trimmed or deleted, and old dated-folder backups are left alone; optional `age` encryption (`.json.gz.age`, decrypts with `age -d … | gunzip`) with a generated key pair whose secret is shown once and must be pasted back before encryption turns on, or your own `age1…` key; restore asks for the secret key for encrypted files; Back up now, last success and last error in Settings, no fallback to another folder or to plaintext when a backup fails; "Delete unencrypted" after turning encryption on; `age` is a direct dependency
 - Notes performance — measured on a mocked 5,000-line note (built SPA in headless Chromium, keystroke → editor update settled, p50/p95 over 120 samples, 108 for opening): typing 15.9/26.6 ms → 6.6/11.5 ms and opening a note 27.7/38.3 ms → 19.6/25.9 ms; arrow-key moves were already within the 16 ms budget (5.3/11.5 ms) and stay there. The live-preview link decorations now scan only the visible lines for tags and wikilinks (`extractRefs` takes ranges) instead of the whole note on every keystroke, and the reference-definition walk is skipped for notes without `]:`. The old premise was stale: `list_notes` already returns excerpts, not bodies, and takes ~23 ms for 2,000 notes; `update_note_body` on a 5,000-line note takes ~14 ms (optimized build, `#[ignore]`d `perf_*` tests in `commands/notes.rs`), so the backend is unchanged. Deferring `doc.toString()` (~0.1 ms per keystroke) and range-limiting the `blocks.ts` walk (~1.3 ms) were not needed
 - Gzipped backups — automatic backups are written as `backups/YYYY-MM-DD/backup.json.gz` (atomic) and manual export defaults to `badger-backup-<date>.json.gz`; the content is still the same JSON (`gunzip -c` reads it), so it stays readable and compatible through `#[serde(default)]`. Restore detects gzip from the leading bytes (`1f 8b`) and otherwise reads plain JSON, so old `.json` backups still restore; listing and trim accept either name. Measured ~3–6× smaller on synthetic data (notes-heavy ≈3×, record-heavy ≈6×); `flate2` is a direct dependency
 - Handover notes — a short end-of-day markdown note to your future self: write it in a "Today's handover" card on Today (the notes live-preview editor, autosaved and flushed on quit; emptying it deletes it) or with the ⌘K "Write handover" action; the next working day (Mon–Fri, no holidays; Friday to Sunday show on Monday) the newest earlier handover appears as a read-only card on Today, just above the editor, whose task checkboxes still tick and persist, with Dismiss, ←/→ to browse every past handover (dismissed included) and "Save as note" (a root note `Handover YYYY-MM-DD`, indexed; the handover stays); task checkboxes in every editor are now keyboard-focusable (Space/Enter); kept out of notes search, links and the semantic index; stored in a `handovers` table (one row per local date) included in backup/restore (older backups restore with none)

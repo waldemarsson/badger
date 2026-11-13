@@ -22,7 +22,7 @@ Non-debug builds (installed app / release bundle):
 ~/.badger/models/
 ```
 
-In development, `.badger-dev/` lives at the repo root. The database file is created on startup if it does not exist, and log files are written with daily rotation. Automatic startup backups are stored in the `backups/` subdirectory when enabled. `models/` holds the semantic search model once the user enables it (see `docs/architecture.md`, Semantic search); it is created on first download.
+In development, `.badger-dev/` lives at the repo root. The database file is created on startup if it does not exist, and log files are written with daily rotation. Automatic backups are stored in the `backups/` subdirectory unless another folder is chosen in Settings. `models/` holds the semantic search model once the user enables it (see `docs/architecture.md`, Semantic search); it is created on first download.
 
 ## Key configuration files
 
@@ -69,15 +69,9 @@ This means compile-time query checking uses offline metadata instead of requirin
 
 The logger uses `tracing_subscriber::EnvFilter::try_from_default_env()` and falls back to `info`. Set `RUST_LOG` when you need more or less backend logging detail during development.
 
-### Startup backup retention
+### Automatic backups
 
-Badger automatically creates a backup on each application startup. The retention setting controls how many recent backups are kept:
-
-- **Default**: 3 backups
-- **Retention > 0**: Gzipped backup (`backup.json.gz`) is created on each startup (overwriting any existing backup for today) and old backups are trimmed to keep the specified number of recent backups
-- **Retention = 0**: Automatic startup backups are disabled
-
-The retention setting can be configured in the Settings > Backup & Restore tab. The setting is stored in the `app_settings` table with key `startup_backup_retention`.
+Folder, encryption and retention are set in Settings › Backup & Restore and stored in `app_settings`: `backup_dir` (unset = `backups/` beside the database), `backup_public_key` (unset = unencrypted) and `startup_backup_retention` (default 3, 0 = off). See `docs/data-and-backup.md` (Automatic backups).
 
 ### Semantic search dependencies
 

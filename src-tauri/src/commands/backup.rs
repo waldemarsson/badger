@@ -589,6 +589,8 @@ async fn insert_travel(
 /// Shown when a backup file is neither valid gzip nor UTF-8 text.
 const NOT_A_BACKUP: &str = "Backup file is not a valid Badger backup";
 
+const ENCRYPTED_BACKUP: &str = "This backup is encrypted. Enter the secret key to read it.";
+
 /// Leading bytes of every gzip stream.
 const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
 
@@ -603,6 +605,9 @@ pub fn encode_backup(json: &str) -> Result<Vec<u8>, AppError> {
 /// otherwise reads them as plain UTF-8 JSON (backups from before gzip).
 pub fn decode_backup(bytes: Vec<u8>) -> Result<String, AppError> {
     let invalid = || AppError::Custom(NOT_A_BACKUP.to_string());
+    if crate::backup_crypto::is_encrypted(&bytes) {
+        return Err(AppError::Custom(ENCRYPTED_BACKUP.to_string()));
+    }
     if bytes.starts_with(&GZIP_MAGIC) {
         let mut json = String::new();
         MultiGzDecoder::new(bytes.as_slice())
@@ -620,9 +625,24 @@ pub fn inner_write_backup_file(json: &str, path: &Path) -> Result<(), AppError> 
     Ok(())
 }
 
-/// Reads a gzip or plain JSON backup file and returns its JSON.
-pub fn inner_read_backup_file(path: &Path) -> Result<String, AppError> {
-    decode_backup(std::fs::read(path)?)
+/// Reads a backup file and returns its JSON: age-encrypted (needs `secret_key`), gzip, or
+/// plain JSON. The key is used for this one decrypt and never stored.
+pub fn inner_read_backup_file(path: &Path, secret_key: Option<&str>) -> Result<String, AppError> {
+    let bytes = std::fs::read(path)?;
+    match secret_key {
+        Some(key) if crate::backup_crypto::is_encrypted(&bytes) => {
+            decode_backup(crate::backup_crypto::decrypt(key, &bytes)?)
+        }
+        _ => decode_backup(bytes),
+    }
+}
+
+/// True when the file at `path` is an age-encrypted backup.
+pub fn inner_is_encrypted_backup_file(path: &Path) -> Result<bool, AppError> {
+    let mut head = [0u8; 22];
+    let mut file = std::fs::File::open(path)?;
+    let read = file.read(&mut head)?;
+    Ok(crate::backup_crypto::is_encrypted(&head[..read]))
 }
 
 /// Serialises all data to JSON and writes it gzipped to the given file path.
@@ -635,10 +655,18 @@ pub async fn backup_data_to_file(
     inner_write_backup_file(&json, Path::new(&path))
 }
 
-/// Reads a backup file (gzip or plain JSON) from disk and returns its JSON.
+/// Reads a backup file (encrypted, gzip or plain JSON) from disk and returns its JSON.
 #[tauri::command]
-pub async fn read_backup_file(path: String) -> Result<String, AppError> {
-    inner_read_backup_file(Path::new(&path))
+pub async fn read_backup_file(
+    path: String,
+    secret_key: Option<String>,
+) -> Result<String, AppError> {
+    inner_read_backup_file(Path::new(&path), secret_key.as_deref())
+}
+
+#[tauri::command]
+pub async fn is_encrypted_backup_file(path: String) -> Result<bool, AppError> {
+    inner_is_encrypted_backup_file(Path::new(&path))
 }
 
 /// Replaces all data with the contents of a JSON backup.
@@ -669,13 +697,6 @@ pub async fn inner_set_startup_backup_retention(
     crate::app_settings::set_startup_backup_retention(pool, value).await
 }
 
-/// Lists all stored startup backups by reading the backup directory structure.
-pub async fn inner_list_startup_backups(
-    db_path: &Path,
-) -> Result<Vec<crate::startup_backup::StoredBackupSummary>, AppError> {
-    crate::startup_backup::list_startup_backups(db_path)
-}
-
 /// Reads the startup backup retention setting from the database.
 #[tauri::command]
 pub async fn get_startup_backup_retention(pool: State<'_, Pool<Sqlite>>) -> Result<i64, AppError> {
@@ -691,12 +712,168 @@ pub async fn set_startup_backup_retention(
     inner_set_startup_backup_retention(value, &pool).await
 }
 
-/// Lists all stored startup backups.
+/// Backup folder and encryption settings as shown in Settings.
+#[derive(Debug, Serialize, PartialEq)]
+pub struct BackupSettings {
+    /// The folder backups are written to (the default one when none is configured).
+    pub dir: String,
+    pub is_default_dir: bool,
+    /// The `age1…` key backups are encrypted to; `None` when encryption is off.
+    pub public_key: Option<String>,
+}
+
+pub async fn inner_get_backup_settings(
+    db_path: &Path,
+    pool: &Pool<Sqlite>,
+) -> Result<BackupSettings, AppError> {
+    let custom = crate::app_settings::get_backup_dir(pool).await?;
+    Ok(BackupSettings {
+        dir: crate::startup_backup::resolve_backup_dir(db_path, pool)
+            .await?
+            .to_string_lossy()
+            .into_owned(),
+        is_default_dir: custom.is_none(),
+        public_key: crate::app_settings::get_backup_public_key(pool).await?,
+    })
+}
+
+/// Sets the backup folder after checking it exists and is writable; `None` resets to the
+/// default. Existing backups are not moved.
+pub async fn inner_set_backup_dir(
+    dir: Option<&str>,
+    db_path: &Path,
+    pool: &Pool<Sqlite>,
+) -> Result<BackupSettings, AppError> {
+    if let Some(dir) = dir {
+        crate::startup_backup::check_writable_dir(Path::new(dir))?;
+    }
+    crate::app_settings::set_backup_dir(pool, dir).await?;
+    inner_get_backup_settings(db_path, pool).await
+}
+
+/// Turns encryption on for `public_key`. With a generated key, `secret_key` must be the
+/// matching secret (proof it was saved); it is checked and then dropped, never stored.
+pub async fn inner_enable_backup_encryption(
+    public_key: &str,
+    secret_key: Option<&str>,
+    db_path: &Path,
+    pool: &Pool<Sqlite>,
+) -> Result<BackupSettings, AppError> {
+    let recipient = crate::backup_crypto::parse_public_key(public_key)?;
+    if let Some(secret) = secret_key {
+        crate::backup_crypto::verify_key_pair(public_key, secret)?;
+    }
+    crate::app_settings::set_backup_public_key(pool, Some(&recipient.to_string())).await?;
+    inner_get_backup_settings(db_path, pool).await
+}
+
+pub async fn inner_disable_backup_encryption(
+    db_path: &Path,
+    pool: &Pool<Sqlite>,
+) -> Result<BackupSettings, AppError> {
+    crate::app_settings::set_backup_public_key(pool, None).await?;
+    inner_get_backup_settings(db_path, pool).await
+}
+
+/// Lists the backups in the current backup folder, newest first.
+pub async fn inner_list_startup_backups(
+    db_path: &Path,
+    pool: &Pool<Sqlite>,
+) -> Result<Vec<crate::startup_backup::StoredBackupSummary>, AppError> {
+    let dir = crate::startup_backup::resolve_backup_dir(db_path, pool).await?;
+    crate::startup_backup::list_backups(&dir)
+}
+
+/// Deletes the unencrypted backups in the current backup folder; returns the count.
+pub async fn inner_delete_unencrypted_backups(
+    db_path: &Path,
+    pool: &Pool<Sqlite>,
+) -> Result<usize, AppError> {
+    let dir = crate::startup_backup::resolve_backup_dir(db_path, pool).await?;
+    crate::startup_backup::delete_unencrypted_backups(&dir)
+}
+
+/// Lists the backups in the current backup folder.
 #[tauri::command]
 pub async fn list_startup_backups(
     runtime_paths: State<'_, crate::runtime_paths::RuntimePaths>,
+    pool: State<'_, Pool<Sqlite>>,
 ) -> Result<Vec<crate::startup_backup::StoredBackupSummary>, AppError> {
-    inner_list_startup_backups(&runtime_paths.db_path).await
+    inner_list_startup_backups(&runtime_paths.db_path, &pool).await
+}
+
+#[tauri::command]
+pub async fn get_backup_settings(
+    runtime_paths: State<'_, crate::runtime_paths::RuntimePaths>,
+    pool: State<'_, Pool<Sqlite>>,
+) -> Result<BackupSettings, AppError> {
+    inner_get_backup_settings(&runtime_paths.db_path, &pool).await
+}
+
+#[tauri::command]
+pub async fn set_backup_dir(
+    dir: Option<String>,
+    runtime_paths: State<'_, crate::runtime_paths::RuntimePaths>,
+    pool: State<'_, Pool<Sqlite>>,
+) -> Result<BackupSettings, AppError> {
+    inner_set_backup_dir(dir.as_deref(), &runtime_paths.db_path, &pool).await
+}
+
+/// Generates a key pair for the frontend to show once. Nothing is stored.
+#[tauri::command]
+pub async fn generate_backup_key() -> crate::backup_crypto::GeneratedKey {
+    crate::backup_crypto::generate_key()
+}
+
+#[tauri::command]
+pub async fn enable_backup_encryption(
+    public_key: String,
+    secret_key: Option<String>,
+    runtime_paths: State<'_, crate::runtime_paths::RuntimePaths>,
+    pool: State<'_, Pool<Sqlite>>,
+) -> Result<BackupSettings, AppError> {
+    inner_enable_backup_encryption(
+        &public_key,
+        secret_key.as_deref(),
+        &runtime_paths.db_path,
+        &pool,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn disable_backup_encryption(
+    runtime_paths: State<'_, crate::runtime_paths::RuntimePaths>,
+    pool: State<'_, Pool<Sqlite>>,
+) -> Result<BackupSettings, AppError> {
+    inner_disable_backup_encryption(&runtime_paths.db_path, &pool).await
+}
+
+/// Writes today's backup now with the current settings (even when retention is 0).
+#[tauri::command]
+pub async fn back_up_now(
+    runtime_paths: State<'_, crate::runtime_paths::RuntimePaths>,
+    pool: State<'_, Pool<Sqlite>>,
+    state: State<'_, crate::startup_backup::BackupState>,
+) -> Result<(), AppError> {
+    let today = chrono::Local::now().date_naive();
+    crate::startup_backup::run_backup(&runtime_paths.db_path, &pool, &state, today, true).await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_backup_status(
+    state: State<'_, crate::startup_backup::BackupState>,
+) -> Result<crate::startup_backup::BackupStatus, AppError> {
+    Ok(state.status())
+}
+
+#[tauri::command]
+pub async fn delete_unencrypted_backups(
+    runtime_paths: State<'_, crate::runtime_paths::RuntimePaths>,
+    pool: State<'_, Pool<Sqlite>>,
+) -> Result<usize, AppError> {
+    inner_delete_unencrypted_backups(&runtime_paths.db_path, &pool).await
 }
 
 #[cfg(test)]
@@ -1600,11 +1777,12 @@ mod tests {
         let json_path = dir.join("legacy.json");
         std::fs::write(&json_path, &json).unwrap();
 
-        assert_eq!(inner_read_backup_file(&gz_path).unwrap(), json);
-        assert_eq!(inner_read_backup_file(&json_path).unwrap(), json);
+        assert_eq!(inner_read_backup_file(&gz_path, None).unwrap(), json);
+        assert_eq!(inner_read_backup_file(&json_path, None).unwrap(), json);
+        assert!(!inner_is_encrypted_backup_file(&gz_path).unwrap());
 
         let restore = crate::test_db().await;
-        inner_restore_data(&inner_read_backup_file(&gz_path).unwrap(), &restore)
+        inner_restore_data(&inner_read_backup_file(&gz_path, None).unwrap(), &restore)
             .await
             .unwrap();
         let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM customers")
@@ -1646,45 +1824,209 @@ mod tests {
         assert_eq!(read_zero, 0);
     }
 
-    #[tokio::test]
-    async fn test_list_startup_backups_reads_backup_directories() {
-        use std::{
-            fs,
-            path::Path,
-            time::{SystemTime, UNIX_EPOCH},
-        };
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
+    fn unique_test_dir(name: &str) -> std::path::PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
             .expect("system clock before unix epoch")
             .as_nanos();
-        let test_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("target")
             .join("test-artifacts")
-            .join(format!("list-startup-backups-{unique}"));
-        let db_path = test_dir.join("badger.db");
+            .join(format!("{name}-{unique}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
 
-        crate::startup_backup::write_daily_backup(&db_path, "2026-05-08", r#"{"test":"older"}"#)
-            .expect("older backup write should succeed");
-        crate::startup_backup::write_daily_backup(&db_path, "2026-05-09", r#"{"test":"newer"}"#)
-            .expect("newer backup write should succeed");
+    #[tokio::test]
+    async fn test_list_startup_backups_reads_the_configured_folder() {
+        let root = unique_test_dir("list-backups");
+        let db_path = root.join("badger.db");
+        let custom = root.join("custom");
+        std::fs::create_dir_all(&custom).unwrap();
+        let pool = crate::test_db().await;
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 5, 9).unwrap();
+        crate::startup_backup::write_daily_backup(&custom, day, b"x", false).unwrap();
 
-        let summaries = inner_list_startup_backups(&db_path)
+        assert!(inner_list_startup_backups(&db_path, &pool)
             .await
-            .expect("listing startup backups should succeed");
-
-        assert_eq!(summaries.len(), 2);
+            .unwrap()
+            .is_empty());
+        inner_set_backup_dir(Some(custom.to_str().unwrap()), &db_path, &pool)
+            .await
+            .unwrap();
+        let summaries = inner_list_startup_backups(&db_path, &pool).await.unwrap();
+        assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].date, "2026-05-09");
-        assert_eq!(
-            summaries[0].size_bytes,
-            encode_backup(r#"{"test":"newer"}"#).unwrap().len() as u64
-        );
-        assert_eq!(summaries[1].date, "2026-05-08");
-        assert_eq!(
-            summaries[1].size_bytes,
-            encode_backup(r#"{"test":"older"}"#).unwrap().len() as u64
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_backup_dir_setting_validates_and_resets() {
+        let root = unique_test_dir("backup-dir-setting");
+        let db_path = root.join("badger.db");
+        let pool = crate::test_db().await;
+
+        let settings = inner_get_backup_settings(&db_path, &pool).await.unwrap();
+        assert!(settings.is_default_dir);
+        assert_eq!(settings.dir, root.join("backups").to_string_lossy());
+        assert_eq!(settings.public_key, None);
+
+        let missing = root.join("missing");
+        let err = inner_set_backup_dir(Some(missing.to_str().unwrap()), &db_path, &pool)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().starts_with("Backup folder not found"));
+        assert!(
+            inner_get_backup_settings(&db_path, &pool)
+                .await
+                .unwrap()
+                .is_default_dir
         );
 
-        fs::remove_dir_all(&test_dir).expect("test directory cleanup should succeed");
+        let settings = inner_set_backup_dir(Some(root.to_str().unwrap()), &db_path, &pool)
+            .await
+            .unwrap();
+        assert!(!settings.is_default_dir);
+        assert_eq!(settings.dir, root.to_string_lossy());
+
+        let settings = inner_set_backup_dir(None, &db_path, &pool).await.unwrap();
+        assert!(settings.is_default_dir);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_enable_encryption_requires_matching_secret_and_never_stores_it() {
+        let db_path = Path::new("/tmp/unused/badger.db");
+        let pool = crate::test_db().await;
+        let key = crate::backup_crypto::generate_key();
+        let other = crate::backup_crypto::generate_key();
+
+        assert!(inner_enable_backup_encryption(
+            &key.public_key,
+            Some(&other.secret_key),
+            db_path,
+            &pool
+        )
+        .await
+        .is_err());
+        let truncated = &key.secret_key[..20];
+        assert!(
+            inner_enable_backup_encryption(&key.public_key, Some(truncated), db_path, &pool)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            inner_get_backup_settings(db_path, &pool)
+                .await
+                .unwrap()
+                .public_key,
+            None,
+            "still off after failed confirmations"
+        );
+
+        let settings =
+            inner_enable_backup_encryption(&key.public_key, Some(&key.secret_key), db_path, &pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            settings.public_key.as_deref(),
+            Some(key.public_key.as_str())
+        );
+
+        let values: Vec<String> = sqlx::query_scalar("SELECT Value FROM app_settings")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert!(values.iter().all(|v| !v.contains("AGE-SECRET-KEY")));
+
+        let settings = inner_disable_backup_encryption(db_path, &pool)
+            .await
+            .unwrap();
+        assert_eq!(settings.public_key, None);
+    }
+
+    #[tokio::test]
+    async fn test_enable_encryption_with_own_public_key_and_rejects_invalid() {
+        let db_path = Path::new("/tmp/unused/badger.db");
+        let pool = crate::test_db().await;
+        let key = crate::backup_crypto::generate_key();
+
+        let err = inner_enable_backup_encryption("age1nope", None, db_path, &pool)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().starts_with("Not a valid age public key"));
+
+        let settings =
+            inner_enable_backup_encryption(&format!(" {}\n", key.public_key), None, db_path, &pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            settings.public_key.as_deref(),
+            Some(key.public_key.as_str()),
+            "trimmed"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_restore_encrypted_backup_file_with_key() {
+        let pool = crate::test_db().await;
+        seed_test_data(&pool).await;
+        let json = inner_backup_data(&pool).await.unwrap();
+        let key = crate::backup_crypto::generate_key();
+        let other = crate::backup_crypto::generate_key();
+        let dir = unique_test_dir("encrypted-restore");
+        let path = dir.join("badger-2026-11-12.json.gz.age");
+        let bytes =
+            crate::backup_crypto::encrypt(&key.public_key, &encode_backup(&json).unwrap()).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+
+        assert!(inner_is_encrypted_backup_file(&path).unwrap());
+        let err = inner_read_backup_file(&path, None).unwrap_err();
+        assert_eq!(err.to_string(), ENCRYPTED_BACKUP);
+        let err = inner_read_backup_file(&path, Some(&other.secret_key)).unwrap_err();
+        assert_eq!(err.to_string(), crate::backup_crypto::WRONG_KEY);
+        assert_eq!(
+            inner_read_backup_file(&path, Some(&key.secret_key)).unwrap(),
+            json
+        );
+
+        let restore = crate::test_db().await;
+        inner_restore_data(
+            &inner_read_backup_file(&path, Some(&key.secret_key)).unwrap(),
+            &restore,
+        )
+        .await
+        .unwrap();
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM customers")
+            .fetch_one(&restore)
+            .await
+            .unwrap();
+        assert_eq!(count.0, 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_delete_unencrypted_backups_in_configured_folder() {
+        let root = unique_test_dir("delete-unencrypted");
+        let db_path = root.join("badger.db");
+        let pool = crate::test_db().await;
+        inner_set_backup_dir(Some(root.to_str().unwrap()), &db_path, &pool)
+            .await
+            .unwrap();
+        let day = |d| chrono::NaiveDate::from_ymd_opt(2026, 5, d).unwrap();
+        crate::startup_backup::write_daily_backup(&root, day(8), b"plain", false).unwrap();
+        crate::startup_backup::write_daily_backup(&root, day(9), b"age", true).unwrap();
+
+        assert_eq!(
+            inner_delete_unencrypted_backups(&db_path, &pool)
+                .await
+                .unwrap(),
+            1
+        );
+        let summaries = inner_list_startup_backups(&db_path, &pool).await.unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert!(summaries[0].encrypted);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

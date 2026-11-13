@@ -19,6 +19,10 @@ const MAX_DAILY_TARGET: f64 = 24.0;
 pub const EXPANDED_FOLDERS_KEY: &str = "notes_expanded_folders";
 /// "true" once the semantic search model is downloaded and verified.
 pub const SEMANTIC_ENABLED_KEY: &str = "semantic_search_enabled";
+/// Absolute path of the backup folder; unset means the default `backups/` beside the database.
+pub const BACKUP_DIR_KEY: &str = "backup_dir";
+/// `age1…` public key that automatic backups are encrypted to; unset means unencrypted.
+pub const BACKUP_PUBLIC_KEY_KEY: &str = "backup_public_key";
 
 /// Command palette preferences. Last-used ids may point at deleted rows;
 /// the frontend falls back when they do.
@@ -219,6 +223,42 @@ pub async fn set_semantic_enabled(pool: &Pool<Sqlite>, enabled: bool) -> Result<
         if enabled { "true" } else { "false" },
     )
     .await
+}
+
+async fn delete_value(pool: &Pool<Sqlite>, key: &str) -> Result<(), AppError> {
+    sqlx::query("DELETE FROM app_settings WHERE Key = ?")
+        .bind(key)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// The configured backup folder, `None` for the default. Validation is the caller's.
+pub async fn get_backup_dir(pool: &Pool<Sqlite>) -> Result<Option<String>, AppError> {
+    Ok(get_value(pool, BACKUP_DIR_KEY)
+        .await?
+        .filter(|v| !v.trim().is_empty()))
+}
+
+pub async fn set_backup_dir(pool: &Pool<Sqlite>, dir: Option<&str>) -> Result<(), AppError> {
+    match dir {
+        Some(dir) => set_value(pool, BACKUP_DIR_KEY, dir).await,
+        None => delete_value(pool, BACKUP_DIR_KEY).await,
+    }
+}
+
+/// The public key backups are encrypted to, `None` when encryption is off.
+pub async fn get_backup_public_key(pool: &Pool<Sqlite>) -> Result<Option<String>, AppError> {
+    Ok(get_value(pool, BACKUP_PUBLIC_KEY_KEY)
+        .await?
+        .filter(|v| !v.trim().is_empty()))
+}
+
+pub async fn set_backup_public_key(pool: &Pool<Sqlite>, key: Option<&str>) -> Result<(), AppError> {
+    match key {
+        Some(key) => set_value(pool, BACKUP_PUBLIC_KEY_KEY, key).await,
+        None => delete_value(pool, BACKUP_PUBLIC_KEY_KEY).await,
+    }
 }
 
 /// Parses a stored id list; anything unparseable reads as empty.

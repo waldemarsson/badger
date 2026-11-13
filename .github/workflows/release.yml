@@ -15,6 +15,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
+      # Installed apps only accept updates signed by the key behind this pubkey; the
+      # placeholder verifies nothing, so never ship it.
+      - name: Check updater public key is set
+        run: |
+          if jq -e '.plugins.updater.pubkey | test("^REPLACE_")' src-tauri/tauri.conf.json > /dev/null; then
+            echo "::error::plugins.updater.pubkey in src-tauri/tauri.conf.json is still the placeholder"
+            exit 1
+          fi
+
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -108,10 +117,14 @@ jobs:
           key: ort-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: ort-${{ runner.os }}-
 
+      # Also signs the updater bundle (Badger.app.tar.gz + .sig) and uploads latest.json,
+      # whose version comes from tauri.conf.json.
       - name: Build and release .dmg
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           args: --target aarch64-apple-darwin
           tagName: ${{ github.ref_name }}

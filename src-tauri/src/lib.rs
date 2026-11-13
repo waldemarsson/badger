@@ -1,5 +1,6 @@
 // src-tauri/src/lib.rs
 pub mod app_settings;
+pub mod backup_crypto;
 pub mod commands;
 pub mod db;
 pub mod error;
@@ -40,57 +41,16 @@ pub(crate) async fn test_db() -> sqlx::SqlitePool {
     pool
 }
 
-async fn run_startup_backup(
-    db_path: &std::path::Path,
-    pool: &sqlx::SqlitePool,
-    today: chrono::NaiveDate,
-) -> Result<(), AppError> {
-    let retention = match app_settings::get_startup_backup_retention(pool).await {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!("Startup backup: failed to read retention setting: {}", e);
-            return Err(e);
-        }
-    };
-
-    if retention == 0 {
-        tracing::debug!("Startup backup disabled (retention = 0)");
-        return Ok(());
-    }
-
-    let json = match commands::backup::inner_backup_data(pool).await {
-        Ok(j) => j,
-        Err(e) => {
-            tracing::error!("Startup backup: failed to export database: {}", e);
-            return Err(e);
-        }
-    };
-
-    let today = today.format("%Y-%m-%d").to_string();
-    let backup_path = match startup_backup::write_daily_backup(db_path, &today, &json) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::error!("Startup backup: failed to write backup file: {}", e);
-            return Err(e);
-        }
-    };
-    tracing::info!("Startup backup written to: {:?}", backup_path);
-
-    if let Err(e) = startup_backup::trim_old_backups(db_path, retention as usize) {
-        tracing::error!("Startup backup: failed to trim old backups: {}", e);
-        return Err(e);
-    }
-    tracing::debug!("Startup backup trimmed to {} most recent", retention);
-
-    Ok(())
-}
-
 /// How often the backup task checks whether the local date has changed.
 const BACKUP_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 /// Writes the daily backup at launch, then again whenever the local date changes while
 /// the app stays open. A failed backup is retried on the next check.
-async fn run_daily_backups(db_path: std::path::PathBuf, pool: sqlx::SqlitePool) {
+async fn run_daily_backups(
+    app: tauri::AppHandle,
+    db_path: std::path::PathBuf,
+    pool: sqlx::SqlitePool,
+) {
     let mut last_backup: Option<chrono::NaiveDate> = None;
     let mut interval = tokio::time::interval(BACKUP_CHECK_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -100,10 +60,13 @@ async fn run_daily_backups(db_path: std::path::PathBuf, pool: sqlx::SqlitePool) 
         if !startup_backup::backup_due(last_backup, today) {
             continue;
         }
-        match run_startup_backup(&db_path, &pool, today).await {
-            Ok(()) => last_backup = Some(today),
-            // Individual step errors already logged in run_startup_backup
-            Err(e) => tracing::debug!("Daily backup task completed with error: {}", e),
+        let state = app.state::<startup_backup::BackupState>();
+        // Errors are logged and recorded in the backup status by run_backup.
+        if startup_backup::run_backup(&db_path, &pool, &state, today, false)
+            .await
+            .is_ok()
+        {
+            last_backup = Some(today);
         }
     }
 }
@@ -145,7 +108,9 @@ pub fn run() {
             // Background task writes the daily backup (if retention > 0) at launch and
             // again on each new day while the app stays open. Logs any errors.
             let pool_for_reminders = pool.clone();
+            app.manage(startup_backup::BackupState::default());
             tauri::async_runtime::spawn(run_daily_backups(
+                app.handle().clone(),
                 runtime_paths.db_path.clone(),
                 pool.clone(),
             ));
@@ -287,6 +252,15 @@ pub fn run() {
                     commands::backup::get_startup_backup_retention,
                     commands::backup::set_startup_backup_retention,
                     commands::backup::list_startup_backups,
+                    commands::backup::get_backup_settings,
+                    commands::backup::set_backup_dir,
+                    commands::backup::generate_backup_key,
+                    commands::backup::enable_backup_encryption,
+                    commands::backup::disable_backup_encryption,
+                    commands::backup::back_up_now,
+                    commands::backup::get_backup_status,
+                    commands::backup::delete_unencrypted_backups,
+                    commands::backup::is_encrypted_backup_file,
                     // Settings
                     commands::settings::get_theme,
                     commands::settings::set_theme,
@@ -396,6 +370,15 @@ pub fn run() {
                     commands::backup::get_startup_backup_retention,
                     commands::backup::set_startup_backup_retention,
                     commands::backup::list_startup_backups,
+                    commands::backup::get_backup_settings,
+                    commands::backup::set_backup_dir,
+                    commands::backup::generate_backup_key,
+                    commands::backup::enable_backup_encryption,
+                    commands::backup::disable_backup_encryption,
+                    commands::backup::back_up_now,
+                    commands::backup::get_backup_status,
+                    commands::backup::delete_unencrypted_backups,
+                    commands::backup::is_encrypted_backup_file,
                     // Settings
                     commands::settings::get_theme,
                     commands::settings::set_theme,

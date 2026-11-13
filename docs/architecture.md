@@ -49,7 +49,7 @@ The backend is organized around command modules:
 - `reports` for weekly and monthly rollups
 - `backup` for gzipped JSON export and import (restore also reads plain `.json`)
 - `settings` for app preferences (theme, daily hours target, command palette shortcut and last-used project/issue, expanded note folders) stored in `app_settings`
-- `startup_backup` for automatic daily backups on application startup
+- `startup_backup` for automatic daily backups (folder, flat file names, retention, `BackupState` lock and status) and `backup_crypto` for their optional `age` encryption
 - `flush_guard` for the quit/close guard (see Notes editor)
 - `dev_seed` for debug-only sample data
 

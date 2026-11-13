@@ -11,7 +11,7 @@ No account, no cloud, no subscription, no telemetry. Everything lives in one SQL
 ## Why Badger
 
 - **Local-first, private by default.** All data is stored in `~/.badger/badger.db` on your machine. The app makes no network calls for your data and works fully offline.
-- **Yours to keep.** Plain SQLite plus one-click export to a gzipped JSON file. Automatic daily backups on startup, with configurable retention.
+- **Yours to keep.** Plain SQLite plus one-click export to a gzipped JSON file. Automatic daily backups to a folder you choose (iCloud Drive or Dropbox for off-site copies), optionally encrypted with `age`.
 - **Built for the workflow, not the database.** A Today agenda, a drag-and-drop board, and a ⌘K command palette replace form-filling.
 - **Native and lightweight.** A Tauri 2 app with a Rust backend: small binary, quick start, low memory.
 - **Light and dark.** Follows the system appearance, or pick one.
@@ -90,7 +90,7 @@ Log business trips (date, from/to, km, amount) per month. Places autocomplete, a
 
 ### Settings
 
-Manage customers and projects as cards, with defaults that pre-fill new entries. Preferences cover appearance, daily hours target, the palette shortcut, and the search index. Backup & Restore exports gzipped JSON, restores from a file (`.json.gz` or older plain `.json`), and lists automatic startup backups.
+Manage customers and projects as cards, with defaults that pre-fill new entries. Preferences cover appearance, daily hours target, the palette shortcut, and the search index. Backup & Restore exports gzipped JSON, restores from a file (`.json.gz` or older plain `.json`), and sets the automatic backups folder, encryption and retention.
 
 ![Settings](docs/screenshots/settings.png)
 
@@ -103,7 +103,7 @@ Manage customers and projects as cards, with defaults that pre-fill new entries.
 | Database (installed app) | `~/.badger/badger.db` |
 | Database (dev builds) | `.badger-dev/` in the repo |
 | Manual backups | Gzipped JSON file (`.json.gz`), wherever you save it |
-| Automatic backups | Daily on startup, kept for a configurable number of days |
+| Automatic backups | Daily, in a folder you choose, optionally `age`-encrypted, kept for a configurable number of days |
 
 Restore replaces the current data with the backup's contents. See [Data and backup](docs/data-and-backup.md) for the schema and backup format.
 

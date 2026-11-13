@@ -71,40 +71,62 @@ The files are not part of backups. The `semantic_search_enabled` setting in `app
 
 Downgrading to a build without semantic search leaves the `note_embeddings` table and the model files behind; both are harmless and can be deleted by hand.
 
-## Automatic startup backups
+## Automatic backups
 
-Badger automatically creates a backup on each application startup, and again whenever the local date changes while the app stays open (checked every 10 minutes; a failed backup is retried at the next check). This behavior is controlled by the startup backup retention setting, which defaults to `3`:
+Badger writes a backup on each application startup, and again whenever the local date changes while the app stays open (checked every 10 minutes; a failed backup is retried at the next check). Settings › Backup & Restore also has **Back up now**, which runs right after the folder or encryption settings change. Both share a lock, so two writes never interleave.
 
-- **Retention > 0**: A gzipped backup is written to `backups/YYYY-MM-DD/backup.json.gz` beside the active database, overwriting any existing backup for today. The write is atomic (temp file, then rename) and removes a leftover legacy `backup.json` from the same day. After creation, old backups are automatically trimmed to keep only the most recent `N` backups.
-- **Retention = 0**: Automatic startup backups are disabled entirely.
+### Folder
 
-The retention setting can be adjusted in the Settings > Backup & Restore tab.
-
-### Startup backup locations
-
-The backup root directory is determined by the database location:
-
-Development (`npm run dev` / debug builds):
+All automatic backups go to one folder. By default that is `backups/` beside the database:
 
 ```text
-.badger-dev/backups/YYYY-MM-DD/backup.json.gz
+.badger-dev/backups/      (debug builds)
+~/.badger/backups/        (non-debug builds)
 ```
 
-Installed and other non-debug builds:
+The folder can be changed to any existing, writable folder (picked with a native folder picker; Rust writes and deletes a probe file before saving the setting), for example a synced iCloud Drive or Dropbox folder for off-site copies. "Use default" resets it. The path is stored in `app_settings` under `backup_dir` (unset = default) and, like other settings, is not in backups. Changing the folder does not move existing backups, and Settings lists only the current folder.
+
+Only the default folder is created when missing. If a chosen folder is gone (an unmounted drive, a sync client not set up), the backup fails with "Backup folder not found: …": nothing is written elsewhere, the error is logged and shown in Settings with the last successful backup time (both kept in memory for the current run), and the next tick retries.
+
+### Files
+
+One flat file per date, overwritten atomically (a dot-prefixed temp file in the same folder, then rename):
 
 ```text
-~/.badger/backups/YYYY-MM-DD/backup.json.gz
+badger-YYYY-MM-DD.json.gz        gzipped JSON
+badger-YYYY-MM-DD.json.gz.age    the same, encrypted with age
 ```
 
-Backups made before gzip are plain `backup.json`. Listing and trimming accept either name in a dated directory and prefer the `.gz` when both exist, so old backups still count toward retention and show in the list.
+Writing a date's file deletes the other variant for that date, so a date never has both. Listing, trimming and "Delete unencrypted" only touch files whose name matches that pattern exactly with a real date; everything else in the folder (other files, sync conflict copies such as `badger-2026-11-12 (1).json.gz`) is left alone.
 
-Startup backup creation, trimming, and listing are handled entirely in Rust and do not involve the frontend beyond displaying the available backups and retention setting in the UI.
+Backups from before this layout (`backups/YYYY-MM-DD/backup.json(.gz)`) are ignored: not migrated, listed or trimmed, and left on disk. They still restore through the file picker; delete them by hand when no longer needed.
+
+### Retention
+
+`startup_backup_retention` in `app_settings` (default `3`) is the number of dates kept; older matching files are deleted after each write. `0` turns automatic backups off; Back up now still writes one but does not trim.
+
+### Encryption
+
+Optional, off by default. When on, backups are encrypted with [age](https://age-encryption.org) to an X25519 public key (`age1…`) stored in `app_settings` under `backup_public_key` (unset = off). The file is the binary age format wrapping the gzip, so it decrypts without Badger:
+
+```bash
+age -d -i key.txt badger-YYYY-MM-DD.json.gz.age | gunzip > backup.json
+```
+
+- **Set up encryption** generates a key pair. The secret key (`AGE-SECRET-KEY-1…`) is shown once with a Copy button and is never written to disk, the database or logs. Encryption turns on only after the secret is pasted back and Rust verifies it derives the public key; it is then dropped.
+- **Use my own key** accepts an existing `age1…` public key after the user confirms they hold the matching secret key.
+- A secret-key input may be the bare key or the text of an age key file (the first `AGE-SECRET-KEY-` line is used). Error messages never echo it.
+- Turning encryption off, or changing the key, affects later backups only; existing files are untouched, and files written before a key change still need the old key. Encryption never falls back to plaintext: an unusable stored key fails the backup.
+- After turning encryption on, older plain backups age out through retention; the list marks each backup Encrypted or Plain, and an inline-confirmed **Delete unencrypted** removes the plain ones in the current folder.
+- A lost secret key makes encrypted backups unrecoverable.
+
+Manual export is unaffected and stays plain gzip.
 
 ## Backup format
 
 Backup export writes a JSON document containing ten arrays and the scratchpad. Manual exports and automatic backups are gzipped; the content is still this same JSON, so `gunzip -c backup.json.gz` reads it. Manual export defaults to `badger-backup-<date>.json.gz`.
 
-Restore detects gzip from the file's leading bytes (`1f 8b`) and otherwise reads plain UTF-8 JSON, so `.json` backups from before gzip still restore. A file that is neither fails with "Backup file is not a valid Badger backup" and nothing is changed. The file is read and decoded in Rust (`read_backup_file`); the frontend receives the JSON text.
+Restore detects the format from the file's leading bytes: age (`age-encryption.org/v1`), gzip (`1f 8b`), otherwise plain UTF-8 JSON, so `.json` backups from before gzip still restore. For an encrypted file (`is_encrypted_backup_file`) the UI asks for the secret key inline and passes it to `read_backup_file(path, secretKey)`, which uses it for that one decrypt and never stores it; a key that doesn't fit fails with "This key can't decrypt this backup". A file that is none of these fails with "Backup file is not a valid Badger backup" and nothing is changed. The file is read and decoded in Rust; the frontend receives the JSON text.
 
 The document contains:
 
@@ -148,7 +170,7 @@ There is no merge mode. It was removed because `INSERT OR REPLACE` deletes and r
 The active backup and restore workflow is currently exposed in the Settings page, where the frontend:
 
 - opens a save dialog for export (default name `badger-backup-<date>.json.gz`)
-- opens a file picker for import (accepts `.gz` and legacy `.json`)
+- opens a file picker for import (accepts `.age`, `.gz` and legacy `.json`; asks for the secret key for `.age`)
 - previews record counts before restore, including notes
 - warns when the backup has no notes but the database does ("This backup has no notes; restoring deletes your N notes.")
 - warns that restore replaces all current data

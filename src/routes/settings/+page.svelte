@@ -3,9 +3,11 @@
   import { fade } from 'svelte/transition';
   import { invoke } from '@tauri-apps/api/core';
   import CustomerProjects from '#lib/components/CustomerProjects.svelte';
+  import AutomaticBackups from '#lib/components/AutomaticBackups.svelte';
   import X      from '@lucide/svelte/icons/x';
   import Download   from '@lucide/svelte/icons/download';
   import FolderOpen from '@lucide/svelte/icons/folder-open';
+  import Lock from '@lucide/svelte/icons/lock';
   import Monitor from '@lucide/svelte/icons/monitor';
   import Sun     from '@lucide/svelte/icons/sun';
   import Moon    from '@lucide/svelte/icons/moon';
@@ -34,7 +36,6 @@
       void loadIndexStats();
       void refreshSemanticStatus();
     }
-    void loadStartupBackupSettings();
     void loadDailyTarget();
     return () => (palette.recording = false);
   });
@@ -209,14 +210,6 @@
   // ── Backup state ──────────────────────────────────────────────────────────────
   let backupState = $state<'idle' | 'saving' | 'success' | 'error'>('idle');
   let backupError = $state('');
-  type StoredStartupBackup = { date: string; size_bytes: number };
-  let startupBackupRetention = $state('');
-  let startupBackupRetentionState = $state<'loading' | 'idle' | 'saving' | 'success' | 'error'>('loading');
-  let startupBackupRetentionError = $state('');
-  let startupBackupRetentionMessage = $state('');
-  let storedStartupBackups = $state<StoredStartupBackup[]>([]);
-  let storedStartupBackupsState = $state<'loading' | 'ready' | 'error'>('loading');
-  let storedStartupBackupsError = $state('');
 
   // ── Dev seed state (dev-only) ────────────────────────────────────────────
   let seedState = $state<'idle' | 'seeding' | 'success' | 'error'>('idle');
@@ -229,7 +222,11 @@
   let restoreJsonText   = $state<string>('');
   let restorePreview    = $state<RestorePreview | null>(null);
   let restoreParseError = $state('');
-  let restoreState      = $state<'idle' | 'preview' | 'restoring' | 'success' | 'error'>('idle');
+  let restoreState      = $state<'idle' | 'key' | 'preview' | 'restoring' | 'success' | 'error'>('idle');
+  // Encrypted backup: the picked file waits here for its secret key (used once, never stored).
+  let restoreKeyPath    = $state('');
+  let restoreKey        = $state('');
+  let restoreKeyBusy    = $state(false);
   let restoreError      = $state('');
   let currentNoteCount  = $state(0); // notes in the database, for the "backup has no notes" warning
 
@@ -267,82 +264,6 @@
     return `${value.toFixed(value >= 10 || unitIndex === 0 ? 1 : 2)} ${units[unitIndex]}`;
   }
 
-  function validateStartupBackupRetention(value: string) {
-    const normalized = value.trim();
-
-    if (!normalized) return 'Retention is required.';
-    if (!/^\d+$/.test(normalized)) return 'Retention must be a non-negative whole number.';
-
-    const parsed = Number(normalized);
-    if (!Number.isSafeInteger(parsed)) return 'Retention is too large.';
-
-    return null;
-  }
-
-  async function loadStartupBackupSettings() {
-    startupBackupRetentionError = '';
-    startupBackupRetentionMessage = '';
-    startupBackupRetentionState = 'loading';
-    storedStartupBackupsState = 'loading';
-    storedStartupBackupsError = '';
-
-    const [retentionResult, backupsResult] = await Promise.allSettled([
-      invoke<number>('get_startup_backup_retention'),
-      invoke<StoredStartupBackup[]>('list_startup_backups'),
-    ]);
-
-    if (retentionResult.status === 'fulfilled') {
-      startupBackupRetention = String(retentionResult.value);
-      startupBackupRetentionState = 'idle';
-    } else {
-      startupBackupRetentionState = 'error';
-      startupBackupRetentionError = `Could not load startup backup retention. ${String(retentionResult.reason)}`;
-    }
-
-    if (backupsResult.status === 'fulfilled') {
-      storedStartupBackups = backupsResult.value;
-      storedStartupBackupsState = 'ready';
-    } else {
-      storedStartupBackups = [];
-      storedStartupBackupsState = 'error';
-      storedStartupBackupsError = `Could not load stored startup backups. ${String(backupsResult.reason)}`;
-    }
-  }
-
-  function handleStartupBackupRetentionInput() {
-    startupBackupRetentionError = '';
-    startupBackupRetentionMessage = '';
-    if (startupBackupRetentionState !== 'loading') {
-      startupBackupRetentionState = 'idle';
-    }
-  }
-
-  async function saveStartupBackupRetention() {
-    startupBackupRetentionError = '';
-    startupBackupRetentionMessage = '';
-
-    const validationError = validateStartupBackupRetention(startupBackupRetention);
-    if (validationError) {
-      startupBackupRetentionState = 'error';
-      startupBackupRetentionError = validationError;
-      return;
-    }
-
-    startupBackupRetentionState = 'saving';
-
-    try {
-      const savedRetention = await invoke<number>('set_startup_backup_retention', {
-        value: Number(startupBackupRetention.trim()),
-      });
-      startupBackupRetention = String(savedRetention);
-      startupBackupRetentionState = 'success';
-      startupBackupRetentionMessage = 'Startup backup retention saved.';
-    } catch (e) {
-      startupBackupRetentionState = 'error';
-      startupBackupRetentionError = String(e);
-    }
-  }
-
   async function exportBackup() {
     backupState = 'saving';
     backupError = '';
@@ -365,29 +286,60 @@
     restoreParseError = '';
     restorePreview = null;
     const path = await open({
-      filters: [{ name: 'Badger backup', extensions: ['json', 'gz'] }],
+      filters: [{ name: 'Badger backup', extensions: ['json', 'gz', 'age'] }],
     });
     if (!path) return;
     try {
-      const json = await invoke<string>('read_backup_file', { path });
-      const preview = parseBackupPreview(json);
-      if (!preview) {
-        restoreParseError = 'Could not read backup file. Make sure it is a valid Badger backup.';
+      if (await invoke<boolean>('is_encrypted_backup_file', { path })) {
+        restoreKeyPath  = path;
+        restoreKey      = '';
+        restoreFileName = path.split('/').pop() ?? path;
+        restoreState    = 'key';
         return;
       }
-      currentNoteCount = preview.notes === 0
-        ? await invoke<unknown[]>('list_notes').then((n) => n.length).catch(() => 0)
-        : 0;
-      restoreFileName  = path.split('/').pop() ?? path;
-      restoreJsonText  = json;
-      restorePreview   = preview;
-      restoreState     = 'preview';
+      await loadRestoreFile(path, null);
     } catch (e) {
       restoreParseError = String(e);
     }
   }
 
+  async function submitRestoreKey() {
+    restoreParseError = '';
+    if (!restoreKey.trim()) {
+      restoreParseError = 'Enter the secret key for this backup.';
+      return;
+    }
+    restoreKeyBusy = true;
+    try {
+      await loadRestoreFile(restoreKeyPath, restoreKey);
+      restoreKey = '';
+    } catch (e) {
+      restoreParseError = String(e);
+    } finally {
+      restoreKeyBusy = false;
+    }
+  }
+
+  /** Reads and previews a backup; throws the backend's message on failure. */
+  async function loadRestoreFile(path: string, secretKey: string | null) {
+    const json = await invoke<string>('read_backup_file', { path, secretKey });
+    const preview = parseBackupPreview(json);
+    if (!preview) {
+      restoreParseError = 'Could not read backup file. Make sure it is a valid Badger backup.';
+      return;
+    }
+    currentNoteCount = preview.notes === 0
+      ? await invoke<unknown[]>('list_notes').then((n) => n.length).catch(() => 0)
+      : 0;
+    restoreFileName  = path.split('/').pop() ?? path;
+    restoreJsonText  = json;
+    restorePreview   = preview;
+    restoreState     = 'preview';
+  }
+
   function clearRestoreFile() {
+    restoreKeyPath    = '';
+    restoreKey        = '';
     restoreFileName   = '';
     restoreJsonText   = '';
     restorePreview    = null;
@@ -695,100 +647,7 @@
     {:else if activeTab === 'backup'}
       <div class="space-y-4">
 
-        <section class="panel-card space-y-4">
-          <div>
-            <h2 class="panel-title">Startup Backups</h2>
-            <p class="panel-copy">Automatic backups are created on startup and again each new day while Badger stays open. Set how many daily backups to keep and review the stored backup files below.</p>
-          </div>
-
-          <div class="grid gap-4 lg:grid-cols-[minmax(0,18rem)_1fr]">
-            <div class="space-y-3">
-              <div>
-                <label class="form-label mb-2" for="startup-backup-retention">Retention (days)</label>
-                <input
-                  id="startup-backup-retention"
-                  class="form-input"
-                  type="text"
-                  inputmode="numeric"
-                  autocomplete="off"
-                  bind:value={startupBackupRetention}
-                  oninput={handleStartupBackupRetentionInput}
-                  onkeydown={async (e) => {
-                    if (e.key === 'Enter') {
-                      await saveStartupBackupRetention();
-                    }
-                  }}
-                  disabled={startupBackupRetentionState === 'loading' || startupBackupRetentionState === 'saving'}
-                />
-                <p class="mt-2 text-xs text-slate-500 dark:text-neutral-400">Enter a whole number greater than or equal to 0.</p>
-              </div>
-
-              <button
-                class="btn-primary"
-                onclick={saveStartupBackupRetention}
-                disabled={startupBackupRetentionState === 'loading' || startupBackupRetentionState === 'saving'}
-              >
-                {startupBackupRetentionState === 'saving' ? 'Saving…' : 'Save Retention'}
-              </button>
-
-              {#if startupBackupRetentionState === 'success'}
-                <div class="alert-panel alert-success">
-                  <p class="alert-success-title">Retention updated</p>
-                  <p class="alert-success-copy">{startupBackupRetentionMessage}</p>
-                </div>
-              {/if}
-
-              {#if startupBackupRetentionError}
-                <div class="alert-panel alert-error">
-                  <p class="alert-error-title">Retention unavailable</p>
-                  <p class="alert-error-copy">{startupBackupRetentionError}</p>
-                </div>
-              {/if}
-            </div>
-
-            <div class="panel-muted space-y-3">
-              <div>
-                <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-neutral-400">Stored Backups</p>
-                <p class="mt-1 text-sm text-slate-500 dark:text-neutral-400">Read-only list of the startup backups stored beside your database.</p>
-              </div>
-
-              {#if storedStartupBackupsState === 'loading'}
-                <p class="text-sm text-slate-500 dark:text-neutral-400">Loading startup backups…</p>
-              {:else if storedStartupBackupsState === 'error'}
-                <div class="stack-error">{storedStartupBackupsError}</div>
-              {:else if storedStartupBackups.length === 0}
-                <div class="empty-state">
-                  <p class="font-semibold text-slate-700 dark:text-neutral-300">No startup backups yet</p>
-                  <p>Automatic startup backups will appear here after they are created.</p>
-                </div>
-              {:else}
-                <div class="overflow-hidden rounded-2xl border border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900">
-                  <table class="table-base">
-                    <thead class="table-head">
-                      <tr>
-                        <th class="table-heading">Date</th>
-                        <th class="table-heading text-right">Size</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {#each storedStartupBackups as backup (backup.date)}
-                        <tr class="table-row">
-                          <td class="table-cell">
-                            <div class="font-semibold text-slate-900 dark:text-neutral-100">{formatBackupDate(backup.date)}</div>
-                            <div class="text-xs text-slate-500 dark:text-neutral-400">{backup.date}</div>
-                          </td>
-                          <td class="table-cell text-right font-medium text-slate-700 dark:text-neutral-300">
-                            {formatBackupSize(backup.size_bytes)}
-                          </td>
-                        </tr>
-                      {/each}
-                    </tbody>
-                  </table>
-                </div>
-              {/if}
-            </div>
-          </div>
-        </section>
+        <AutomaticBackups formatDate={formatBackupDate} formatSize={formatBackupSize} />
 
         <!-- Backup Section -->
         <section class="panel-card space-y-4">
@@ -854,6 +713,40 @@
                 </button>
               </div>
 
+              {#if restoreState === 'key'}
+                <div class="panel-muted space-y-3">
+                  <div class="flex items-center gap-2 text-sm text-slate-700 dark:text-neutral-300">
+                    <Lock size={14} class="text-emerald-600 dark:text-emerald-400" />
+                    This backup is encrypted. Enter its secret key to read it; Badger uses the key once and doesn't keep it.
+                  </div>
+                  <label class="form-label" for="restore-secret-key">Secret key</label>
+                  <!-- svelte-ignore a11y_autofocus -->
+                  <input
+                    id="restore-secret-key"
+                    class="form-input font-mono"
+                    type="password"
+                    autocomplete="off"
+                    spellcheck="false"
+                    placeholder="AGE-SECRET-KEY-1…"
+                    autofocus
+                    bind:value={restoreKey}
+                    onkeydown={(e) => {
+                      if (e.key === 'Enter') void submitRestoreKey();
+                      if (e.key === 'Escape') clearRestoreFile();
+                    }}
+                  />
+                  {#if restoreParseError}
+                    <p class="form-error" role="alert">{restoreParseError}</p>
+                  {/if}
+                  <div class="flex gap-2">
+                    <button class="btn-primary" onclick={submitRestoreKey} disabled={restoreKeyBusy}>
+                      {restoreKeyBusy ? 'Decrypting…' : 'Decrypt'}
+                    </button>
+                    <button class="btn-secondary" onclick={clearRestoreFile} disabled={restoreKeyBusy}>Cancel</button>
+                  </div>
+                </div>
+              {/if}
+
               {#if restorePreview}
                 <div class="panel-muted">
                   <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-neutral-400 mb-3">Backup Contents</p>
@@ -882,6 +775,7 @@
                 </div>
               {/if}
 
+              {#if restoreState !== 'key'}
               <div class="alert-panel alert-warning">
                 <p class="alert-warning-copy">⚠ This will permanently delete all current data — customers, projects, issues, time entries, todos, travel, and notes — and replace it with the backup.</p>
               </div>
@@ -899,6 +793,7 @@
               >
                 {restoreState === 'restoring' ? 'Restoring…' : 'Restore Data'}
               </button>
+              {/if}
 
               {#if restoreState === 'error'}
                 <div class="alert-panel alert-error">

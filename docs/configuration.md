@@ -98,3 +98,14 @@ The model itself is not bundled: it is downloaded at runtime from HuggingFace at
 ```
 
 That tells Tauri to build with ad-hoc signing rather than expecting a configured signing identity.
+
+### Updater and release signing
+
+In-app updates use `tauri-plugin-updater` (Rust-only: no JS package, no capability entry). `tauri.conf.json` sets `bundle.createUpdaterArtifacts: true` and `plugins.updater` with the public key and one endpoint, `https://github.com/waldemarsson/badger/releases/latest/download/latest.json`, so the repo must stay public. The update signing key is separate from Apple code signing:
+
+- The private key and its password live with the maintainer (generated with `npm run tauri signer generate -- -w ~/.tauri/badger.key`, backed up in a password manager) and in the GitHub Actions secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Never commit them. Losing either strands every install: they only accept updates signed by this key.
+- The public key (`badger.key.pub`, minisign) is `plugins.updater.pubkey`. Rotating it needs one release signed with the old key that ships the new public key.
+
+`release.yml` runs a `gates` job (the AGENTS.md gates plus a check that `pubkey` is not the `REPLACE_…` placeholder) before `release-macos`. With the secrets set, `tauri-action` also uploads `Badger.app.tar.gz`, its `.sig` and `latest.json`; `latest.json` takes its version from `tauri.conf.json`, not from the tag, so suffixed tags (`v1.3.0-1`) still work. `/releases/latest` skips drafts and pre-releases. Third-party actions are pinned to commit SHAs (version in a trailing comment).
+
+Updates are fetched and verified in Rust, so they never get `com.apple.quarantine`; only the first manual `.dmg` install needs it removed. See `docs/architecture.md` (Updater) for the install and restart path.

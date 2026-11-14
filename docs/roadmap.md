@@ -25,7 +25,7 @@ Comments (and trailing commas) in JSON notes; today they show as lint errors and
 
 ## 3. Release pipeline hardening
 
-`release.yml` publishes a release on every `v*` tag push without running the gates. Add a gate job (`cargo test`, `cargo clippy --all -- -D warnings`, `cargo fmt --check`, `npm run check`, `npm run lint`, `node --test tests/*.mjs`) that the release job `needs:`; pin third-party actions (`actions/*`, `dtolnay/rust-toolchain`, `swatinem/rust-cache`, `tauri-apps/tauri-action`) to commit SHAs; default the workflow to `permissions: contents: read` and grant `contents: write` only to the release job.
+Implemented on `feature/updater` (gates job, SHA pins, permissions); confirm on the first tag run. `release.yml` published a release on every `v*` tag push without running the gates. Add a gate job (`cargo test`, `cargo clippy --all -- -D warnings`, `cargo fmt --check`, `npm run check`, `npm run lint`, `node --test tests/*.mjs`) that the release job `needs:`; pin third-party actions (`actions/*`, `dtolnay/rust-toolchain`, `swatinem/rust-cache`, `tauri-apps/tauri-action`) to commit SHAs; default the workflow to `permissions: contents: read` and grant `contents: write` only to the release job.
 
 ## 4. Updater
 
@@ -34,23 +34,24 @@ In-app updates through `tauri-plugin-updater`, served from GitHub Releases. Need
 Prerequisites:
 
 - [x] Scan the full git history for secrets and personal data (`gitleaks` or `trufflehog`), check what Releases and Issues expose, then make the repo public
-- [ ] Release gates from section 3 in place
-- [ ] Generate the update signing key (`npm run tauri signer generate -- -w ~/.tauri/badger.key`; separate from Apple code signing), store key and password as the `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` GitHub secrets, and back the key up offline (losing it strands every install); never commit it
+- [ ] Release gates from section 3 in place (implemented; tick after the first green tag run)
+- [ ] Generate the update signing key (public key committed; tick once the secrets are set) (`npm run tauri signer generate -- -w ~/.tauri/badger.key`; separate from Apple code signing), store key and password as the `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` GitHub secrets, and back the key up offline (losing it strands every install); never commit it
 
 Build (`feature/updater`):
 
-- [ ] Dependencies (ask first): `tauri-plugin-updater` (cargo) and `@tauri-apps/plugin-updater` (npm); no process plugin if the restart happens in Rust
-- [ ] `tauri.conf.json`: `bundle.createUpdaterArtifacts: true`, `plugins.updater.pubkey` and `endpoints: ["https://github.com/waldemarsson/badger/releases/latest/download/latest.json"]`; `updater:default` in `capabilities/default.json`; CSP unchanged (the request is made in Rust)
-- [ ] Rust: register the plugin in `lib.rs`; `commands/updater.rs` with `check_for_update` (version and notes, or none) and `install_update` (download, install, flush unsaved notes, restart); the restart must flush like `flush_guard.rs` (or confirm `app.restart()` goes through `RunEvent::ExitRequested`); register in both `generate_handler!` lists; `AppError` messages, no `unwrap`
-- [ ] Frontend: current version and "Check for updates" → "Install and restart" in Settings; a quiet check on launch that shows a toast (never interrupting an edit); inline errors; optional toggle to disable the launch check
-- [ ] `release.yml`: pass both signing secrets to `tauri-action` so it uploads `Badger.app.tar.gz`, its `.sig` and `latest.json`
-- [ ] Tags: use plain `vX.Y.Z` from now on (semver ranks `1.2.0-31` below `1.2.0`); check the version `latest.json` carries
+- [x] Dependency: `tauri-plugin-updater` (cargo) only; the check and install run in Rust commands, so no npm package, process plugin or capability entry
+- [x] `tauri.conf.json`: `bundle.createUpdaterArtifacts: true`, `plugins.updater.pubkey` and `endpoints: ["https://github.com/waldemarsson/badger/releases/latest/download/latest.json"]`; CSP unchanged (the request is made in Rust)
+- [x] Rust: register the plugin in `lib.rs`; `commands/updater.rs` with `check_for_update` (version and notes, or none) and `install_update` (download, install, flush unsaved notes, restart; `restart` ignores `prevent_exit`, so it flushes explicitly); registered in both `generate_handler!` lists; `AppError` messages, no `unwrap`
+- [x] Frontend: current version and "Check for updates" → "Install and restart" in Settings; a quiet check on launch that shows a toast and a dot on the gear (never interrupting an edit); inline errors; no toggle for the launch check (add one if it's ever wanted)
+- [x] `release.yml`: pass both signing secrets to `tauri-action` so it uploads `Badger.app.tar.gz`, its `.sig` and `latest.json`; gates fail while the pubkey is the placeholder
+- [x] Tags: no change needed; `latest.json` takes its version from `tauri.conf.json`, not the tag
 
 Rollout:
 
 - [ ] Ship version N with the updater and install it by hand (last `xattr` needed)
 - [ ] Tag N+1 and verify end to end: update found, installed, relaunched; unsaved notes survive; `xattr -l /Applications/Badger.app` shows no `com.apple.quarantine`; notification permission still works
-- [ ] Document key location, secrets and tag format in `docs/configuration.md`; move this section to Done
+- [x] Document key location, secrets and versions in `docs/configuration.md` (Updater and release signing) and `docs/architecture.md` (Updater)
+- [ ] Move this section to Done after the end-to-end check
 
 ## 5. Dependency monitoring
 

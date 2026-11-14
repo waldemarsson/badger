@@ -53,6 +53,7 @@ The backend is organized around command modules:
 - `settings` for app preferences (theme, daily hours target, command palette shortcut and last-used project/issue, expanded note folders) stored in `app_settings`
 - `startup_backup` for automatic daily backups (folder, flat file names, retention, `BackupState` lock and status) and `backup_crypto` for their optional `age` encryption
 - `flush_guard` for the quit/close guard (see Notes editor)
+- `updater` for in-app updates (`check_for_update`, `install_update`); see Updater
 - `dev_seed` for debug-only sample data
 
 ## Data flow
@@ -110,6 +111,12 @@ The WebView has a strict CSP (`app.security.csp` in `src-tauri/tauri.conf.json`:
 #### Quit/close flush guard
 
 An edit within the debounce window must survive ⌘Q. `src-tauri/src/flush_guard.rs` holds window close and app exit (`WindowEvent::CloseRequested` and `RunEvent::ExitRequested`), emits the `app://flush-request` event, and waits up to 2 s for the frontend to call the `flush_done` command, then closes or exits for real. A flag lets the re-entrant close/exit that Rust triggers itself pass through, so it does not loop. On the frontend, the root layout always listens for the event and runs the handlers pages registered with `registerFlushHandler` (`src/lib/flush-guard.ts`; `/notes` registers one that flushes all dirty notes), then calls `flush_done`. With no handler it replies immediately. No capability change was needed.
+
+`AppHandle::restart` ignores `prevent_exit`, so the guard cannot hold a restart; code that restarts must call `flush_guard::flush_frontend` first (see Updater).
+
+#### Updater
+
+`commands/updater.rs` wraps `tauri-plugin-updater`; the frontend never calls the plugin. `check_for_update` returns `UpdateInfo` (version, current version, release notes) or `None`. `install_update` re-checks, downloads, verifies the minisign signature and installs (the plugin swaps the `.app` atomically and keeps the old one on failure), then flushes unsaved notes and calls `request_restart`; it returns only on failure, and a static flag allows one install at a time. Release builds check once on launch from the root layout (`src/lib/updater-state.svelte.ts`): an update shows a toast and a dot on the Settings gear, errors are silent. Settings › Preferences › Updates shows the version, a manual check with inline errors, and "Install and restart"; a pending update opens Settings on Preferences. Config, keys and CI are in `docs/configuration.md` (Updater and release signing).
 
 On macOS the native app-menu Quit item sends `terminate:`, which tao turns into an unpreventable exit that skips `ExitRequested`. At startup `install_quit_menu` therefore replaces it with a custom "Quit" item (id `app-quit`, accelerator `CmdOrCtrl+Q`) that calls `AppHandle::exit`, which does go through the guard. It only applies when the default menu's app submenu ends in a Quit item; otherwise it logs a warning and keeps the native menu. The guard is unit-tested for its state machine only; it has not been verified in the real Tauri shell.
 

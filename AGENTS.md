@@ -15,7 +15,7 @@ node --test tests/*.mjs             # frontend unit tests
 
 Prettier is not enforced and many files predate it. Do not reformat files you did not otherwise change.
 
-CI only builds releases: pushing a `v*` tag publishes a new macOS release. Nothing runs these gates for you.
+CI runs only on `v*` tags: `release.yml` runs these gates, then publishes a macOS release that installed apps pick up through the updater. Nothing runs them on pushes or PRs.
 
 ## Ground rules
 
@@ -46,7 +46,7 @@ Gotchas:
 - **Semantic tests never download or load the model.** Use `FakeEmbedder` and `semantic::index::tests::ready_state`. Real-model tests are `#[ignore]`d; run them with `BADGER_MODEL_DIR=<dir> cargo test -p badger real_model -- --ignored --test-threads=1`.
 - **`ort` downloads ONNX Runtime from `cdn.pyke.io` at build time**, so the first build (and any clean `target/`) needs network. Never add `unwrap`/`expect` on tokenizer, inference or download paths: release is `panic = "abort"`.
 - **`js_runner` runs untrusted JS and release is `panic = "abort"`:** no `unwrap`/`expect`/panics on the run path, and host callbacks return `Result`. Never add a host function that reaches the DB or IPC beyond read-only `note()`: isolation is the point (see `docs/architecture.md`, Playground). Tests that use `Handle::block_on` need `#[tokio::test(flavor = "multi_thread")]`.
-- **Quit/close must go through `flush_guard.rs`** (flushes unsaved notes). Don't restore the native macOS Quit menu item or exit via `std::process::exit`; both bypass `RunEvent::ExitRequested`.
+- **Quit/close must go through `flush_guard.rs`** (flushes unsaved notes). Don't restore the native macOS Quit menu item or exit via `std::process::exit`; both bypass `RunEvent::ExitRequested`. `AppHandle::restart`/`request_restart` ignore `prevent_exit`, so call `flush_guard::flush_frontend` before restarting (see `commands/updater.rs`).
 
 ### Schema changes
 

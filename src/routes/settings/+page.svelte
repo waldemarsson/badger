@@ -27,18 +27,21 @@
   import Sparkles from '@lucide/svelte/icons/sparkles';
   import { downloadPercent, semanticStatusLabel } from '#lib/semantic.js';
   import { refreshSemanticStatus, semantic } from '#lib/semantic-state.svelte.js';
+  import { getVersion } from '@tauri-apps/api/app';
+  import { checkForUpdate, updater } from '#lib/updater-state.svelte.js';
 
   type Tab = 'customers' | 'preferences' | 'backup' | 'dev';
   let activeTab = $state<Tab>('customers');
 
   onMount(() => {
-    // The notes search hint links to ?tab=preferences.
-    if (page.url.searchParams.get('tab') === 'preferences') {
+    // The notes search hint links to ?tab=preferences; a pending update (gear dot) opens it too.
+    if (page.url.searchParams.get('tab') === 'preferences' || updater.available) {
       activeTab = 'preferences';
       void loadIndexStats();
       void refreshSemanticStatus();
     }
     void loadDailyTarget();
+    getVersion().then((v) => (appVersion = v)).catch(() => {});
     return () => (palette.recording = false);
   });
 
@@ -116,6 +119,36 @@
 
   function focusOnMount(node: HTMLElement) {
     node.focus();
+  }
+
+  // ── Updates ───────────────────────────────────────────────────────────────────
+  // The launch check (root layout) may already have found one; install_update only
+  // returns on failure, because on success Badger restarts.
+  let appVersion = $state('');
+  let updateState = $state<'idle' | 'checking' | 'current' | 'installing'>('idle');
+  let updateError = $state('');
+  const availableUpdate = $derived(updater.available);
+
+  async function checkUpdates() {
+    updateState = 'checking';
+    updateError = '';
+    try {
+      updateState = (await checkForUpdate()) ? 'idle' : 'current';
+    } catch (e) {
+      updateError = String(e);
+      updateState = 'idle';
+    }
+  }
+
+  async function installUpdate() {
+    updateState = 'installing';
+    updateError = '';
+    try {
+      await invoke('install_update');
+    } catch (e) {
+      updateError = String(e);
+      updateState = 'idle';
+    }
   }
 
   // ── Hours target ──────────────────────────────────────────────────────────────
@@ -630,6 +663,51 @@
 
         {#if semanticError}
           <p class="form-error" role="alert">{semanticError}</p>
+        {/if}
+      </section>
+
+      <section class="panel-card mt-4 space-y-4" aria-labelledby="updates-title">
+        <div>
+          <h2 id="updates-title" class="panel-title">Updates</h2>
+          <p class="panel-copy">Badger looks for new releases on GitHub when it starts. Updates are signed and verified before they install.</p>
+        </div>
+
+        {#if availableUpdate}
+          <div class="rounded-xl bg-sky-50 p-4 ring-1 ring-sky-200 dark:bg-sky-500/10 dark:ring-sky-500/20" in:fade={{ duration: 150 }}>
+            <p class="text-sm font-medium text-sky-900 dark:text-sky-300">Badger {availableUpdate.version} is available</p>
+            <p class="mt-0.5 text-xs text-sky-700 dark:text-sky-400">You have {availableUpdate.current_version}. Unsaved notes are saved before Badger restarts.</p>
+            {#if availableUpdate.notes}
+              <p class="mt-3 max-h-40 overflow-y-auto whitespace-pre-line text-sm text-slate-700 dark:text-neutral-300">{availableUpdate.notes}</p>
+            {/if}
+            <div class="mt-3 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                class="btn-primary"
+                onclick={installUpdate}
+                disabled={updateState === 'installing'}
+              >{updateState === 'installing' ? 'Installing…' : 'Install and restart'}</button>
+              {#if updateState === 'installing'}
+                <span class="text-xs text-slate-500 dark:text-neutral-400">Downloading and verifying — Badger restarts when done</span>
+              {/if}
+            </div>
+          </div>
+        {:else}
+          <div class="flex flex-wrap items-center gap-3">
+            <p class="text-sm text-slate-600 dark:text-neutral-300">Version {appVersion || '…'}</p>
+            <button
+              type="button"
+              class="btn-secondary"
+              onclick={checkUpdates}
+              disabled={updateState === 'checking'}
+            >{updateState === 'checking' ? 'Checking…' : 'Check for updates'}</button>
+            {#if updateState === 'current'}
+              <span class="text-xs text-emerald-600 dark:text-emerald-400">Up to date</span>
+            {/if}
+          </div>
+        {/if}
+
+        {#if updateError}
+          <p class="form-error" role="alert">{updateError}</p>
         {/if}
       </section>
 

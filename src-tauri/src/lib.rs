@@ -78,6 +78,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(flush_guard::FlushGuard::default())
         .manage(commands::playground::RunState::default())
         .on_menu_event(|app, event| {
@@ -291,6 +292,9 @@ pub fn run() {
                     commands::semantic::cancel_semantic_download,
                     commands::semantic::remove_semantic_model,
                     commands::semantic::rebuild_semantic_index,
+                    // Updater
+                    commands::updater::check_for_update,
+                    commands::updater::install_update,
                     // Quit/close flush guard
                     flush_guard::flush_done,
                     // Dev-only
@@ -421,6 +425,9 @@ pub fn run() {
                     commands::semantic::cancel_semantic_download,
                     commands::semantic::remove_semantic_model,
                     commands::semantic::rebuild_semantic_index,
+                    // Updater
+                    commands::updater::check_for_update,
+                    commands::updater::install_update,
                     // Quit/close flush guard
                     flush_guard::flush_done,
                 ]

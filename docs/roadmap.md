@@ -25,13 +25,39 @@ Comments (and trailing commas) in JSON notes; today they show as lint errors and
 
 ## 3. Release pipeline hardening
 
-`release.yml` publishes a release on every `v*` tag push without running the gates. Add a gate job (`cargo test`, `cargo clippy --all -- -D warnings`, `cargo fmt --check`, `npm run check`, `npm run lint`, `node --test tests/*.mjs`) that the release job `needs:`; pin third-party actions (`actions/*`, `dtolnay/rust-toolchain`, `swatinem/rust-cache`, `tauri-apps/tauri-action`) to commit SHAs; default the workflow to `permissions: contents: read` and grant `contents: write` only to the release job.
+Implemented on `feature/updater` (gates job, SHA pins, permissions); confirm on the first tag run. `release.yml` published a release on every `v*` tag push without running the gates. Add a gate job (`cargo test`, `cargo clippy --all -- -D warnings`, `cargo fmt --check`, `npm run check`, `npm run lint`, `node --test tests/*.mjs`) that the release job `needs:`; pin third-party actions (`actions/*`, `dtolnay/rust-toolchain`, `swatinem/rust-cache`, `tauri-apps/tauri-action`) to commit SHAs; default the workflow to `permissions: contents: read` and grant `contents: write` only to the release job.
 
-## 4. Dependency monitoring
+## 4. Updater
+
+In-app updates through `tauri-plugin-updater`, served from GitHub Releases. Needs a public repo (the `latest.json` endpoint must be reachable without a token) and section 3 first, because the updater pushes every tag to every install. Updates are downloaded by Rust, not a browser, so they should not get `com.apple.quarantine` and the ad-hoc signed app should not need `xattr` again after the first manual install (to be confirmed in the last step).
+
+Prerequisites:
+
+- [x] Scan the full git history for secrets and personal data (`gitleaks` or `trufflehog`), check what Releases and Issues expose, then make the repo public
+- [ ] Release gates from section 3 in place (implemented; tick after the first green tag run)
+- [x] Generate the update signing key (public key committed, secrets set) (`npm run tauri signer generate -- -w ~/.tauri/badger.key`; separate from Apple code signing), store key and password as the `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` GitHub secrets, and back the key up offline (losing it strands every install); never commit it
+
+Build (`feature/updater`):
+
+- [x] Dependency: `tauri-plugin-updater` (cargo) only; the check and install run in Rust commands, so no npm package, process plugin or capability entry
+- [x] `tauri.conf.json`: `bundle.createUpdaterArtifacts: true`, `plugins.updater.pubkey` and `endpoints: ["https://github.com/waldemarsson/badger/releases/latest/download/latest.json"]`; CSP unchanged (the request is made in Rust)
+- [x] Rust: register the plugin in `lib.rs`; `commands/updater.rs` with `check_for_update` (version and notes, or none) and `install_update` (download, install, flush unsaved notes, restart; `restart` ignores `prevent_exit`, so it flushes explicitly); registered in both `generate_handler!` lists; `AppError` messages, no `unwrap`
+- [x] Frontend: current version and "Check for updates" → "Install and restart" in Settings; a quiet check on launch that shows a toast and a dot on the gear (never interrupting an edit); inline errors; no toggle for the launch check (add one if it's ever wanted)
+- [x] `release.yml`: pass both signing secrets to `tauri-action` so it uploads `Badger.app.tar.gz`, its `.sig` and `latest.json`; gates fail while the pubkey is the placeholder
+- [x] Tags: no change needed; `latest.json` takes its version from `tauri.conf.json`, not the tag
+
+Rollout:
+
+- [ ] Ship version N with the updater and install it by hand (last `xattr` needed)
+- [ ] Tag N+1 and verify end to end: update found, installed, relaunched; unsaved notes survive; `xattr -l /Applications/Badger.app` shows no `com.apple.quarantine`; notification permission still works
+- [x] Document key location, secrets and versions in `docs/configuration.md` (Updater and release signing) and `docs/architecture.md` (Updater)
+- [ ] Move this section to Done after the end-to-end check
+
+## 5. Dependency monitoring
 
 Dependabot for npm, cargo and GitHub Actions (grouped weekly updates), plus a `cargo deny check advisories` (or `cargo audit`) step and `npm audit --omit=dev` in the gate job.
 
-## 5. Major dependency upgrades
+## 6. Major dependency upgrades
 
 Each on its own branch: `sqlx` 0.9, `sha2` 0.11, `tokenizers` 0.23 first; then `typescript` 7, `prettier-plugin-svelte` 4, `@types/node` 26 and `tailwind-merge` 3; Tailwind 4 last (touches all styling and `app.css`).
 

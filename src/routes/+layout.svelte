@@ -14,6 +14,8 @@
   import { watchSemanticStatus } from '#lib/semantic-state.svelte.js';
   import { reminders, requestHighlight, watchReminders } from '#lib/reminders-state.svelte.js';
   import { scratchpad, toggleScratchpad } from '#lib/scratchpad-state.svelte.js';
+  import { checkForUpdate, updater } from '#lib/updater-state.svelte.js';
+  import { showToast } from '#lib/palette-state.svelte.js';
   import type { PaletteSettings } from '#lib/types.js';
   import CommandPalette from '#lib/components/CommandPalette.svelte';
   import Toast from '#lib/components/Toast.svelte';
@@ -94,6 +96,13 @@
       requestHighlight(id);
       if (page.url.pathname !== '/reminders') void goto(resolve('/reminders'));
     });
+    // Quiet update check: a toast and a dot on the gear, never a dialog. Errors (offline,
+    // no release yet) are silent here; Settings shows them on a manual check.
+    if (!import.meta.env.DEV) {
+      checkForUpdate()
+        .then((u) => { if (u && !disposed) showToast(`Badger ${u.version} is available — see Settings`); })
+        .catch(() => {});
+    }
     window.addEventListener('keydown', onScratchpadKeydown, true);
     return () => {
       disposed = true;
@@ -147,12 +156,12 @@
       ><StickyNote size={16} /></button>
       <a
         href={resolve('/settings')}
-        class="nav-link inline-flex h-10 items-center px-3"
+        class="nav-link relative inline-flex h-10 items-center px-3"
         class:nav-link-active={page.url.pathname === '/settings'}
         aria-current={page.url.pathname === '/settings' ? 'page' : undefined}
-        aria-label="Settings"
-        title="Settings"
-      ><SettingsIcon size={16} /></a>
+        aria-label={updater.available ? `Settings — Badger ${updater.available.version} available` : 'Settings'}
+        title={updater.available ? `Badger ${updater.available.version} is available` : 'Settings'}
+      ><SettingsIcon size={16} />{#if updater.available}<span class="nav-update-dot" aria-hidden="true"></span>{/if}</a>
     </div>
   </div>
 </nav>

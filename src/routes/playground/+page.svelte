@@ -17,7 +17,9 @@
 	import { palette } from '#lib/palette-state.svelte.js';
 	import { scratchpad } from '#lib/scratchpad-state.svelte.js';
 	import type { NoteSummary, Script, ScriptSummary } from '#lib/types.js';
+	import ContextMenu, { type MenuItem } from '#lib/components/ContextMenu.svelte';
 	import Check from '@lucide/svelte/icons/check';
+	import PencilLine from '@lucide/svelte/icons/pencil-line';
 	import CircleAlert from '@lucide/svelte/icons/circle-exclamation-point';
 	import Eraser from '@lucide/svelte/icons/eraser';
 	import Play from '@lucide/svelte/icons/play';
@@ -191,8 +193,12 @@
 		return [...document.querySelectorAll<HTMLElement>('[data-script-row]')];
 	}
 
-	function onRowKeydown(e: KeyboardEvent, id: number): void {
-		if (e.key === 'Enter' || e.key === ' ') {
+	function onRowKeydown(e: KeyboardEvent, s: ScriptSummary): void {
+		const id = s.id;
+		if (isMenuKey(e)) {
+			e.preventDefault();
+			openMenuAt(s, e.currentTarget as HTMLElement);
+		} else if (e.key === 'Enter' || e.key === ' ') {
 			e.preventDefault();
 			void select(id);
 		} else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
@@ -382,6 +388,69 @@
 		node.focus();
 	}
 
+	// ── Context menu (right-click, ctrl+click, Shift+F10, the ContextMenu key) ─────
+
+	let menu = $state<{ id: number; x: number; y: number; anchorHeight: number; label: string; items: MenuItem[] } | null>(null);
+	let keyMenuAt = -Infinity; // when the keyboard last opened one (its own contextmenu event is ignored)
+	const KEY_MENU_GRACE_MS = 500;
+
+	function isMenuKey(e: KeyboardEvent): boolean {
+		return e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey);
+	}
+
+	/** Opens `id` first: run, rename and delete act on the open script. */
+	async function withScript(id: number, action: () => void): Promise<void> {
+		await select(id);
+		if (selectedId === id) action();
+	}
+
+	function menuItems(s: ScriptSummary): MenuItem[] {
+		const items: MenuItem[] = [];
+		if (!running) items.push({ label: 'Run', icon: Play, hint: '⌘↵', run: () => void withScript(s.id, run) });
+		else if (running.scriptId === s.id) items.push({ label: 'Stop', icon: Square, hint: 'Esc', run: () => void stopRun() });
+		items.push(
+			{
+				label: 'Rename',
+				icon: PencilLine,
+				run: () =>
+					void withScript(s.id, () => {
+						titleInput?.focus();
+						titleInput?.select();
+					})
+			},
+			{ label: 'Delete', icon: Trash2, danger: true, run: () => void withScript(s.id, () => (confirmingDelete = true)) }
+		);
+		return items;
+	}
+
+	function openMenu(s: ScriptSummary, x: number, y: number, anchorHeight = 0): void {
+		menu = { id: s.id, x, y, anchorHeight, label: `Actions for ${s.title}`, items: menuItems(s) };
+	}
+
+	function onRowContextMenu(e: MouseEvent, s: ScriptSummary): void {
+		e.preventDefault();
+		if (performance.now() - keyMenuAt < KEY_MENU_GRACE_MS) return; // Shift+F10 already opened it
+		openMenu(s, e.clientX, e.clientY);
+	}
+
+	function openMenuAt(s: ScriptSummary, el: HTMLElement): void {
+		const r = el.getBoundingClientRect();
+		const pad = parseFloat(getComputedStyle(el).paddingLeft) || 0;
+		keyMenuAt = performance.now();
+		openMenu(s, r.left + pad, r.bottom, r.height);
+	}
+
+	function closeMenu(refocus: boolean): void {
+		const id = menu?.id;
+		menu = null;
+		if (refocus && id !== undefined) document.querySelector<HTMLElement>(`[data-script-row="${id}"]`)?.focus({ preventScroll: true });
+	}
+
+	// The script went away (deleted, filtered out): close its menu.
+	$effect(() => {
+		if (menu && !visible.some((s) => s.id === menu?.id)) menu = null;
+	});
+
 	// ── Leaving ───────────────────────────────────────────────────────────────────
 
 	let leaving = false;
@@ -545,9 +614,13 @@
 										class="note-row"
 										class:note-row-active={s.id === selectedId}
 										aria-current={s.id === selectedId ? 'true' : undefined}
-										data-script-row
-										onclick={() => void select(s.id)}
-										onkeydown={(e) => onRowKeydown(e, s.id)}
+										data-script-row={s.id}
+										aria-haspopup="menu"
+										onclick={(e) => {
+											if (!e.ctrlKey) void select(s.id); // ctrl+click opens the menu
+										}}
+										oncontextmenu={(e) => onRowContextMenu(e, s)}
+										onkeydown={(e) => onRowKeydown(e, s)}
 									>
 										<p class="note-row-title">{s.title}</p>
 										<p class="script-row-time">
@@ -736,3 +809,7 @@
 		</div>
 	</div>
 </div>
+
+{#if menu}
+	<ContextMenu x={menu.x} y={menu.y} anchorHeight={menu.anchorHeight} label={menu.label} items={menu.items} onclose={closeMenu} />
+{/if}

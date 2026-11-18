@@ -45,7 +45,8 @@
 	let titleError = $state('');
 	let lastFailedTitle: string | null = null; // skip blur-retry of a title just rejected
 
-	let confirmingDelete = $state(false);
+	/** Where the delete confirm shows: the header (trash button) or under the row (menu). */
+	let confirmingDelete = $state<false | 'header' | 'row'>(false);
 	let actionError = $state('');
 	let navError = $state('');
 	let editorError = $state('');
@@ -377,10 +378,16 @@
 		else await select(next);
 	}
 
+	function cancelDelete(): void {
+		const fromRow = confirmingDelete === 'row';
+		confirmingDelete = false;
+		if (fromRow && selectedId !== null) rowElements().find((r) => r.dataset.scriptRow === String(selectedId))?.focus();
+	}
+
 	function onConfirmKeydown(e: KeyboardEvent): void {
 		if (e.key === 'Escape') {
 			e.preventDefault();
-			confirmingDelete = false;
+			cancelDelete();
 		}
 	}
 
@@ -418,7 +425,7 @@
 						titleInput?.select();
 					})
 			},
-			{ label: 'Delete', icon: Trash2, danger: true, run: () => void withScript(s.id, () => (confirmingDelete = true)) }
+			{ label: 'Delete', icon: Trash2, danger: true, run: () => void withScript(s.id, () => (confirmingDelete = 'row')) }
 		);
 		return items;
 	}
@@ -631,6 +638,16 @@
 											{/if}
 										</p>
 									</div>
+									{#if confirmingDelete === 'row' && s.id === selectedId}
+										<!-- svelte-ignore a11y_no_static_element_interactions -->
+										<div class="tree-note-confirm-bar px-3 pb-2" onkeydown={onConfirmKeydown} in:fade={{ duration: 150 }}>
+											<span class="mr-auto font-medium text-red-700 dark:text-red-300">Delete script?</span>
+											<span class="flex shrink-0 gap-1.5">
+												<button type="button" class="btn-danger-sm" aria-label="Confirm delete {s.title}" use:autofocus onclick={deleteCurrent}>Delete</button>
+												<button type="button" class="btn-secondary-sm" onclick={cancelDelete}>Cancel</button>
+											</span>
+										</div>
+									{/if}
 								</div>
 							{/each}
 						</div>
@@ -667,12 +684,12 @@
 									Saved
 								{/if}
 							</span>
-							{#if confirmingDelete}
+							{#if confirmingDelete === 'header'}
 								<!-- svelte-ignore a11y_no_static_element_interactions -->
 								<div class="flex shrink-0 items-center gap-1.5" onkeydown={onConfirmKeydown} in:fade={{ duration: 150 }}>
 									<span class="text-xs font-medium text-red-700 dark:text-red-300">Delete this script?</span>
 									<button type="button" class="btn-danger-sm" use:autofocus onclick={deleteCurrent}>Delete</button>
-									<button type="button" class="btn-secondary-sm" onclick={() => (confirmingDelete = false)}>Cancel</button>
+									<button type="button" class="btn-secondary-sm" onclick={cancelDelete}>Cancel</button>
 								</div>
 							{:else}
 								<div class="flex shrink-0 items-center gap-1.5">
@@ -685,7 +702,7 @@
 											<Play size={12} class="fill-current" /> Run <kbd class="playground-kbd">⌘↵</kbd>
 										</button>
 									{/if}
-									<button type="button" class="btn-icon-ghost-danger" title="Delete script" aria-label="Delete script" onclick={() => (confirmingDelete = true)}>
+									<button type="button" class="btn-icon-ghost-danger" title="Delete script" aria-label="Delete script" onclick={() => (confirmingDelete = 'header')}>
 										<Trash2 size={16} />
 									</button>
 								</div>

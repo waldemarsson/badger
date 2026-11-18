@@ -74,12 +74,12 @@ test('buildTree groups folders and notes by parent; unknown parents fall back to
 	assert.equal(tree.byId.get(5).name, 'Deep');
 });
 
-test('visibleRows: folders first, then notes, nested only inside expanded folders', () => {
+test('visibleRows: notes first, then folders, nested only inside expanded folders', () => {
 	const tree = buildTree(folders, notes);
-	assert.deepEqual(keys(visibleRows(tree, new Set())), ['f:4', 'f:3', 'f:1', 'n:10', 'n:11', 'n:40']);
+	assert.deepEqual(keys(visibleRows(tree, new Set())), ['n:10', 'n:11', 'n:40', 'f:4', 'f:3', 'f:1']);
 
 	const rows = visibleRows(tree, new Set([1, 2, 4, 5]));
-	assert.deepEqual(keys(rows), ['f:4', 'e:4', 'f:3', 'f:1', 'f:2', 'f:5', 'e:5', 'n:30', 'n:20', 'n:10', 'n:11', 'n:40']);
+	assert.deepEqual(keys(rows), ['n:10', 'n:11', 'n:40', 'f:4', 'e:4', 'f:3', 'f:1', 'n:20', 'f:2', 'n:30', 'f:5', 'e:5']);
 	const byKey = new Map(rows.map((r) => [r.key, r]));
 	assert.deepEqual(
 		['f:1', 'f:2', 'f:5', 'e:5', 'n:30', 'n:20', 'n:10'].map((k) => [byKey.get(k).depth, byKey.get(k).parentId]),
@@ -96,7 +96,7 @@ test('visibleRows: folders first, then notes, nested only inside expanded folder
 test('visibleRows: expanding a folder inside a collapsed one shows nothing; pinned notes stay put', () => {
 	const pinned = [note(50, 2, { pinned: true }), ...notes];
 	const rows = visibleRows(buildTree(folders, pinned), new Set([2]));
-	assert.deepEqual(keys(rows), ['f:4', 'f:3', 'f:1', 'n:10', 'n:11', 'n:40']);
+	assert.deepEqual(keys(rows), ['n:10', 'n:11', 'n:40', 'f:4', 'f:3', 'f:1']);
 });
 
 test('buildTree attaches folders in a parent cycle (legacy data) to root, with their notes', () => {
@@ -109,7 +109,7 @@ test('buildTree attaches folders in a parent cycle (legacy data) to root, with t
 	assert.equal(tree.byId.get(4).parent_id, 1);
 	assert.equal(cyclic[0].parent_id, 2, 'input not mutated');
 	const rows = visibleRows(tree, new Set([1, 2, 3, 4, 5]));
-	assert.deepEqual(keys(rows), ['f:1', 'f:4', 'n:40', 'n:10', 'f:2', 'n:20', 'f:3', 'e:3', 'f:5', 'n:50']);
+	assert.deepEqual(keys(rows), ['f:1', 'n:10', 'f:4', 'n:40', 'f:2', 'n:20', 'f:3', 'e:3', 'f:5', 'n:50']);
 	assert.equal(folderPath(tree.byId, 4), 'A / D');
 	assert.deepEqual(folderChain(tree.byId, 1), [1]);
 	assert.deepEqual(moveTargets(tree).map((t) => t.label), ['Notes (root)', 'A', 'A / D', 'B', 'C', 'E']);
@@ -179,14 +179,15 @@ test('sameIds compares id sets regardless of order and duplicates', () => {
 const { treeKeyAction, noteNeighbour, dropTarget, keyboardMove, autoScrollStep } = await import('../src/lib/folders.ts');
 
 test('treeKeyAction: ↑/↓/Home/End move between rows and skip "Empty" placeholders', () => {
-	// f:4 e:4 f:3 f:1 f:2 f:5 e:5 n:30 n:20 n:10 n:11 n:40
+	// n:10 n:11 n:40 f:4 e:4 f:3 f:1 n:20 f:2 n:30 f:5 e:5
 	const rows = visibleRows(buildTree(folders, notes), new Set([1, 2, 4, 5]));
-	assert.deepEqual(treeKeyAction(rows, 0, 'ArrowDown'), { kind: 'focus', index: 2 }, 'skips e:4');
-	assert.deepEqual(treeKeyAction(rows, 2, 'ArrowUp'), { kind: 'focus', index: 0 });
+	const at = (key) => rows.findIndex((r) => r.key === key);
+	assert.deepEqual(treeKeyAction(rows, at('f:4'), 'ArrowDown'), { kind: 'focus', index: at('f:3') }, 'skips e:4');
+	assert.deepEqual(treeKeyAction(rows, at('f:3'), 'ArrowUp'), { kind: 'focus', index: at('f:4') });
 	assert.deepEqual(treeKeyAction(rows, 0, 'ArrowUp'), { kind: 'exit' }, '↑ on the first row → out of the tree (root row)');
-	assert.equal(treeKeyAction(rows, rows.length - 1, 'ArrowDown'), null, '↓ on the last row stays');
+	assert.equal(treeKeyAction(rows, at('f:5'), 'ArrowDown'), null, '↓ on the last focusable row stays');
 	assert.deepEqual(treeKeyAction(rows, 5, 'Home'), { kind: 'focus', index: 0 });
-	assert.deepEqual(treeKeyAction(rows, 5, 'End'), { kind: 'focus', index: rows.length - 1 });
+	assert.deepEqual(treeKeyAction(rows, 5, 'End'), { kind: 'focus', index: at('f:5') }, 'skips the trailing e:5');
 	assert.equal(treeKeyAction(rows, 0, 'Home'), null);
 	assert.equal(treeKeyAction(rows, 99, 'ArrowDown'), null);
 	assert.equal(treeKeyAction(rows, 0, 'x'), null);
@@ -196,7 +197,7 @@ test('treeKeyAction: → expands or steps in, ← collapses or steps out', () =>
 	const rows = visibleRows(buildTree(folders, notes), new Set([1, 2, 4, 5]));
 	const at = (key) => rows.findIndex((r) => r.key === key);
 	assert.deepEqual(treeKeyAction(rows, at('f:3'), 'ArrowRight'), { kind: 'expand', folderId: 3 }, 'collapsed → expand');
-	assert.deepEqual(treeKeyAction(rows, at('f:1'), 'ArrowRight'), { kind: 'focus', index: at('f:2') }, 'expanded → first child');
+	assert.deepEqual(treeKeyAction(rows, at('f:1'), 'ArrowRight'), { kind: 'focus', index: at('n:20') }, 'expanded → first child');
 	assert.equal(treeKeyAction(rows, at('f:4'), 'ArrowRight'), null, 'expanded but empty');
 	assert.equal(treeKeyAction(rows, at('n:30'), 'ArrowRight'), null);
 	assert.deepEqual(treeKeyAction(rows, at('f:2'), 'ArrowLeft'), { kind: 'collapse', folderId: 2 });
@@ -207,11 +208,12 @@ test('treeKeyAction: → expands or steps in, ← collapses or steps out', () =>
 
 test('treeKeyAction: Enter/Space activate, F2 renames folders only', () => {
 	const rows = visibleRows(buildTree(folders, notes), new Set([4]));
-	assert.deepEqual(treeKeyAction(rows, 0, 'Enter'), { kind: 'activate' });
-	assert.deepEqual(treeKeyAction(rows, 0, ' '), { kind: 'activate' });
-	assert.deepEqual(treeKeyAction(rows, 0, 'F2'), { kind: 'rename', folderId: 4 });
+	const at = (key) => rows.findIndex((r) => r.key === key);
+	assert.deepEqual(treeKeyAction(rows, at('f:4'), 'Enter'), { kind: 'activate' });
+	assert.deepEqual(treeKeyAction(rows, at('f:4'), ' '), { kind: 'activate' });
+	assert.deepEqual(treeKeyAction(rows, at('f:4'), 'F2'), { kind: 'rename', folderId: 4 });
 	assert.equal(treeKeyAction(rows, rows.findIndex((r) => r.kind === 'note'), 'F2'), null);
-	assert.equal(treeKeyAction(rows, 1, 'Enter'), null, 'the Empty row');
+	assert.equal(treeKeyAction(rows, at('e:4'), 'Enter'), null, 'the Empty row');
 });
 
 test('noteNeighbour picks the next note in the same folder, else the previous, regardless of collapse', () => {
@@ -249,7 +251,7 @@ const dndNotes = [
 	note(12)
 ];
 const dndTree = buildTree(folders.slice(0, 4), dndNotes);
-// f:4 e:4 f:3 f:1 f:2 n:30 n:60 n:61 n:10 n:11 n:12
+// n:60 n:61 n:10 n:11 n:12 f:4 e:4 f:3 f:1 f:2 n:30
 const dndRows = visibleRows(dndTree, new Set([1, 2, 4]));
 const at = (key, fraction = 0.5) => ({ index: dndRows.findIndex((r) => r.key === key), fraction });
 const drop = (item, hover) => dropTarget(dndTree, dndRows, item, hover);
@@ -330,25 +332,27 @@ test('dropTarget: a folder row\'s top/bottom quarter inserts among siblings, the
 		line: { key: 'f:3', edge: 'after', depth: 0 }
 	});
 	assert.deepEqual(drop(folderItem(4), at('f:3', 0.5)), { folderId: 3, index: null, line: null });
-	// The bottom of an expanded folder is the start of its children.
+	// The bottom of an expanded folder without notes is the start of its children.
 	assert.deepEqual(drop(folderItem(3), at('f:1', 0.9)), {
 		folderId: 1,
 		index: 0,
 		line: { key: 'f:1', edge: 'after', depth: 1 }
 	});
-	// Over notes: the end of their folder's subfolders.
+	// With notes (shown first), it moves into the folder instead.
+	assert.deepEqual(drop(folderItem(3), at('f:2', 0.9)), { folderId: 2, index: null, line: null });
+	// Over notes: into their folder.
 	assert.deepEqual(drop(folderItem(3), at('n:30')), { folderId: 2, index: null, line: null });
 	assert.deepEqual(
-		drop(folderItem(4), at('n:10')),
-		{ folderId: null, index: 2, line: { key: 'n:60', edge: 'before', depth: 0 } },
-		'own parent: a reorder to the end, the line below the last subfolder (above the first note)'
+		drop(folderItem(1), at('n:10')),
+		{ folderId: null, index: 0, line: { key: 'f:4', edge: 'before', depth: 0 } },
+		'own parent: a reorder to the start of the subfolders, the line below the notes'
 	);
 	assert.deepEqual(
 		drop(folderItem(3), at('n:12', 0.9)),
-		{ folderId: null, index: 2, line: { key: 'n:60', edge: 'before', depth: 0 } },
+		{ folderId: null, index: 0, line: { key: 'f:4', edge: 'before', depth: 0 } },
 		'any note row of the parent'
 	);
-	assert.equal(drop(folderItem(1), at('n:10')), undefined, 'already last');
+	assert.equal(drop(folderItem(4), at('n:10')), undefined, 'already first');
 });
 
 test('dropTarget: a folder never goes into itself or a descendant, and no-op drops are undefined', () => {
@@ -366,9 +370,9 @@ test('dropTarget: a folder never goes into itself or a descendant, and no-op dro
 test('dropTarget: empty space is the root for notes, the end of the root folders for folders', () => {
 	assert.deepEqual(drop(rootNote(11), 'end'), { folderId: null, index: null, line: null }, 'note: today\'s root drop');
 	assert.equal(drop(rootNote(10), 'end'), undefined, 'note already on top of its group');
-	// Root has notes: the line closes the folder block, above the first root note.
-	assert.deepEqual(drop(folderItem(4), 'end'), { folderId: null, index: 2, line: { key: 'n:60', edge: 'before', depth: 0 } });
-	assert.deepEqual(drop(folderItem(2, 1), 'end'), { folderId: null, index: 3, line: { key: 'n:60', edge: 'before', depth: 0 } });
+	// Root folders come last: the line goes after the last row (the last folder's subtree).
+	assert.deepEqual(drop(folderItem(4), 'end'), { folderId: null, index: 2, line: { key: 'n:30', edge: 'after', depth: 0 } });
+	assert.deepEqual(drop(folderItem(2, 1), 'end'), { folderId: null, index: 3, line: { key: 'n:30', edge: 'after', depth: 0 } });
 	assert.equal(drop(folderItem(1), 'end'), undefined, 'already the last root folder');
 	assert.equal(drop(folderItem(1), 'root'), undefined, 'the Notes row stays "into root" (a no-op here)');
 

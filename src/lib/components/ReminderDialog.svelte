@@ -3,6 +3,7 @@
 	import { cubicOut } from 'svelte/easing';
 	import type { Reminder } from '#lib/types.js';
 	import ReminderForm from '#lib/components/ReminderForm.svelte';
+	import { backdropDismiss } from '#lib/backdrop.js';
 	import Bell from '@lucide/svelte/icons/bell';
 	import X from '@lucide/svelte/icons/x';
 
@@ -20,6 +21,8 @@
 		onclose: () => void;
 	} = $props();
 
+	const backdrop = backdropDismiss(() => onclose());
+
 	function onkeydown(e: KeyboardEvent): void {
 		// The form handles its own Esc (cancel, or closing an open picker list) first.
 		if (e.key === 'Escape' && !e.defaultPrevented) {
@@ -34,7 +37,7 @@
 <div
 	class="fixed inset-0 z-40 flex items-start justify-center bg-slate-950/40 p-4 pt-[14vh] backdrop-blur-[2px] dark:bg-black/60"
 	transition:fade={{ duration: 150 }}
-	onclick={(e) => e.target === e.currentTarget && onclose()}
+	{...backdrop}
 	role="presentation"
 >
 	<div

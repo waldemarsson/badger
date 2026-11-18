@@ -32,6 +32,26 @@ fn is_allowed_url(url: &str) -> bool {
         .any(|s| scheme.eq_ignore_ascii_case(s))
 }
 
+/// GitHub-style heading anchor: lowercased, spaces to `-`, only letters, digits, `-` and
+/// `_` kept. Also applied to `[text](#fragment)` targets, so `#My-Heading` still matches.
+fn heading_slug(text: &str) -> String {
+    text.trim()
+        .chars()
+        .flat_map(char::to_lowercase)
+        .filter_map(|c| match c {
+            ' ' => Some('-'),
+            c if c.is_alphanumeric() || c == '-' || c == '_' => Some(c),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `#fragment` → `#slug` for a link within the note; None when nothing is left.
+fn fragment_target(url: &str) -> Option<String> {
+    let slug = heading_slug(url.strip_prefix('#')?);
+    (!slug.is_empty()).then(|| format!("#{slug}"))
+}
+
 fn link_allowed(link_type: LinkType, url: &str) -> bool {
     // `<user@example.com>` arrives without `mailto:`; push_html adds it.
     link_type == LinkType::Email || is_allowed_url(url)
@@ -203,6 +223,9 @@ pub fn render(markdown: &str, refs: &[Ref], mode: RenderMode, resolver: &Resolve
     let mut next_ref = 0;
     let mut open: Vec<Open> = Vec::new();
     let mut events: Vec<Event> = Vec::new();
+    // The open heading (its start event's index, its text so far) and the anchors used.
+    let mut heading: Option<(usize, String)> = None;
+    let mut slugs: HashMap<String, usize> = HashMap::new();
     // Number of `<a>` currently open; a nested anchor would be invalid HTML.
     let anchors = |open: &[Open]| {
         open.iter()
@@ -215,6 +238,9 @@ pub fn render(markdown: &str, refs: &[Ref], mode: RenderMode, resolver: &Resolve
             // Text in a tag or wikilink: pulldown-cmark may split one ref over several
             // text events (`[`, `[`, `Foo`, `]`, `]`); the ref is emitted where it starts.
             Event::Text(text) => {
+                if let Some((_, label)) = heading.as_mut() {
+                    label.push_str(&text);
+                }
                 while refs
                     .get(next_ref)
                     .is_some_and(|r| r.range.end <= range.start)
@@ -266,11 +292,13 @@ pub fn render(markdown: &str, refs: &[Ref], mode: RenderMode, resolver: &Resolve
                 title,
                 id,
             }) => {
-                if anchors(&open) == 0 && link_allowed(link_type, &dest_url) {
+                let fragment = fragment_target(&dest_url);
+                if anchors(&open) == 0 && (fragment.is_some() || link_allowed(link_type, &dest_url))
+                {
                     open.push(Open::Anchor);
                     events.push(Event::Start(Tag::Link {
                         link_type,
-                        dest_url,
+                        dest_url: fragment.map_or(dest_url, CowStr::from),
                         title,
                         id,
                     }));
@@ -309,6 +337,29 @@ pub fn render(markdown: &str, refs: &[Ref], mode: RenderMode, resolver: &Resolve
                 }
                 Some(Open::Dropped | Open::ImageText) | None => {}
             },
+            // Headings get an `id` for `[text](#heading)` links; repeats get `-1`, `-2`, …
+            Event::Start(Tag::Heading { .. }) => {
+                heading = Some((events.len(), String::new()));
+                events.push(event);
+            }
+            Event::End(TagEnd::Heading(level)) => {
+                if let Some((start, label)) = heading.take() {
+                    let base = heading_slug(&label);
+                    if !base.is_empty() {
+                        let mut slug = base.clone();
+                        while slugs.contains_key(&slug) {
+                            let n = slugs.entry(base.clone()).or_insert(0);
+                            *n += 1;
+                            slug = format!("{base}-{n}");
+                        }
+                        slugs.insert(slug.clone(), 0);
+                        if let Some(Event::Start(Tag::Heading { id, .. })) = events.get_mut(start) {
+                            *id = Some(CowStr::from(slug));
+                        }
+                    }
+                }
+                events.push(Event::End(TagEnd::Heading(level)));
+            }
             // Raw HTML is shown as text; an HTML block becomes a paragraph.
             Event::Start(Tag::HtmlBlock) => events.push(Event::Start(Tag::Paragraph)),
             Event::End(TagEnd::HtmlBlock) => {
@@ -326,6 +377,9 @@ pub fn render(markdown: &str, refs: &[Ref], mode: RenderMode, resolver: &Resolve
             }
             Event::InlineHtml(raw) => events.push(Event::Text(raw)),
             other => {
+                if let (Some((_, label)), Event::Code(code)) = (heading.as_mut(), &other) {
+                    label.push_str(code);
+                }
                 if let Some(Open::ImageAnchor { has_text, .. }) = open.last_mut() {
                     if matches!(other, Event::Text(_) | Event::Code(_)) {
                         *has_text = true;
@@ -414,7 +468,7 @@ mod tests {
     #[test]
     fn renders_basic_elements() {
         let html = to_html("# Title\n\nSome *em* and **strong** and ~~gone~~ and `code`.\n\n> quote\n\n- a\n- b\n\n1. one\n\n---\n");
-        assert!(html.contains("<h1>Title</h1>"));
+        assert!(html.contains(r#"<h1 id="title">Title</h1>"#));
         assert!(html.contains("<em>em</em>"));
         assert!(html.contains("<strong>strong</strong>"));
         assert!(html.contains("<del>gone</del>"));
@@ -514,13 +568,55 @@ mod tests {
             "file:///etc/passwd",
             "vbscript:x",
             "foo.md",
-            "#x",
+            "#",
+            "#!!",
             "//evil.com",
         ] {
             let html = to_html(&format!("[the *text*](<{url}>)"));
             assert!(!html.contains("<a"), "{url}: {html}");
             assert_eq!(html, "<p>the <em>text</em></p>\n", "{url}");
         }
+    }
+
+    #[test]
+    fn headings_get_anchor_ids_and_fragment_links_point_at_them() {
+        let html = to_html(
+            "# My Heading!\n\n## `code` and *em*\n\n# My Heading\n\n# my-heading-1\n\n# Åre ö\n\n\
+             [up](#My-Heading) [x](<#my heading 1>) [å](#åre-ö)\n",
+        );
+        assert!(
+            html.contains(r#"<h1 id="my-heading">My Heading!</h1>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<h2 id="code-and-em"><code>code</code> and <em>em</em></h2>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<h1 id="my-heading-1">My Heading</h1>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<h1 id="my-heading-1-1">my-heading-1</h1>"#),
+            "{html}"
+        );
+        assert!(html.contains(r#"<h1 id="åre-ö">Åre ö</h1>"#), "{html}");
+        assert!(html.contains(r##"<a href="#my-heading">up</a>"##), "{html}");
+        assert!(
+            html.contains(r##"<a href="#my-heading-1">x</a>"##),
+            "{html}"
+        );
+        // push_html percent-encodes the href; the reader decodes it.
+        assert!(
+            html.contains(r##"<a href="#%C3%A5re-%C3%B6">å</a>"##),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn heading_ids_are_escaped_and_skip_empty_slugs() {
+        assert!(to_html("# !!!\n").contains("<h1>!!!</h1>"));
+        assert!(to_html("# a\"b\n").contains(r#"<h1 id="ab">"#));
     }
 
     #[test]
@@ -652,7 +748,7 @@ mod tests {
         );
         assert!(
             html.contains(
-                "<h1>Title <a href=\"#\" class=\"note-tag\" data-tag=\"tag\">#tag</a></h1>"
+                "<h1 id=\"title-tag\">Title <a href=\"#\" class=\"note-tag\" data-tag=\"tag\">#tag</a></h1>"
             ),
             "{html}"
         );

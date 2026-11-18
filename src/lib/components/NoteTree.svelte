@@ -484,6 +484,8 @@
 			confirmingId = null;
 			confirmingNoteId = null;
 			document.body.classList.add('is-dragging');
+			// The press began a text selection that would follow the pointer into the open note.
+			window.getSelection()?.removeAllRanges();
 			scrollFrame = requestAnimationFrame(autoScroll);
 		}
 		if (!drag) return;

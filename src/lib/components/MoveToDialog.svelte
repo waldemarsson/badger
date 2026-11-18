@@ -4,6 +4,7 @@
 	import { cubicOut } from 'svelte/easing';
 	import { targetFolderId, type MoveTarget } from '#lib/folders.js';
 	import Combobox from '#lib/components/Combobox.svelte';
+	import { backdropDismiss } from '#lib/backdrop.js';
 	import FolderInput from '@lucide/svelte/icons/folder-input';
 	import X from '@lucide/svelte/icons/x';
 
@@ -24,6 +25,8 @@
 		onpick: (folderId: number | null) => void;
 		onclose: () => void;
 	} = $props();
+
+	const backdrop = backdropDismiss(() => onclose());
 
 	let panel: HTMLElement;
 	let value = $state('');
@@ -48,7 +51,7 @@
 <div
 	class="fixed inset-0 z-40 flex items-start justify-center bg-slate-950/40 p-4 pt-[14vh] backdrop-blur-[2px] dark:bg-black/60"
 	transition:fade={{ duration: 150 }}
-	onclick={(e) => e.target === e.currentTarget && onclose()}
+	{...backdrop}
 	role="presentation"
 >
 	<div

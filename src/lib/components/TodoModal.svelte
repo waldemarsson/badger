@@ -9,6 +9,7 @@
 	import ReminderRow from '#lib/components/ReminderRow.svelte';
 	import { activeForTodo } from '#lib/reminders.js';
 	import { clock, reminders } from '#lib/reminders-state.svelte.js';
+	import { backdropDismiss } from '#lib/backdrop.js';
 	import Bell from '@lucide/svelte/icons/bell';
 	import X from '@lucide/svelte/icons/x';
 	import Link2 from '@lucide/svelte/icons/link-2';
@@ -20,6 +21,8 @@
 		onclose,
 		onchange
 	}: { todo: TodoRow; onclose: () => void; onchange: () => Promise<void> } = $props();
+
+	const backdrop = backdropDismiss(() => onclose());
 
 	// The modal is mounted per card, so the form starts from the initial prop value.
 	// svelte-ignore state_referenced_locally
@@ -169,7 +172,7 @@
 <div
 	class="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-slate-950/40 dark:bg-black/60 p-4 pt-[10vh] backdrop-blur-[2px]"
 	transition:fade={{ duration: 150 }}
-	onclick={(e) => e.target === e.currentTarget && onclose()}
+	{...backdrop}
 	role="presentation"
 >
 	<div

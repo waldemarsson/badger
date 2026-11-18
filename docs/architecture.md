@@ -20,7 +20,7 @@ The main user-facing areas are:
 - `/todos` — kanban board of standalone todos (drag cards between status columns), optionally linked to an issue
 - `/reports/weekly` — ISO-week report view
 - `/reports/monthly` — month report view with expandable grouping, the month's travel, and a copy-month text export
-- `/notes` — a folder tree of notes on the left (folders first, then notes pinned first, each group in manual order; see Notes folders) that becomes a flat list of ranked hits with highlighted title, snippet and folder path while searching via the `search_notes` command, and a markdown live-preview editor on the right; the selected note lives in the URL (`?id=12`)
+- `/notes` — a folder tree of notes on the left (notes first, pinned first, then folders, each group in manual order; see Notes folders) that becomes a flat list of ranked hits with highlighted title, snippet and folder path while searching via the `search_notes` command, and a markdown live-preview editor on the right; the selected note lives in the URL (`?id=12`)
 - `/playground` — saved JavaScript scripts: a script list on the left (title filter, ⌘N), an editor above a console on the right, Run (⌘↵) and Stop; see Playground
 - `/reminders` — reminders grouped Overdue / Today / Tomorrow / Later, plus a collapsed Done group (latest 50); create, edit, snooze, complete and delete
 - `/travel` — month-scoped list of business trips (date, from/to, optional km and kr) with inline add, edit, repeat, and delete

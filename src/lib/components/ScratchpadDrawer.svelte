@@ -1,6 +1,7 @@
 <script lang="ts">
 	// The scratchpad: one persistent buffer in a left slide-over drawer, mounted once in the
-	// layout so it works on every page. No backdrop: the page stays usable. Autosaves like
+	// layout so it works on every page. It sits above the page and modals, takes focus on
+	// open, and closes on Esc or a press anywhere outside it. Autosaves like
 	// notes (own queue, flushed on blur, close and quit). Keys pressed inside it stay inside
 	// (⌘N/⌘F/⌘E on /notes don't fire); ⌘K and ⌘J are capture-phase and still work.
 	import { invoke } from '@tauri-apps/api/core';
@@ -422,6 +423,29 @@
 		e.stopPropagation();
 	}
 
+	/** Layers drawn above the drawer (palette, reminder toasts, menus) and the nav toggle. */
+	const KEEPS_OPEN = '[data-above-scratchpad], .ctx-menu, [data-scratchpad-toggle]';
+
+	function isOutside(target: EventTarget | null): boolean {
+		return target instanceof Element && !panel?.contains(target) && !target.closest(KEEPS_OPEN);
+	}
+
+	/** Capture: the press still reaches the page (one click closes the pad and acts there). */
+	function onWindowPointerdown(e: PointerEvent): void {
+		if (scratchpad.open && isOutside(e.target)) closeScratchpad();
+	}
+
+	/**
+	 * Esc with focus outside the drawer (inside, onPanelKeydown handles it). Capture, so a
+	 * modal under the drawer doesn't close first; the palette above it keeps its own Esc.
+	 */
+	function onWindowKeydown(e: KeyboardEvent): void {
+		if (!scratchpad.open || palette.open || panelKeyAction(e) !== 'close' || !isOutside(e.target)) return;
+		e.preventDefault();
+		e.stopPropagation();
+		closeScratchpad();
+	}
+
 	function onPanelFocusout(e: FocusEvent): void {
 		const next = e.relatedTarget;
 		if (!(next instanceof Node) || !panel?.contains(next)) void queue.flush();
@@ -442,7 +466,7 @@
 	});
 </script>
 
-<svelte:window onblur={() => void queue.flush()} />
+<svelte:window onblur={() => void queue.flush()} onpointerdowncapture={onWindowPointerdown} onkeydowncapture={onWindowKeydown} />
 
 {#snippet dismissible(message: string, onDismiss: () => void)}
 	<div class="notes-inline-error mt-3" role="alert" transition:fade={{ duration: 150 }}>

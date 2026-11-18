@@ -152,6 +152,7 @@
         aria-pressed={scratchpad.open}
         aria-label="Scratchpad"
         title="Scratchpad (⌘J)"
+        data-scratchpad-toggle
         onclick={toggleScratchpad}
       ><StickyNote size={16} /></button>
       <a

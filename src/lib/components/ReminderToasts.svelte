@@ -87,6 +87,7 @@
 	aria-live="polite"
 	aria-label="Reminders"
 	role="region"
+	data-above-scratchpad
 >
 	{#each stack.shown as r (r.id)}
 		<div

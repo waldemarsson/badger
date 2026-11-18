@@ -672,6 +672,7 @@
 		transition:fade={{ duration: 150 }}
 		onmousedown={(e) => e.target === e.currentTarget && close()}
 		role="presentation"
+		data-above-scratchpad
 	>
 		<div
 			class="w-full max-w-xl overflow-hidden rounded-2xl bg-white shadow-2xl ring-1 ring-slate-200 dark:bg-neutral-900 dark:ring-neutral-800"

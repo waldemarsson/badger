@@ -112,7 +112,7 @@ export interface EmptyRow extends RowBase {
 export type TreeRow = FolderRow | NoteRow | EmptyRow;
 
 /**
- * The rows to draw, top to bottom: per level folders first, then notes; children only
+ * The rows to draw, top to bottom: per level notes first, then folders; children only
  * inside expanded folders (whose ancestors are expanded too). Each folder appears once
  * even if corrupt data has a parent cycle.
  */
@@ -120,6 +120,9 @@ export function visibleRows(tree: FolderTree, expanded: ReadonlySet<number>): Tr
 	const rows: TreeRow[] = [];
 	const seen = new Set<number>();
 	const walk = (parentId: number | null, depth: number) => {
+		for (const note of tree.notes.get(parentId) ?? []) {
+			rows.push({ kind: 'note', key: `n:${note.id}`, depth, parentId, note });
+		}
 		for (const folder of tree.folders.get(parentId) ?? []) {
 			if (seen.has(folder.id)) continue;
 			seen.add(folder.id);
@@ -129,9 +132,6 @@ export function visibleRows(tree: FolderTree, expanded: ReadonlySet<number>): Tr
 			if (!open) continue;
 			if (hasChildren) walk(folder.id, depth + 1);
 			else rows.push({ kind: 'empty', key: `e:${folder.id}`, depth: depth + 1, parentId: folder.id });
-		}
-		for (const note of tree.notes.get(parentId) ?? []) {
-			rows.push({ kind: 'note', key: `n:${note.id}`, depth, parentId, note });
 		}
 	};
 	walk(null, 0);
@@ -384,25 +384,20 @@ function folderSlot(
  * Notes: a note row's upper/lower half inserts before/after it, snapped into the dragged
  * note's pin group; a folder row (or its "Empty" placeholder, or the root) moves it into
  * that folder. Folders: a folder row's top/bottom quarter inserts before/after it (the
- * bottom of an expanded folder is the start of its children), the middle moves it into
- * it; over notes it goes to the end of their folder's subfolders (into another folder, or
- * a reorder with a line when that folder is its own parent). Empty space below the rows
- * is the root for notes, and the end of the root folders for folders.
+ * bottom of an expanded folder is the start of its subfolders when it has no notes,
+ * otherwise "into" it), the middle moves it into it; over notes it goes into their folder
+ * (the start of its subfolders, with a line, when that folder is its own parent). Empty
+ * space below the rows is the root for notes, and the end of the root folders for folders.
  */
 export function dropTarget(tree: FolderTree, rows: readonly TreeRow[], item: DragItem, hover: DropHover): DropTarget | undefined {
 	if (hover === null) return undefined;
 	if (hover === 'root') return intoTarget(tree, item, null);
 	if (hover === 'end') {
 		if (item.kind === 'note') return intoTarget(tree, item, null);
-		// The line closes the root folders' block: above the first root note, else after
-		// the last row (the last root folder's subtree when it is expanded).
-		const first = tree.notes.get(null)?.[0];
+		// Root folders come last: the line goes after the last row (the last root folder's
+		// subtree when it is expanded).
 		const last = rows.at(-1);
-		const line: DropTarget['line'] = first
-			? { key: `n:${first.id}`, edge: 'before', depth: 0 }
-			: last
-				? { key: last.key, edge: 'after', depth: 0 }
-				: null;
+		const line: DropTarget['line'] = last ? { key: last.key, edge: 'after', depth: 0 } : null;
 		return folderSlot(tree, item, null, (tree.folders.get(null) ?? []).length, line);
 	}
 	const row = rows[hover.index];
@@ -414,17 +409,20 @@ export function dropTarget(tree: FolderTree, rows: readonly TreeRow[], item: Dra
 	}
 	if (row.kind === 'note') {
 		if (row.parentId !== item.parentId) return intoTarget(tree, item, row.parentId);
-		// Its own parent: a reorder to the end of the subfolders. The line goes above the
-		// folder's first note, i.e. below the last subfolder and everything shown under it.
-		const siblings = tree.folders.get(row.parentId) ?? [];
-		const first = tree.notes.get(row.parentId)?.[0] ?? row.note;
-		return folderSlot(tree, item, row.parentId, siblings.length, { key: `n:${first.id}`, edge: 'before', depth: row.depth });
+		// Its own parent: a reorder to the start of the subfolders, just below the notes.
+		const first = (tree.folders.get(row.parentId) ?? [])[0];
+		if (!first) return undefined;
+		return folderSlot(tree, item, row.parentId, 0, { key: `f:${first.id}`, edge: 'before', depth: row.depth });
 	}
 	const siblings = tree.folders.get(row.parentId) ?? [];
 	const at = siblings.findIndex((f) => f.id === row.folder.id);
 	if (hover.fraction < 0.25) return folderSlot(tree, item, row.parentId, at, { key: row.key, edge: 'before', depth: row.depth });
 	if (hover.fraction >= 0.75) {
-		if (row.expanded) return folderSlot(tree, item, row.folder.id, 0, { key: row.key, edge: 'after', depth: row.depth + 1 });
+		if (row.expanded) {
+			// Its notes come first: the start of its subfolders isn't right below the row.
+			if (tree.notes.get(row.folder.id)?.length) return intoTarget(tree, item, row.folder.id);
+			return folderSlot(tree, item, row.folder.id, 0, { key: row.key, edge: 'after', depth: row.depth + 1 });
+		}
 		return folderSlot(tree, item, row.parentId, at + 1, { key: row.key, edge: 'after', depth: row.depth });
 	}
 	return intoTarget(tree, item, row.folder.id);

@@ -2,7 +2,8 @@
 	// Read view for the Notes page: HTML rendered (and locked down) by Rust's
 	// render_markdown, code blocks highlighted with the editor's colors, and links
 	// opened in the default browser instead of navigating the WebView. Tags, chips and
-	// wikilinks (data-tag / data-note, see markdown.rs) are followed in the app.
+	// wikilinks (data-tag / data-note, see markdown.rs) are followed in the app, and
+	// `#heading` links scroll to that heading.
 	import { openUrl } from '@tauri-apps/plugin-opener';
 	import { highlightCodeBlocks } from '#lib/editor/highlight-code.js';
 	import { isOpenableUrl } from '#lib/links.js';
@@ -46,8 +47,22 @@
 			return onfollow({ kind: 'note', title, id: Number.isInteger(id) && id > 0 ? id : null });
 		}
 		const href = link.getAttribute('href') ?? '';
+		if (href.startsWith('#')) return scrollToHeading(href.slice(1));
 		if (!isOpenableUrl(href)) return;
 		openUrl(href).catch(() => onerror(`Couldn't open ${href}`));
+	}
+
+	/** `[text](#heading)`: render_markdown gives headings matching ids (href percent-encoded). */
+	function scrollToHeading(fragment: string): void {
+		let id = fragment;
+		try {
+			id = decodeURIComponent(fragment);
+		} catch {
+			// malformed escape: look it up as written
+		}
+		const target = id ? host.querySelector(`[id="${CSS.escape(id)}"]`) : null;
+		if (!target) return onerror(`No heading “${id}” in this note`);
+		target.scrollIntoView({ behavior: 'smooth', block: 'start' });
 	}
 
 	export function focus(): void {

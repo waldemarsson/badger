@@ -15,7 +15,7 @@
 		toastArea
 	} from '#lib/reminders-state.svelte.js';
 	import { toast } from '#lib/palette-state.svelte.js';
-	import ContextMenu from '#lib/components/ContextMenu.svelte';
+	import ContextMenu, { type MenuItem } from '#lib/components/ContextMenu.svelte';
 	import AlarmClock from '@lucide/svelte/icons/alarm-clock';
 	import BellRing from '@lucide/svelte/icons/bell-ring';
 	import Check from '@lucide/svelte/icons/check';
@@ -49,6 +49,17 @@
 	function openSnooze(r: Reminder, button: HTMLElement): void {
 		const rect = button.getBoundingClientRect();
 		menu = { r, x: rect.left, y: rect.bottom + 4, h: rect.height + 4, button };
+	}
+
+	// ContextMenu calls onclose before an item's run, so neither may read `menu` (null by then).
+	function snoozeItems(r: Reminder): MenuItem[] {
+		return SNOOZE_CHOICES.map((c) => ({ label: c.label, run: () => void act(r, () => snoozeReminder(r.id, snoozeUntil(c.choice, new Date()))) }));
+	}
+
+	function closeSnooze(refocus: boolean): void {
+		const button = menu?.button;
+		menu = null;
+		if (refocus && button?.isConnected) button.focus();
 	}
 
 	/** × or Esc: hides the toast; keyboard focus moves to the next one. */
@@ -152,18 +163,14 @@
 	{/if}
 
 	{#if menu}
-		{@const m = menu}
 		<div class="pointer-events-auto">
 			<ContextMenu
-				x={m.x}
-				y={m.y}
-				anchorHeight={m.h}
-				label="Snooze “{m.r.text}”"
-				items={SNOOZE_CHOICES.map((c) => ({ label: c.label, run: () => void act(m.r, () => snoozeReminder(m.r.id, snoozeUntil(c.choice, new Date()))) }))}
-				onclose={(refocus) => {
-					menu = null;
-					if (refocus && m.button.isConnected) m.button.focus();
-				}}
+				x={menu.x}
+				y={menu.y}
+				anchorHeight={menu.h}
+				label="Snooze “{menu.r.text}”"
+				items={snoozeItems(menu.r)}
+				onclose={closeSnooze}
 			/>
 		</div>
 	{/if}

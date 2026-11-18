@@ -43,7 +43,7 @@
 
 <svelte:window onblur={() => void cards.flush()} />
 
-<section bind:this={cards.todaySection} class="today-section" aria-label="Today's handover" onfocusout={onFocusout}>
+<section bind:this={cards.todaySection} class="today-section overflow-visible" aria-label="Today's handover" onfocusout={onFocusout}>
 	<header class="today-section-header">
 		<span class="h-2.5 w-2.5 shrink-0 rounded-full bg-slate-400 dark:bg-neutral-500"></span>
 		<h2 class="today-section-title min-w-0 truncate">

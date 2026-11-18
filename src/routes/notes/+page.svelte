@@ -1,3 +1,8 @@
+<script module lang="ts">
+	/** The note open when the page was last left; reopened on return (this session only). */
+	let lastOpenId: number | null = null;
+</script>
+
 <script lang="ts">
 	import { invoke } from '@tauri-apps/api/core';
 	import { beforeNavigate, goto } from '$app/navigation';
@@ -644,6 +649,7 @@
 	function show(note: Note): void {
 		queue.track(note.id, note.body);
 		selectedId = note.id;
+		lastOpenId = note.id;
 		current = note;
 		currentFolderId = note.folder_id; // opening a note makes its folder current
 		titleDraft = note.title;
@@ -663,6 +669,7 @@
 
 	function showNothing(): void {
 		selectedId = null;
+		lastOpenId = null;
 		current = null;
 		titleDraft = '';
 		titleError = '';
@@ -1007,6 +1014,8 @@
 
 	onMount(() => {
 		void load();
+		const params = page.url.searchParams;
+		if (lastOpenId !== null && params.get('id') === null && params.get('new') === null) void select(lastOpenId);
 		void loadExpanded();
 		void refreshLinks();
 		// Title and body are written concurrently so a slow rename can't eat the quit budget.

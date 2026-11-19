@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Badger syncs your reminders and open todos with two lists in Apple Reminders, so they reach your iPhone.</string>
+	<key>NSRemindersUsageDescription</key>
+	<string>Badger syncs your reminders and open todos with two lists in Apple Reminders, so they reach your iPhone.</string>
+</dict>
+</plist>

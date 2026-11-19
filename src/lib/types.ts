@@ -87,6 +87,8 @@ export interface TodoRow {
 	project_name: string | null;
 	customer_id: number | null;
 	customer_name: string | null;
+	/** "Keep off phone": never synced to Apple Reminders (nor are its reminders). */
+	mac_only: boolean;
 }
 
 /** A trip; km and amount (kr) are null when not entered. */
@@ -152,6 +154,30 @@ export interface SemanticStatus {
 	indexed_notes: number;
 	notes: number;
 	index_bytes: number;
+}
+
+/** Reminders access as EventKit reports it (`unsupported` off macOS). */
+export type AppleSyncAccess = 'not_determined' | 'granted' | 'denied' | 'restricted' | 'unsupported';
+
+/** A phone item the last sync pass left alone, and why ("needs a date", "needs a title"). */
+export interface AppleSyncSkipped {
+	title: string;
+	list: string;
+	reason: string;
+}
+
+/** get_apple_sync_status and the other Apple Reminders sync commands. */
+export interface AppleSyncStatus {
+	available: boolean;
+	enabled: boolean;
+	access: AppleSyncAccess;
+	last_sync_at: string | null;
+	last_error: string | null;
+	/** Why the mass-delete guard holds sync, while it does. */
+	paused: 'access' | 'list_missing' | 'empty_fetch' | null;
+	skipped: AppleSyncSkipped[];
+	reminders_list: string;
+	todos_list: string;
 }
 
 /** search_index_stats / rebuild_search_index. */
@@ -244,6 +270,10 @@ export interface Reminder {
 	note_title: string | null;
 	created_at: string;
 	updated_at: string;
+	/** "Keep off phone" set on the reminder itself. */
+	mac_only: boolean;
+	/** Its linked todo is Mac-only, so it is too (whatever `mac_only` says). */
+	todo_mac_only: boolean;
 }
 
 /** create_reminder / update_reminder argument (`invoke(cmd, { input })`, camelCase).
@@ -256,6 +286,8 @@ export interface ReminderInput {
 	monthDay: number | null;
 	todoId: number | null;
 	noteId: number | null;
+	/** "Keep off phone". Omitted: synced on create, unchanged on update. */
+	macOnly?: boolean;
 }
 
 /** Backup folder and encryption settings (`get_backup_settings`). */

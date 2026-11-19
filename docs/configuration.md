@@ -30,6 +30,7 @@ In development, `.badger-dev/` lives at the repo root. The database file is crea
 | --- | --- |
 | `src-tauri/tauri.conf.json` | Tauri app metadata, build hooks, bundle targets, window config, icon list |
 | `vite.config.ts` | Frontend dev server port, strict-port behavior, optional Tauri host/HMR wiring, and SvelteKit config (static adapter with `index.html` fallback) |
+| `src-tauri/Info.plist` | Merged by Tauri into the app bundle: the Reminders usage strings that Apple Reminders sync needs (see `docs/architecture.md`, Apple Reminders sync) |
 | `.cargo/config.toml` | Forces SQLx offline mode |
 | `eslint.config.js` | Frontend linting rules and ignored generated/backend paths |
 

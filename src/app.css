@@ -510,6 +510,36 @@
     @apply inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium ring-1 ring-inset;
   }
 
+  /* "Keep off phone" (Apple Reminders sync): a small switch with its label, and the
+     "Mac only" mark on cards and rows. */
+  .mac-only-toggle {
+    @apply flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-medium text-slate-600 dark:text-neutral-300;
+  }
+
+  .mac-only-toggle-disabled {
+    @apply text-slate-400 dark:text-neutral-500;
+  }
+
+  .mini-switch {
+    @apply relative inline-flex h-4 w-7 shrink-0 items-center rounded-full bg-slate-200 ring-1 ring-inset ring-slate-300 transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-neutral-800 dark:ring-neutral-700 dark:focus-visible:ring-sky-500;
+  }
+
+  .mini-switch-on {
+    @apply bg-sky-500 ring-sky-500 dark:bg-sky-500 dark:ring-sky-500;
+  }
+
+  .mini-switch-knob {
+    @apply inline-block h-3 w-3 translate-x-0.5 rounded-full bg-white shadow-sm transition-transform duration-150 dark:bg-neutral-100;
+  }
+
+  .mini-switch-on .mini-switch-knob {
+    @apply translate-x-[0.8125rem];
+  }
+
+  .mac-only-badge {
+    @apply bg-slate-50 text-slate-500 ring-slate-200 dark:bg-neutral-800/40 dark:text-neutral-400 dark:ring-neutral-700;
+  }
+
   .kanban-drag-lift {
     @apply cursor-grabbing shadow-2xl ring-2 ring-sky-400/50 dark:ring-sky-400/60;
     animation: kanban-lift 160ms ease-out forwards;
@@ -668,6 +698,11 @@
 
   .semantic-pill-error {
     @apply bg-red-50 text-red-700 dark:bg-red-500/10 dark:text-red-400;
+  }
+
+  /* Also used by Settings › Apple Reminders (paused, no access). */
+  .semantic-pill-warn {
+    @apply bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400;
   }
 
   .semantic-progress {

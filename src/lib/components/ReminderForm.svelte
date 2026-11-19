@@ -5,7 +5,10 @@
 	import type { NoteSummary, Reminder, ReminderRepeat, TodoRow } from '#lib/types.js';
 	import { QUICK_TIMES, formStart, quickTime, snoozeUntil, splitTimestamp, type QuickChoice } from '#lib/reminders.js';
 	import { reminders, saveReminder } from '#lib/reminders-state.svelte.js';
+	import { reminderMacOnlyControl } from '#lib/apple-sync.js';
+	import { appleSync } from '#lib/apple-sync-state.svelte.js';
 	import Combobox from '#lib/components/Combobox.svelte';
+	import MacOnlyToggle from '#lib/components/MacOnlyToggle.svelte';
 	import FileText from '@lucide/svelte/icons/file-text';
 	import ListTodo from '@lucide/svelte/icons/list-todo';
 
@@ -18,6 +21,7 @@
 		todoId = null,
 		noteId = null,
 		linkTitle = null,
+		linkMacOnly = false,
 		showLink = true,
 		bare = false,
 		autofocus = true,
@@ -32,6 +36,8 @@
 		noteId?: number | null;
 		/** Title of the prefilled todo/note link. */
 		linkTitle?: string | null;
+		/** The prefilled todo is kept off the phone (its reminders follow it). */
+		linkMacOnly?: boolean;
 		/** Shows the todo/note link picker (off where the link is implied, e.g. TodoModal). */
 		showLink?: boolean;
 		/** No panel chrome (inside a dialog). */
@@ -88,6 +94,21 @@
 	let linkTodo = $state(initialLink?.kind === 'todo' ? String(initialLink.id) : '');
 	let linkNote = $state(initialLink?.kind === 'note' ? String(initialLink.id) : '');
 	let todoItems = $state<Item[] | null>(null);
+	/** Todos kept off the phone, once the todo list has loaded. */
+	let macOnlyTodos = $state<Set<number> | null>(null);
+	// svelte-ignore state_referenced_locally
+	const initialTodoMacOnly = original?.todo_id != null ? original.todo_mac_only : todoId !== null && linkMacOnly;
+
+	// "Keep off phone": only while sync is on and for one-offs; locked on when the linked
+	// todo is Mac-only (the reminder follows it).
+	let macOnly = $state(original?.mac_only ?? false);
+	const linkedTodoMacOnly = $derived.by(() => {
+		if (linkKind !== 'todo' || linkTodo === '') return false;
+		const id = Number(linkTodo);
+		if (macOnlyTodos) return macOnlyTodos.has(id);
+		return initialLink?.kind === 'todo' && initialLink.id === id && initialTodoMacOnly;
+	});
+	const macOnlyControl = $derived(reminderMacOnlyControl(appleSync.on, repeat, linkedTodoMacOnly));
 	let noteItems = $state<Item[] | null>(null);
 	let linkError = $state('');
 	let linkBox = $state<HTMLElement>();
@@ -108,6 +129,7 @@
 			if (kind === 'todo' && todoItems === null) {
 				const rows = await invoke<TodoRow[]>('list_todos');
 				todoItems = rows.filter((t) => t.status !== 'done').map((t) => ({ value: t.id, label: t.title }));
+				macOnlyTodos = new Set(rows.filter((t) => t.mac_only).map((t) => t.id));
 			} else if (kind === 'note' && noteItems === null) {
 				const rows = await invoke<NoteSummary[]>('list_notes');
 				noteItems = rows.map((n) => ({ value: n.id, label: n.title })).sort((a, b) => a.label.localeCompare(b.label));
@@ -193,7 +215,9 @@
 				weekdays: repeat === 'weekly' ? weekdays : [],
 				monthDay: repeat === 'monthly' ? monthDay : null,
 				todoId: todoLink,
-				noteId: noteLink
+				noteId: noteLink,
+				// Only when offered: otherwise create defaults to synced and edits keep it.
+				...(macOnlyControl === 'toggle' ? { macOnly } : {})
 			});
 			onsaved(saved);
 		} catch (e) {
@@ -303,6 +327,16 @@
 		{#if linkError}
 			<p class="form-error" role="alert">{linkError}</p>
 		{/if}
+	{/if}
+
+	{#if macOnlyControl !== 'hidden'}
+		<div transition:slide={{ duration: 150 }}>
+			{#if macOnlyControl === 'follows-todo'}
+				<MacOnlyToggle checked disabled hint="Follows its todo" />
+			{:else}
+				<MacOnlyToggle bind:checked={macOnly} />
+			{/if}
+		</div>
 	{/if}
 
 	{#if error}

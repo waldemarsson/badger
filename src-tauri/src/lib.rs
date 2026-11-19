@@ -1,5 +1,6 @@
 // src-tauri/src/lib.rs
 pub mod app_settings;
+pub mod apple_sync;
 pub mod backup_crypto;
 pub mod commands;
 pub mod db;
@@ -81,6 +82,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(flush_guard::FlushGuard::default())
         .manage(commands::playground::RunState::default())
+        .manage(apple_sync::runner::SyncHandle::default())
         .on_menu_event(|app, event| {
             if event.id() == flush_guard::QUIT_MENU_ID {
                 app.exit(0); // goes through RunEvent::ExitRequested → flush guard
@@ -111,6 +113,7 @@ pub fn run() {
             // Background task writes the daily backup (if retention > 0) at launch and
             // again on each new day while the app stays open. Logs any errors.
             let pool_for_reminders = pool.clone();
+            let pool_for_sync = pool.clone();
             app.manage(startup_backup::BackupState::default());
             tauri::async_runtime::spawn(run_daily_backups(
                 app.handle().clone(),
@@ -155,6 +158,19 @@ pub fn run() {
             tauri::async_runtime::spawn(reminders_scheduler::run(
                 app.handle().clone(),
                 pool_for_reminders,
+            ));
+
+            // ── Apple Reminders sync ─────────────────────────────────────────
+            // Off until switched on in Settings. One pass at launch, then on nudges and
+            // every 60 s; passes are serialized with each other and with restore.
+            let sync = app
+                .state::<apple_sync::runner::SyncHandle>()
+                .inner()
+                .clone();
+            tauri::async_runtime::spawn(apple_sync::runner::run(
+                app.handle().clone(),
+                pool_for_sync,
+                sync,
             ));
 
             // ── Quit/close flush guard ───────────────────────────────────────
@@ -292,6 +308,13 @@ pub fn run() {
                     commands::semantic::cancel_semantic_download,
                     commands::semantic::remove_semantic_model,
                     commands::semantic::rebuild_semantic_index,
+                    // Apple Reminders sync
+                    commands::apple_sync::get_apple_sync_status,
+                    commands::apple_sync::set_apple_sync_enabled,
+                    commands::apple_sync::request_apple_sync_access,
+                    commands::apple_sync::sync_apple_reminders_now,
+                    commands::apple_sync::recreate_apple_sync_lists,
+                    commands::apple_sync::apple_sync_delete_anyway,
                     // Updater
                     commands::updater::check_for_update,
                     commands::updater::install_update,
@@ -425,6 +448,13 @@ pub fn run() {
                     commands::semantic::cancel_semantic_download,
                     commands::semantic::remove_semantic_model,
                     commands::semantic::rebuild_semantic_index,
+                    // Apple Reminders sync
+                    commands::apple_sync::get_apple_sync_status,
+                    commands::apple_sync::set_apple_sync_enabled,
+                    commands::apple_sync::request_apple_sync_access,
+                    commands::apple_sync::sync_apple_reminders_now,
+                    commands::apple_sync::recreate_apple_sync_lists,
+                    commands::apple_sync::apple_sync_delete_anyway,
                     // Updater
                     commands::updater::check_for_update,
                     commands::updater::install_update,

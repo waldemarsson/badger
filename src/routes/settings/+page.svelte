@@ -29,6 +29,11 @@
   import { refreshSemanticStatus, semantic } from '#lib/semantic-state.svelte.js';
   import { getVersion } from '@tauri-apps/api/app';
   import { checkForUpdate, updater } from '#lib/updater-state.svelte.js';
+  import { listen } from '@tauri-apps/api/event';
+  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import type { AppleSyncStatus } from '#lib/types.js';
+  import { APPLE_SYNC_STATUS_EVENT, appleSyncPill, formatLastSync, skippedSummary } from '#lib/apple-sync.js';
+  import { clock } from '#lib/reminders-state.svelte.js';
 
   type Tab = 'customers' | 'preferences' | 'backup' | 'dev';
   let activeTab = $state<Tab>('customers');
@@ -42,7 +47,17 @@
     }
     void loadDailyTarget();
     getVersion().then((v) => (appVersion = v)).catch(() => {});
-    return () => (palette.recording = false);
+    void loadAppleSync();
+    let disposed = false;
+    let stopAppleSync: (() => void) | null = null;
+    listen(APPLE_SYNC_STATUS_EVENT, () => void loadAppleSync())
+      .then((stop) => (disposed ? stop() : (stopAppleSync = stop)))
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      stopAppleSync?.();
+      palette.recording = false;
+    };
   });
 
   // ── Appearance ────────────────────────────────────────────────────────────────
@@ -119,6 +134,43 @@
 
   function focusOnMount(node: HTMLElement) {
     node.focus();
+  }
+
+  // ── Apple Reminders sync ──────────────────────────────────────────────────────
+  // Status from get_apple_sync_status, re-read on Rust's status events; actions reply with a fresh one.
+  type AppleSyncAction = 'toggle' | 'access' | 'sync' | 'recreate' | 'delete';
+  let appleSync = $state<AppleSyncStatus | null>(null);
+  let appleSyncBusy = $state<'' | AppleSyncAction>('');
+  let appleSyncError = $state('');
+  let confirmingDeleteAnyway = $state(false);
+  const appleSyncState = $derived(appleSync ? appleSyncPill(appleSync) : null);
+  const accessLabels = {
+    granted: 'Granted',
+    not_determined: 'Not asked yet',
+    denied: 'Denied in System Settings',
+    restricted: 'Restricted on this Mac',
+    unsupported: 'Not available',
+  } as const;
+
+  async function loadAppleSync() {
+    try {
+      appleSync = await invoke<AppleSyncStatus>('get_apple_sync_status');
+    } catch (e) {
+      appleSyncError = String(e);
+    }
+  }
+
+  async function appleSyncAction(kind: AppleSyncAction, command: string, args?: Record<string, unknown>) {
+    appleSyncBusy = kind;
+    appleSyncError = '';
+    try {
+      appleSync = await invoke<AppleSyncStatus>(command, args);
+    } catch (e) {
+      appleSyncError = String(e);
+    } finally {
+      appleSyncBusy = '';
+      confirmingDeleteAnyway = false;
+    }
   }
 
   // ── Updates ───────────────────────────────────────────────────────────────────
@@ -663,6 +715,144 @@
 
         {#if semanticError}
           <p class="form-error" role="alert">{semanticError}</p>
+        {/if}
+      </section>
+
+      <section class="panel-card mt-4 space-y-4" aria-labelledby="apple-sync-title">
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <h2 id="apple-sync-title" class="panel-title">Apple Reminders</h2>
+            <p class="panel-copy">Syncs one-off reminders and open todos with two lists in Apple Reminders, so iCloud brings them to your iPhone with its notifications. Changes made there come back here. Recurring reminders stay on this Mac.</p>
+          </div>
+          {#if appleSync && appleSyncState}
+            <span
+              class="semantic-pill"
+              class:semantic-pill-ready={appleSyncState.tone === 'ok'}
+              class:semantic-pill-warn={appleSyncState.tone === 'warn'}
+              class:semantic-pill-error={appleSyncState.tone === 'error'}
+              role="status"
+            >{appleSyncState.label}</span>
+          {/if}
+        </div>
+
+        {#if !appleSync}
+          {#if !appleSyncError}
+            <p class="text-sm text-slate-500 dark:text-neutral-400">Loading…</p>
+          {/if}
+        {:else}
+          <div class="flex items-center gap-3">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={appleSync.enabled}
+              aria-labelledby="apple-sync-switch-label"
+              class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full ring-1 ring-inset transition-colors duration-150 focus:outline-none focus-visible:ring-4 focus-visible:ring-sky-200 disabled:cursor-not-allowed disabled:opacity-50 dark:focus-visible:ring-sky-500/30 {appleSync.enabled
+                ? 'bg-sky-500 ring-sky-500 dark:bg-sky-500 dark:ring-sky-500'
+                : 'bg-slate-200 ring-slate-300 dark:bg-neutral-800 dark:ring-neutral-700'}"
+              onclick={() => appleSyncAction('toggle', 'set_apple_sync_enabled', { enabled: !appleSync?.enabled })}
+              disabled={!appleSync.available || appleSyncBusy !== ''}
+            >
+              <span
+                class="inline-block h-5 w-5 rounded-full bg-white shadow-sm transition-transform duration-150 dark:bg-neutral-100 {appleSync.enabled ? 'translate-x-[1.375rem]' : 'translate-x-0.5'}"
+              ></span>
+            </button>
+            <span id="apple-sync-switch-label" class="text-sm font-medium text-slate-800 dark:text-neutral-100">Sync with Apple Reminders</span>
+            {#if appleSyncBusy === 'toggle'}
+              <span class="text-xs text-slate-500 dark:text-neutral-400">{appleSync.enabled ? 'Turning off…' : 'Turning on…'}</span>
+            {/if}
+          </div>
+
+          {#if !appleSync.available}
+            <p class="text-sm text-slate-500 dark:text-neutral-400">Only available in Badger for macOS.</p>
+          {:else if appleSync.enabled}
+            <div class="space-y-4" in:fade={{ duration: 150 }}>
+              <dl class="semantic-facts">
+                <div><dt>Access</dt><dd>{accessLabels[appleSync.access]}</dd></div>
+                <div><dt>Lists</dt><dd>{appleSync.reminders_list} · {appleSync.todos_list}</dd></div>
+                <div><dt>Last sync</dt><dd>{formatLastSync(appleSync.last_sync_at, new Date(clock.ms))}</dd></div>
+                {#if appleSync.skipped.length > 0}
+                  <div>
+                    <dt>Skipped</dt>
+                    <dd>
+                      {appleSync.skipped.length} {appleSync.skipped.length === 1 ? 'item' : 'items'} on the phone: {skippedSummary(appleSync.skipped)}
+                      <ul class="mt-1 space-y-0.5 text-xs text-slate-500 dark:text-neutral-400">
+                        {#each appleSync.skipped.slice(0, 3) as item, i (i)}
+                          <li><span class="text-slate-700 dark:text-neutral-200">{item.title}</span> · {item.list} · {item.reason}</li>
+                        {/each}
+                        {#if appleSync.skipped.length > 3}
+                          <li>and {appleSync.skipped.length - 3} more</li>
+                        {/if}
+                      </ul>
+                    </dd>
+                  </div>
+                {/if}
+              </dl>
+
+              {#if appleSync.access !== 'granted' || appleSync.paused === 'access'}
+                <div class="alert-panel alert-warning space-y-3" role="alert">
+                  <div>
+                    <p class="alert-warning-title">Badger can't reach Reminders</p>
+                    <p class="alert-warning-copy">
+                      {appleSync.access === 'not_determined'
+                        ? 'Grant access so Badger can create its two lists. Nothing syncs until then.'
+                        : 'Access was turned off. Sync is paused and nothing is deleted; allow Badger under Privacy & Security → Reminders.'}
+                    </p>
+                  </div>
+                  <button type="button" class="btn-primary" onclick={() => appleSyncAction('access', 'request_apple_sync_access')} disabled={appleSyncBusy !== ''}>
+                    {appleSyncBusy === 'access' ? 'Waiting…' : appleSync.access === 'not_determined' ? 'Grant access' : 'Open System Settings'}
+                  </button>
+                </div>
+              {:else if appleSync.paused === 'list_missing'}
+                <div class="alert-panel alert-warning space-y-3" role="alert">
+                  <div>
+                    <p class="alert-warning-title">A Badger list is missing</p>
+                    <p class="alert-warning-copy">{appleSync.last_error}</p>
+                  </div>
+                  <button type="button" class="btn-primary" onclick={() => appleSyncAction('recreate', 'recreate_apple_sync_lists')} disabled={appleSyncBusy !== ''}>
+                    {appleSyncBusy === 'recreate' ? 'Recreating…' : 'Recreate lists'}
+                  </button>
+                </div>
+              {:else if appleSync.paused === 'empty_fetch'}
+                <div class="alert-panel alert-warning space-y-3" role="alert">
+                  <div>
+                    <p class="alert-warning-title">Sync is paused</p>
+                    <p class="alert-warning-copy">{appleSync.last_error} If you deleted them on purpose, delete them in Badger too.</p>
+                  </div>
+                  {#if confirmingDeleteAnyway}
+                    <!-- svelte-ignore a11y_no_static_element_interactions -->
+                    <div class="flex flex-wrap items-center gap-1.5" onkeydown={(e) => { if (e.key === 'Escape') confirmingDeleteAnyway = false; }} in:fade={{ duration: 150 }}>
+                      <span class="text-xs font-medium text-red-700 dark:text-red-300">Delete the synced items in Badger?</span>
+                      <button type="button" class="btn-danger-sm" use:focusOnMount onclick={() => appleSyncAction('delete', 'apple_sync_delete_anyway')} disabled={appleSyncBusy !== ''}>
+                        {appleSyncBusy === 'delete' ? 'Deleting…' : 'Delete'}
+                      </button>
+                      <button type="button" class="btn-secondary-sm" onclick={() => (confirmingDeleteAnyway = false)}>Cancel</button>
+                    </div>
+                  {:else}
+                    <button type="button" class="btn-danger-sm" onclick={() => (confirmingDeleteAnyway = true)} disabled={appleSyncBusy !== ''}>Delete in Badger anyway</button>
+                  {/if}
+                </div>
+              {:else if appleSync.last_error}
+                <div class="alert-panel alert-error" role="alert">
+                  <p class="text-sm font-semibold text-red-900 dark:text-red-300">The last sync had a problem</p>
+                  <p class="alert-error-copy">{appleSync.last_error}</p>
+                </div>
+              {/if}
+
+              {#if appleSync.access === 'granted'}
+                <div class="flex flex-wrap items-center gap-2">
+                  <button type="button" class="btn-secondary gap-1.5" onclick={() => appleSyncAction('sync', 'sync_apple_reminders_now')} disabled={appleSyncBusy !== ''}>
+                    <RefreshCw size={16} class={appleSyncBusy === 'sync' ? 'animate-spin' : ''} />
+                    {appleSyncBusy === 'sync' ? 'Syncing…' : 'Sync now'}
+                  </button>
+                  <span class="text-xs text-slate-500 dark:text-neutral-400">Syncs by itself after changes and every minute while Badger runs.</span>
+                </div>
+              {/if}
+            </div>
+          {/if}
+        {/if}
+
+        {#if appleSyncError}
+          <p class="form-error" role="alert">{appleSyncError}</p>
         {/if}
       </section>
 

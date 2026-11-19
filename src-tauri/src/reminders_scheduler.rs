@@ -86,7 +86,8 @@ pub trait ReminderSink {
 }
 
 /// One scheduler step: fire due reminders, notify (unless the window is focused, where the
-/// toasts cover it), announce the change, and recompute the badge. Never fails: errors are
+/// toasts cover it, and leaving out reminders the phone notifies about through Apple
+/// Reminders sync), announce the change, and recompute the badge. Never fails: errors are
 /// logged and the next tick retries. Returns how many rows fired.
 pub async fn tick(
     pool: &Pool<Sqlite>,
@@ -102,7 +103,13 @@ pub async fn tick(
     };
     if !fired.is_empty() {
         if !sink.main_window_focused() {
-            if let Some(n) = notification_for(&fired) {
+            let on_phone = crate::apple_sync::phone_notifies(pool, &fired).await;
+            let notify: Vec<Reminder> = fired
+                .iter()
+                .filter(|r| !on_phone.contains(&r.id))
+                .cloned()
+                .collect();
+            if let Some(n) = notification_for(&notify) {
                 sink.notify(&n);
             }
         }
@@ -205,10 +212,16 @@ fn open_from_notification(app: &AppHandle, id: Option<i64>) {
     }
 }
 
-/// Tells the frontend that reminders changed and recomputes the dock badge. Called by every
-/// wrapper that changes reminders. Never fails: the change has committed, so problems are
-/// logged.
+/// Tells the frontend that reminders changed, recomputes the dock badge and nudges Apple
+/// Reminders sync. Called by every wrapper that changes reminders. Never fails: the change
+/// has committed, so problems are logged.
 pub async fn reminders_changed(app: &AppHandle, pool: &Pool<Sqlite>) {
+    reminders_refreshed(app, pool).await;
+    crate::apple_sync::runner::nudge(app);
+}
+
+/// [`reminders_changed`] without the sync nudge, for sync's own writes.
+pub async fn reminders_refreshed(app: &AppHandle, pool: &Pool<Sqlite>) {
     emit_changed(app);
     match inner_count_fired(pool).await {
         Ok(count) => set_badge(app, count),
@@ -296,6 +309,8 @@ mod tests {
             note_title: None,
             created_at: String::new(),
             updated_at: String::new(),
+            mac_only: false,
+            todo_mac_only: false,
         }
     }
 
@@ -386,6 +401,115 @@ mod tests {
         assert_eq!(tick(&pool, at("2026-11-09T09:00:20"), &sink).await, 0);
         assert!(sink.notified.lock().unwrap().is_empty());
         assert_eq!(*sink.changed.lock().unwrap(), 0);
+    }
+
+    /// Sync on and healthy, with `r` paired and its phone item due at `phone_due`.
+    async fn pair(r: &Reminder, phone_due: &str, pool: &Pool<Sqlite>) {
+        crate::app_settings::set_apple_sync_enabled(pool, true)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO apple_sync_items (Kind, BadgerId, EkId, BadgerSnap, PhoneSnap, PhoneDue, SyncedAt) \
+             VALUES ('reminder', ?, ?, '{}', '{}', ?, 'x')",
+        )
+        .bind(r.id)
+        .bind(format!("ek-{}", r.id))
+        .bind(phone_due)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn add_daily(text: &str, remind_at: &str, pool: &Pool<Sqlite>) -> Reminder {
+        let input = ReminderInput {
+            text: text.to_string(),
+            remind_at: remind_at.to_string(),
+            repeat: "daily".to_string(),
+            ..Default::default()
+        };
+        inner_create_reminder(&input, at("2026-11-08T12:00"), pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn tick_leaves_synced_reminders_to_the_phone_and_still_notifies_the_rest() {
+        let pool = crate::test_db().await;
+        let synced = add("on phone", "2026-11-09T09:00", &pool).await;
+        add_daily("daily", "2026-11-09T09:00", &pool).await;
+        add("unpaired", "2026-11-09T09:00", &pool).await;
+        pair(&synced, "2026-11-09T09:00:00.000", &pool).await;
+        let sink = FakeSink::default();
+
+        assert_eq!(tick(&pool, at("2026-11-09T09:00:20"), &sink).await, 3);
+        let notified = sink.notified.lock().unwrap().clone();
+        assert_eq!(notified.len(), 1);
+        assert_eq!(
+            notified[0].body, "2 reminders: daily, unpaired",
+            "counts notified rows"
+        );
+        assert_eq!(*sink.changed.lock().unwrap(), 1, "toasts still update");
+        assert_eq!(
+            *sink.badges.lock().unwrap(),
+            vec![3],
+            "the badge counts all"
+        );
+    }
+
+    #[tokio::test]
+    async fn tick_sends_nothing_when_every_fired_reminder_is_on_the_phone() {
+        let pool = crate::test_db().await;
+        let synced = add("on phone", "2026-11-09T09:00", &pool).await;
+        pair(&synced, "2026-11-09T09:00:00.000", &pool).await;
+        let sink = FakeSink::default();
+        assert_eq!(tick(&pool, at("2026-11-09T09:00:20"), &sink).await, 1);
+        assert!(sink.notified.lock().unwrap().is_empty());
+        assert_eq!(*sink.badges.lock().unwrap(), vec![1]);
+    }
+
+    #[tokio::test]
+    async fn tick_notifies_paired_reminders_when_sync_is_not_healthy_or_the_time_differs() {
+        // Mismatched pushed time (the phone has an older time).
+        let pool = crate::test_db().await;
+        let r = add("moved", "2026-11-09T09:00", &pool).await;
+        pair(&r, "2026-11-09T08:00:00.000", &pool).await;
+        let sink = FakeSink::default();
+        tick(&pool, at("2026-11-09T09:00:20"), &sink).await;
+        assert_eq!(sink.notified.lock().unwrap().len(), 1);
+
+        // Paused.
+        let pool = crate::test_db().await;
+        let r = add("paused", "2026-11-09T09:00", &pool).await;
+        pair(&r, "2026-11-09T09:00:00.000", &pool).await;
+        crate::app_settings::set_apple_sync_outcome(&pool, None, Some("x"), Some("access"), None)
+            .await
+            .unwrap();
+        let sink = FakeSink::default();
+        tick(&pool, at("2026-11-09T09:00:20"), &sink).await;
+        assert_eq!(sink.notified.lock().unwrap().len(), 1);
+
+        // Last pass had errors.
+        let pool = crate::test_db().await;
+        let r = add("errored", "2026-11-09T09:00", &pool).await;
+        pair(&r, "2026-11-09T09:00:00.000", &pool).await;
+        crate::app_settings::set_apple_sync_outcome(&pool, None, Some("boom"), None, None)
+            .await
+            .unwrap();
+        let sink = FakeSink::default();
+        tick(&pool, at("2026-11-09T09:00:20"), &sink).await;
+        assert_eq!(sink.notified.lock().unwrap().len(), 1);
+
+        // Sync switched off.
+        let pool = crate::test_db().await;
+        let r = add("off", "2026-11-09T09:00", &pool).await;
+        pair(&r, "2026-11-09T09:00:00.000", &pool).await;
+        crate::app_settings::set_apple_sync_enabled(&pool, false)
+            .await
+            .unwrap();
+        let sink = FakeSink::default();
+        tick(&pool, at("2026-11-09T09:00:20"), &sink).await;
+        assert_eq!(sink.notified.lock().unwrap().len(), 1);
+        assert_eq!(sink.notified.lock().unwrap()[0].body, "off");
     }
 
     #[tokio::test]

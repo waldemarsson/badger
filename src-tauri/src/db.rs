@@ -49,7 +49,9 @@ CREATE TABLE IF NOT EXISTS todos (
     Position  INTEGER NOT NULL DEFAULT 0,
     DueDate   TEXT,
     CreatedAt TEXT    NOT NULL,
-    IssueId   INTEGER REFERENCES issues(id) ON DELETE SET NULL
+    IssueId   INTEGER REFERENCES issues(id) ON DELETE SET NULL,
+    -- Keep off phone: never synced to Apple Reminders. Same as MAC_ONLY_COLUMN.
+    MacOnly   INTEGER NOT NULL DEFAULT 0 CHECK (MacOnly IN (0, 1))
 );
 
 CREATE TABLE IF NOT EXISTS travel (
@@ -105,6 +107,8 @@ CREATE TABLE IF NOT EXISTS reminders (
     NoteId    INTEGER REFERENCES notes(id) ON DELETE CASCADE,
     CreatedAt TEXT    NOT NULL,
     UpdatedAt TEXT    NOT NULL,
+    -- Keep off phone (a reminder of a Mac-only todo is Mac-only too). Same as MAC_ONLY_COLUMN.
+    MacOnly   INTEGER NOT NULL DEFAULT 0 CHECK (MacOnly IN (0, 1)),
     CHECK (TodoId IS NULL OR NoteId IS NULL)
 );
 CREATE INDEX IF NOT EXISTS idx_reminders_state ON reminders(State, RemindAt);
@@ -171,6 +175,28 @@ CREATE TABLE IF NOT EXISTS note_embeddings (
     Vector      BLOB    NOT NULL,
     PRIMARY KEY (NoteId, ChunkIndex)
 );
+
+-- Apple Reminders sync pairings: one Badger reminder or todo ↔ one EventKit item, with the
+-- synced fields as each side looked after the last sync (JSON), for the three-way merge.
+-- PhoneDue is the pushed due time of a reminder (the native notification skip compares it).
+-- MissedPasses counts consecutive passes the open phone item was missing from its list; a
+-- phone delete applies to Badger on the second, so a one-pass glitch deletes nothing.
+-- No foreign keys on purpose: a missing Badger row means it was deleted in Badger, and restore's
+-- DELETEs must not cascade pairings away. Device-local: not part of backups.
+CREATE TABLE IF NOT EXISTS apple_sync_items (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    Kind        TEXT    NOT NULL CHECK (Kind IN ('reminder', 'todo')),
+    BadgerId    INTEGER NOT NULL,
+    EkId        TEXT    NOT NULL,
+    ExternalId  TEXT,
+    BadgerSnap  TEXT    NOT NULL,
+    PhoneSnap   TEXT    NOT NULL,
+    PhoneDue    TEXT,
+    SyncedAt    TEXT    NOT NULL,
+    MissedPasses INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (Kind, BadgerId),
+    UNIQUE (EkId)
+);
 ";
 
 /// Opens (or creates) the SQLite database at `db_path` with WAL mode and FK enforcement,
@@ -199,6 +225,7 @@ pub async fn init_db(db_path: &Path) -> Result<Pool<Sqlite>, sqlx::Error> {
     migrate_notes_position(&pool).await?;
     migrate_notes_kind(&pool).await?;
     migrate_scratchpad_kind(&pool).await?;
+    migrate_mac_only(&pool).await?;
     backfill_notes_fts(&pool).await?;
     backfill_note_refs(&pool).await?;
 
@@ -297,6 +324,30 @@ pub async fn migrate_notes_kind(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> 
 /// Adds `scratchpad.Kind` to databases created before JSON notes. Idempotent.
 pub async fn migrate_scratchpad_kind(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
     add_kind_column(pool, "scratchpad").await
+}
+
+/// Column definition shared by the `MacOnly` migration (same as in `SCHEMA_SQL`).
+const MAC_ONLY_COLUMN: &str = "MacOnly INTEGER NOT NULL DEFAULT 0 CHECK (MacOnly IN (0, 1))";
+
+/// Adds `MacOnly` ("Keep off phone") to `todos` and `reminders` in databases created before
+/// it; existing rows stay synced. Idempotent: skips a table that has the column.
+pub async fn migrate_mac_only(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
+    for table in ["todos", "reminders"] {
+        let columns: Vec<(String,)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT name FROM pragma_table_info('{table}')"
+        )))
+        .fetch_all(pool)
+        .await?;
+        if columns.iter().any(|(name,)| name == "MacOnly") {
+            continue;
+        }
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "ALTER TABLE {table} ADD COLUMN {MAC_ONLY_COLUMN}"
+        )))
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
 }
 
 /// Numbers notes and folders densely (0..n per folder / parent) in the order the tree
@@ -497,6 +548,40 @@ mod tests {
             names.contains(&"note_embeddings"),
             "note_embeddings table missing"
         );
+        assert!(
+            names.contains(&"apple_sync_items"),
+            "apple_sync_items table missing"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_apple_sync_items_is_unique_per_badger_row_and_per_eventkit_id() {
+        let pool = crate::test_db().await;
+        let insert = |kind: &'static str, badger_id: i64, ek_id: &'static str| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query(
+                    "INSERT INTO apple_sync_items (Kind, BadgerId, EkId, BadgerSnap, PhoneSnap, SyncedAt) \
+                     VALUES (?, ?, ?, '{}', '{}', 'x')",
+                )
+                .bind(kind)
+                .bind(badger_id)
+                .bind(ek_id)
+                .execute(&pool)
+                .await
+            }
+        };
+        insert("reminder", 1, "ek-1").await.unwrap();
+        // Same Badger id under the other kind is a different row.
+        insert("todo", 1, "ek-2").await.unwrap();
+        assert!(
+            insert("reminder", 1, "ek-3").await.is_err(),
+            "kind + id is unique"
+        );
+        assert!(insert("todo", 2, "ek-1").await.is_err(), "EkId is unique");
+        assert!(insert("note", 3, "ek-4").await.is_err(), "kind is checked");
+        // No foreign keys: a pairing may point at a Badger row that doesn't exist.
+        insert("todo", 999, "ek-5").await.unwrap();
     }
 
     async fn object_names(pool: &sqlx::SqlitePool, kind: &str) -> Vec<String> {
@@ -1110,6 +1195,108 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!((pad.body.as_str(), pad.kind.as_str()), ("jot", "markdown"));
+            pool.close().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_migrate_mac_only_adds_the_flag_to_todos_and_reminders() {
+        use sqlx::sqlite::SqlitePoolOptions;
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        // Old shape: neither table has MacOnly.
+        sqlx::raw_sql(
+            "CREATE TABLE todos (id INTEGER PRIMARY KEY AUTOINCREMENT, Title TEXT NOT NULL,
+                 Notes TEXT, Status TEXT NOT NULL DEFAULT 'not_started',
+                 Position INTEGER NOT NULL DEFAULT 0, DueDate TEXT, CreatedAt TEXT NOT NULL,
+                 IssueId INTEGER);
+             CREATE TABLE reminders (id INTEGER PRIMARY KEY AUTOINCREMENT, Text TEXT NOT NULL,
+                 RemindAt TEXT NOT NULL, TimeOfDay TEXT NOT NULL,
+                 Repeat TEXT NOT NULL DEFAULT 'none', Weekdays TEXT NOT NULL DEFAULT '',
+                 MonthDay INTEGER, State TEXT NOT NULL DEFAULT 'pending', TodoId INTEGER,
+                 NoteId INTEGER, CreatedAt TEXT NOT NULL, UpdatedAt TEXT NOT NULL);
+             INSERT INTO todos (Title, CreatedAt) VALUES ('Old todo', 'x');
+             INSERT INTO reminders (Text, RemindAt, TimeOfDay, CreatedAt, UpdatedAt)
+                 VALUES ('Old reminder', '2026-11-09T09:00:00.000', '09:00', 'x', 'x');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        for _ in 0..2 {
+            // second run is a no-op
+            super::migrate_mac_only(&pool).await.unwrap();
+        }
+        for table in ["todos", "reminders"] {
+            let flags: Vec<(i64,)> =
+                sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT MacOnly FROM {table}")))
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(flags, vec![(0,)], "{table}: existing rows stay synced");
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "UPDATE {table} SET MacOnly = 1"
+            )))
+            .execute(&pool)
+            .await
+            .unwrap();
+            assert!(
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "UPDATE {table} SET MacOnly = 2"
+                )))
+                .execute(&pool)
+                .await
+                .is_err(),
+                "{table}: only 0 or 1"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_init_db_migrates_todos_and_reminders_without_mac_only() {
+        let db = TempDb::new("pre-mac-only");
+        {
+            use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+            let opts = SqliteConnectOptions::new()
+                .filename(&db.0)
+                .create_if_missing(true);
+            let pool = SqlitePoolOptions::new().connect_with(opts).await.unwrap();
+            let todo_line = ",\n    -- Keep off phone: never synced to Apple Reminders. Same as MAC_ONLY_COLUMN.\n    MacOnly   INTEGER NOT NULL DEFAULT 0 CHECK (MacOnly IN (0, 1))";
+            let reminder_line = "\n    -- Keep off phone (a reminder of a Mac-only todo is Mac-only too). Same as MAC_ONLY_COLUMN.\n    MacOnly   INTEGER NOT NULL DEFAULT 0 CHECK (MacOnly IN (0, 1)),";
+            let old_schema = super::SCHEMA_SQL
+                .replace(todo_line, "")
+                .replace(reminder_line, "");
+            assert_eq!(
+                old_schema.matches("MacOnly").count(),
+                0,
+                "old shape must drop both MacOnly columns"
+            );
+            sqlx::raw_sql(sqlx::AssertSqlSafe(old_schema))
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::raw_sql(
+                "INSERT INTO todos (Title, CreatedAt) VALUES ('Old todo', 'x');
+                 INSERT INTO reminders (Text, RemindAt, TimeOfDay, TodoId, CreatedAt, UpdatedAt)
+                     VALUES ('Old reminder', '2026-11-09T09:00:00.000', '09:00', 1, 'x', 'x');",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            pool.close().await;
+        }
+        for _ in 0..2 {
+            let pool = super::init_db(&db.0).await.unwrap();
+            let todo = crate::commands::todos::inner_get_todo(1, &pool)
+                .await
+                .unwrap();
+            assert_eq!((todo.title.as_str(), todo.mac_only), ("Old todo", false));
+            let reminder = crate::commands::reminders::inner_get_reminder(1, &pool)
+                .await
+                .unwrap();
+            assert_eq!((reminder.mac_only, reminder.todo_mac_only), (false, false));
             pool.close().await;
         }
     }

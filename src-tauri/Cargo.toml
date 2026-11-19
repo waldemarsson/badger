@@ -44,3 +44,10 @@ age = { version = "0.12", default-features = false }
 # Playground: sandboxed JavaScript (QuickJS). A fresh runtime per run, no host access
 # beyond console output and read-only note(); >= 0.14.0 for the bundled quickjs-ng fixes.
 rquickjs = "0.14"
+
+# Apple Reminders sync (EventKit). macOS only; the rest of the app never links it.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "NSArray", "NSCalendar", "NSDate", "NSError", "NSNotification", "NSObject", "NSOperation", "NSString", "NSTimeZone"] }
+objc2-event-kit = { version = "0.3", default-features = false, features = ["std", "bitflags", "block2", "EKAlarm", "EKCalendar", "EKCalendarItem", "EKEventStore", "EKObject", "EKRecurrenceRule", "EKReminder", "EKSource", "EKTypes"] }

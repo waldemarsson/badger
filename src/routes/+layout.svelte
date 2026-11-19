@@ -9,9 +9,11 @@
   import { toThemeMode } from '#lib/theme.js';
   import { applyTheme, theme } from '#lib/theme-state.svelte.js';
   import { normalizeShortcut, togglesScratchpad } from '#lib/palette.js';
-  import { palette } from '#lib/palette-state.svelte.js';
+  import { changes, palette } from '#lib/palette-state.svelte.js';
+  import { TODOS_CHANGED_EVENT } from '#lib/apple-sync.js';
   import { FLUSH_REQUEST_EVENT, runFlushHandlers } from '#lib/flush-guard.js';
   import { watchSemanticStatus } from '#lib/semantic-state.svelte.js';
+  import { watchAppleSync } from '#lib/apple-sync-state.svelte.js';
   import { reminders, requestHighlight, watchReminders } from '#lib/reminders-state.svelte.js';
   import { scratchpad, toggleScratchpad } from '#lib/scratchpad-state.svelte.js';
   import { checkForUpdate, updater } from '#lib/updater-state.svelte.js';
@@ -90,7 +92,13 @@
     })
       .then((stop) => (disposed ? stop() : (unlisten = stop)))
       .catch(() => {});
+    // Apple Reminders sync changed todos: the board, Today and TodoModal re-read on `changes.todos`.
+    let stopTodos: (() => void) | null = null;
+    listen(TODOS_CHANGED_EVENT, () => (changes.todos += 1))
+      .then((stop) => (disposed ? stop() : (stopTodos = stop)))
+      .catch(() => {});
     const stopSemantic = watchSemanticStatus();
+    const stopAppleSync = watchAppleSync(); // "Keep off phone" controls show while sync is on
     // Notification click (Rust already focused the window): open the row on /reminders.
     const stopReminders = watchReminders((id) => {
       requestHighlight(id);
@@ -107,7 +115,9 @@
     return () => {
       disposed = true;
       unlisten?.();
+      stopTodos?.();
       stopSemantic();
+      stopAppleSync();
       stopReminders();
       window.removeEventListener('keydown', onScratchpadKeydown, true);
     };

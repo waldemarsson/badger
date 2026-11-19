@@ -299,6 +299,10 @@ pub struct Reminder {
     pub note_title: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// "Keep off phone" set on the reminder itself.
+    pub mac_only: bool,
+    /// The linked todo is Mac-only, so this reminder is too (whatever `mac_only` says).
+    pub todo_mac_only: bool,
 }
 
 #[derive(FromRow)]
@@ -318,6 +322,8 @@ struct ReminderRow {
     note_title: Option<String>,
     created_at: String,
     updated_at: String,
+    mac_only: bool,
+    todo_mac_only: bool,
 }
 
 impl From<ReminderRow> for Reminder {
@@ -338,6 +344,8 @@ impl From<ReminderRow> for Reminder {
             note_title: r.note_title,
             created_at: r.created_at,
             updated_at: r.updated_at,
+            mac_only: r.mac_only,
+            todo_mac_only: r.todo_mac_only,
         }
     }
 }
@@ -366,6 +374,9 @@ pub struct ReminderInput {
     pub todo_id: Option<i64>,
     #[serde(default)]
     pub note_id: Option<i64>,
+    /// "Keep off phone". Create: missing = synced. Update: missing keeps the current value.
+    #[serde(default)]
+    pub mac_only: Option<bool>,
 }
 
 fn default_repeat() -> String {
@@ -386,7 +397,9 @@ const SELECT_REMINDERS: &str = "SELECT r.id,
         t.Status    AS todo_status,
         n.Title     AS note_title,
         r.CreatedAt AS created_at,
-        r.UpdatedAt AS updated_at
+        r.UpdatedAt AS updated_at,
+        r.MacOnly   AS mac_only,
+        COALESCE(t.MacOnly, 0) AS todo_mac_only
  FROM reminders r
  LEFT JOIN todos t ON t.id = r.TodoId
  LEFT JOIN notes n ON n.id = r.NoteId";
@@ -519,8 +532,8 @@ pub async fn inner_create_reminder(
 
     let row: (i64,) = sqlx::query_as(
         "INSERT INTO reminders (Text, RemindAt, TimeOfDay, Repeat, Weekdays, MonthDay, State, \
-             TodoId, NoteId, CreatedAt, UpdatedAt) \
-         VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?) RETURNING id",
+             TodoId, NoteId, CreatedAt, UpdatedAt, MacOnly) \
+         VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?) RETURNING id",
     )
     .bind(&text)
     .bind(format_timestamp(s.remind_at))
@@ -532,6 +545,7 @@ pub async fn inner_create_reminder(
     .bind(input.note_id)
     .bind(&stamp)
     .bind(&stamp)
+    .bind(input.mac_only.unwrap_or(false))
     .fetch_one(pool)
     .await?;
     inner_get_reminder(row.0, pool).await
@@ -563,7 +577,8 @@ pub async fn inner_update_reminder(
         let rule = s.rule.as_ref();
         sqlx::query(
             "UPDATE reminders SET Text = ?, RemindAt = ?, TimeOfDay = ?, Repeat = ?, Weekdays = ?, \
-                 MonthDay = ?, State = 'pending', TodoId = ?, NoteId = ?, UpdatedAt = ? \
+                 MonthDay = ?, State = 'pending', TodoId = ?, NoteId = ?, UpdatedAt = ?, \
+                 MacOnly = COALESCE(?, MacOnly) \
              WHERE id = ? AND State != 'done'",
         )
         .bind(&text)
@@ -575,18 +590,21 @@ pub async fn inner_update_reminder(
         .bind(input.todo_id)
         .bind(input.note_id)
         .bind(&stamp)
+        .bind(input.mac_only)
         .bind(id)
         .execute(pool)
         .await?
     } else {
         sqlx::query(
-            "UPDATE reminders SET Text = ?, TodoId = ?, NoteId = ?, UpdatedAt = ? \
+            "UPDATE reminders SET Text = ?, TodoId = ?, NoteId = ?, UpdatedAt = ?, \
+                 MacOnly = COALESCE(?, MacOnly) \
              WHERE id = ? AND State != 'done'",
         )
         .bind(&text)
         .bind(input.todo_id)
         .bind(input.note_id)
         .bind(&stamp)
+        .bind(input.mac_only)
         .bind(id)
         .execute(pool)
         .await?
@@ -608,6 +626,25 @@ pub async fn inner_delete_reminder(id: i64, pool: &Pool<Sqlite>) -> Result<(), A
         return Err(not_found());
     }
     Ok(())
+}
+
+/// Sets "Keep off phone" on the reminder itself (done ones too: it only decides syncing).
+/// A Mac-only reminder leaves Apple Reminders on the next sync pass; turning it off pushes
+/// it again. A reminder of a Mac-only todo stays Mac-only whatever this says.
+pub async fn inner_set_reminder_mac_only(
+    id: i64,
+    mac_only: bool,
+    pool: &Pool<Sqlite>,
+) -> Result<Reminder, AppError> {
+    let result = sqlx::query("UPDATE reminders SET MacOnly = ? WHERE id = ?")
+        .bind(mac_only)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    if result.rows_affected() == 0 {
+        return Err(not_found());
+    }
+    inner_get_reminder(id, pool).await
 }
 
 /// Moves only the current occurrence to `until` (back to pending); the anchor and rule stay.
@@ -1876,5 +1913,86 @@ mod tests {
         let pool = crate::test_db().await;
         pool.close().await;
         assert!(inner_fire_due(&pool, at(NOW)).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn mac_only_is_set_on_create_kept_on_update_and_follows_the_todo() {
+        let pool = crate::test_db().await;
+        let now = "2026-11-08T12:00";
+        let plain = create(input("Plain", "2026-11-09T09:00"), now, &pool).await;
+        assert_eq!((plain.mac_only, plain.todo_mac_only), (false, false));
+        let r = create(
+            ReminderInput {
+                mac_only: Some(true),
+                ..input("Private", "2026-11-09T09:00")
+            },
+            now,
+            &pool,
+        )
+        .await;
+        assert!(r.mac_only);
+
+        // Text-only and rescheduling edits keep the flag unless the input says.
+        let r = inner_update_reminder(
+            r.id,
+            &input("Private 2", "2026-11-09T09:00"),
+            at(now),
+            &pool,
+        )
+        .await
+        .unwrap();
+        assert!(r.mac_only);
+        let r = inner_update_reminder(
+            r.id,
+            &input("Private 2", "2026-11-10T09:00"),
+            at(now),
+            &pool,
+        )
+        .await
+        .unwrap();
+        assert!(r.mac_only);
+        let off = ReminderInput {
+            mac_only: Some(false),
+            ..input("Private 2", "2026-11-10T09:00")
+        };
+        let r = inner_update_reminder(r.id, &off, at(now), &pool)
+            .await
+            .unwrap();
+        assert!(!r.mac_only);
+
+        let r = inner_set_reminder_mac_only(r.id, true, &pool)
+            .await
+            .unwrap();
+        assert!(r.mac_only);
+        assert_eq!(
+            inner_set_reminder_mac_only(999, true, &pool)
+                .await
+                .unwrap_err()
+                .to_string(),
+            "Reminder not found"
+        );
+
+        // A reminder of a Mac-only todo reports it.
+        let todo = crate::commands::todos::inner_create_todo_full(
+            "T",
+            None,
+            None,
+            "not_started",
+            None,
+            true,
+            &pool,
+        )
+        .await
+        .unwrap();
+        let linked = create(
+            ReminderInput {
+                todo_id: Some(todo.id),
+                ..input("Linked", "2026-11-09T09:00")
+            },
+            now,
+            &pool,
+        )
+        .await;
+        assert_eq!((linked.mac_only, linked.todo_mac_only), (false, true));
     }
 }

@@ -7,8 +7,11 @@
 	import Combobox from '#lib/components/Combobox.svelte';
 	import ReminderForm from '#lib/components/ReminderForm.svelte';
 	import ReminderRow from '#lib/components/ReminderRow.svelte';
+	import MacOnlyToggle from '#lib/components/MacOnlyToggle.svelte';
+	import { appleSync } from '#lib/apple-sync-state.svelte.js';
 	import { activeForTodo } from '#lib/reminders.js';
 	import { clock, reminders } from '#lib/reminders-state.svelte.js';
+	import { changes } from '#lib/palette-state.svelte.js';
 	import { backdropDismiss } from '#lib/backdrop.js';
 	import Bell from '@lucide/svelte/icons/bell';
 	import X from '@lucide/svelte/icons/x';
@@ -33,6 +36,8 @@
 	let notes = $state(initial.notes ?? '');
 	let dueDate = $state(initial.due_date ?? '');
 	let status = $state<TodoStatus>(initial.status);
+	/** "Keep off phone" (shown while Apple Reminders sync is on); its reminders follow it. */
+	let macOnly = $state(initial.mac_only);
 	let error = $state('');
 	let saving = $state(false);
 	let confirmDelete = $state(false);
@@ -52,6 +57,33 @@
 	let addingReminder = $state(false);
 	let editingReminder = $state<number | null>(null);
 
+	// Sync (Apple Reminders) changed todos: re-read this one. Fields the user hasn't touched
+	// follow the new values; a todo deleted on the phone closes the modal.
+	let seenTodoChanges = changes.todos;
+	$effect(() => {
+		if (changes.todos === seenTodoChanges) return;
+		seenTodoChanges = changes.todos;
+		void reread();
+	});
+
+	async function reread(): Promise<void> {
+		try {
+			const fresh = (await invoke<TodoRow[]>('list_todos')).find((t) => t.id === current.id);
+			if (!fresh) {
+				onclose();
+				return;
+			}
+			if (title === current.title) title = fresh.title;
+			if (notes === (current.notes ?? '')) notes = fresh.notes ?? '';
+			if (dueDate === (current.due_date ?? '')) dueDate = fresh.due_date ?? '';
+			if (status === current.status) status = fresh.status;
+			if (macOnly === current.mac_only) macOnly = fresh.mac_only;
+			current = fresh;
+		} catch {
+			// Keep the form as it is; saving reports any problem.
+		}
+	}
+
 	async function save(): Promise<void> {
 		error = '';
 		if (!title.trim()) {
@@ -65,7 +97,9 @@
 				title,
 				notes: notes || null,
 				dueDate: dueDate || null,
-				issueId: current.issue_id
+				issueId: current.issue_id,
+				// Hidden while sync is off: null keeps the flag.
+				macOnly: appleSync.on ? macOnly : null
 			});
 			if (status !== current.status) {
 				// Moved via the form → append to the bottom of the new column.
@@ -230,6 +264,11 @@
 						</button>
 					{/if}
 				</div>
+				{#if appleSync.on}
+					<div class="border-t border-slate-100 pt-3 dark:border-neutral-800" transition:fade={{ duration: 120 }}>
+						<MacOnlyToggle bind:checked={macOnly} hint="Its reminders stay on the Mac too" />
+					</div>
+				{/if}
 			</div>
 		</div>
 
@@ -298,6 +337,7 @@
 						text={current.title}
 						todoId={current.id}
 						linkTitle={current.title}
+						linkMacOnly={macOnly}
 						showLink={false}
 						onsaved={() => (addingReminder = false)}
 						oncancel={() => (addingReminder = false)}

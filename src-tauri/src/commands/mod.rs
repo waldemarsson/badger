@@ -1,4 +1,5 @@
 // src-tauri/src/commands/mod.rs
+pub mod apple_sync;
 pub mod backup;
 pub mod customers;
 pub mod folders;

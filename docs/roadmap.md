@@ -29,7 +29,7 @@ Dependabot for npm, cargo and GitHub Actions (grouped weekly updates), plus a `c
 
 ## 4. Major dependency upgrades
 
-Each on its own branch: `typescript` 7, `prettier-plugin-svelte` 4, `@types/node` 26 and `tailwind-merge` 3; Tailwind 4 last (touches all styling and `app.css`).
+Each on its own branch: `typescript` 7; then Tailwind 4 with `tailwind-merge` 3 (v3 targets Tailwind 4; touches all styling and `app.css`).
 
 ## Done
 

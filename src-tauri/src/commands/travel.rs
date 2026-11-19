@@ -93,7 +93,7 @@ pub async fn inner_list_travel(
     }
     let (start, end) = month_bounds(year, month);
     let sql = format!("{SELECT_TRAVEL} WHERE Date >= ? AND Date < ? ORDER BY Date, id");
-    Ok(sqlx::query_as::<_, TravelRow>(&sql)
+    Ok(sqlx::query_as::<_, TravelRow>(sqlx::AssertSqlSafe(sql))
         .bind(start)
         .bind(end)
         .fetch_all(pool)
@@ -102,7 +102,7 @@ pub async fn inner_list_travel(
 
 async fn get_travel(id: i64, pool: &Pool<Sqlite>) -> Result<TravelRow, AppError> {
     let sql = format!("{SELECT_TRAVEL} WHERE id = ?");
-    sqlx::query_as::<_, TravelRow>(&sql)
+    sqlx::query_as::<_, TravelRow>(sqlx::AssertSqlSafe(sql))
         .bind(id)
         .fetch_optional(pool)
         .await?

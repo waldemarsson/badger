@@ -52,7 +52,7 @@ async fn fetch(
     executor: impl SqliteExecutor<'_>,
 ) -> Result<Option<Handover>, AppError> {
     let sql = format!("{SELECT_HANDOVERS} WHERE Date = ?");
-    Ok(sqlx::query_as::<_, Handover>(&sql)
+    Ok(sqlx::query_as::<_, Handover>(sqlx::AssertSqlSafe(sql))
         .bind(date)
         .fetch_optional(executor)
         .await?)
@@ -72,7 +72,9 @@ pub async fn inner_get_handover(
 /// Every handover, newest date first (dismissed ones included).
 pub async fn inner_list_handovers(pool: &Pool<Sqlite>) -> Result<Vec<Handover>, AppError> {
     let sql = format!("{SELECT_HANDOVERS} ORDER BY Date DESC");
-    Ok(sqlx::query_as::<_, Handover>(&sql).fetch_all(pool).await?)
+    Ok(sqlx::query_as::<_, Handover>(sqlx::AssertSqlSafe(sql))
+        .fetch_all(pool)
+        .await?)
 }
 
 /// Stores `body` as the handover for `date`, creating it on first save. An empty or

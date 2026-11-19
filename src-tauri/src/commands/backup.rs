@@ -1416,10 +1416,11 @@ mod tests {
             .expect("legacy backup must restore");
 
         for table in ["notes", "folders"] {
-            let count: (i64,) = sqlx::query_as(&format!("SELECT COUNT(*) FROM {table}"))
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+            let count: (i64,) =
+                sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")))
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
             assert_eq!(count.0, 0, "replace clears {table} not in the backup");
         }
     }

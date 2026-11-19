@@ -101,12 +101,14 @@ fn not_found() -> AppError {
 /// All todos, in board order within each status column.
 pub async fn inner_list_todos(pool: &Pool<Sqlite>) -> Result<Vec<TodoRow>, AppError> {
     let sql = format!("{SELECT_TODOS} ORDER BY t.Status, t.Position, t.id");
-    Ok(sqlx::query_as::<_, TodoRow>(&sql).fetch_all(pool).await?)
+    Ok(sqlx::query_as::<_, TodoRow>(sqlx::AssertSqlSafe(sql))
+        .fetch_all(pool)
+        .await?)
 }
 
 pub async fn inner_get_todo(id: i64, pool: &Pool<Sqlite>) -> Result<TodoRow, AppError> {
     let sql = format!("{SELECT_TODOS} WHERE t.id = ?");
-    sqlx::query_as::<_, TodoRow>(&sql)
+    sqlx::query_as::<_, TodoRow>(sqlx::AssertSqlSafe(sql))
         .bind(id)
         .fetch_optional(pool)
         .await?

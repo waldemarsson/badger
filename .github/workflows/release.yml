@@ -117,6 +117,46 @@ jobs:
           key: ort-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: ort-${{ runner.os }}-
 
+      # Signs with the self-signed "Badger Code Signing" certificate instead of ad-hoc, so
+      # macOS keeps privacy permissions (notifications, Reminders) across updates. The
+      # identity goes in through a --config override; tauri.conf.json stays ad-hoc for
+      # local builds. Secret names avoid APPLE_CERTIFICATE so Tauri doesn't import twice.
+      - name: Import code-signing certificate
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$MACOS_CERTIFICATE" || -z "$MACOS_CERTIFICATE_PASSWORD" ]]; then
+            echo "::error::MACOS_CERTIFICATE and MACOS_CERTIFICATE_PASSWORD secrets must be set (see docs/configuration.md)"
+            exit 1
+          fi
+          keychain="$RUNNER_TEMP/badger-signing.keychain-db"
+          keychain_password=$(openssl rand -hex 24)
+          p12="$RUNNER_TEMP/badger-signing.p12"
+          pem="$RUNNER_TEMP/badger-signing.pem"
+          printf '%s' "$MACOS_CERTIFICATE" | base64 --decode > "$p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$p12" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -f pkcs12 -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" > /dev/null
+          read -r -a existing <<< "$(security list-keychains -d user | tr -d '"' | tr '\n' ' ')"
+          security list-keychains -d user -s "$keychain" "${existing[@]}"
+          # A self-signed certificate is untrusted until marked trusted for code signing.
+          # The temporary keychain holds only this certificate.
+          security find-certificate -a -p "$keychain" > "$pem"
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$pem"
+          rm -f "$p12" "$pem"
+          # -v lists only valid identities, so this also proves the trust step worked.
+          identity=$(security find-identity -v -p codesigning "$keychain" | awk 'NR==1 && $2 ~ /^[0-9A-F]{40}$/ {print $2}')
+          if [[ -z "$identity" ]]; then
+            echo "::error::No valid code-signing identity in the imported certificate"
+            security find-identity -p codesigning "$keychain"
+            exit 1
+          fi
+          jq -n --arg id "$identity" '{bundle: {macOS: {signingIdentity: $id}}}' > "$RUNNER_TEMP/signing.conf.json"
+
       # Also signs the updater bundle (Badger.app.tar.gz + .sig) and uploads latest.json,
       # whose version comes from tauri.conf.json.
       - name: Build and release .dmg
@@ -126,7 +166,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          args: --target aarch64-apple-darwin
+          args: --target aarch64-apple-darwin --config ${{ runner.temp }}/signing.conf.json
           tagName: ${{ github.ref_name }}
           releaseName: Badger ${{ github.ref_name }}
           releaseDraft: false

@@ -113,7 +113,7 @@ Pre-built `.dmg` releases are published when a `v*` tag is pushed (see [Releasin
 
 1. Go to the [Releases](../../releases) page and download the latest `.dmg`.
 2. Open the `.dmg` and drag **Badger** into your `Applications` folder.
-3. On first launch macOS blocks the app because it is unsigned. Remove the
+3. On first launch macOS blocks the app because it is not notarized. Remove the
    Gatekeeper quarantine flag from a terminal:
 
    ```bash
@@ -121,15 +121,16 @@ Pre-built `.dmg` releases are published when a `v*` tag is pushed (see [Releasin
    ```
 
    Then open the app normally. If macOS still reports the app as "damaged",
-   re-sign it ad-hoc and retry:
+   re-sign it ad-hoc and retry (this replaces the release signature, so macOS
+   may ask for notification permission again after the next update):
 
    ```bash
    codesign --force --deep --sign - /Applications/Badger.app
    xattr -dr com.apple.quarantine /Applications/Badger.app
    ```
 
-The build is arm64-only (Apple Silicon) and unsigned/un-notarized, which is why
-the quarantine step above is required.
+The build is arm64-only (Apple Silicon), signed with a self-signed certificate
+and not notarized, which is why the quarantine step above is required.
 
 ## Development
 

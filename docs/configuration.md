@@ -86,7 +86,7 @@ The workspace `Cargo.toml` sets `[profile.dev.package.tokenizers] opt-level = 3`
 
 The model itself is not bundled: it is downloaded at runtime from HuggingFace at a pinned commit, with SHA-256s hard-coded in `src-tauri/src/semantic/model_files.rs`. Bumping the model means updating the commit, hashes and `MODEL_ID` there, and recalibrating the similarity floor constants in `src-tauri/src/semantic/fusion.rs` (`MARGIN`, `ABSOLUTE_FLOOR`, `FIXED_FLOOR`).
 
-### Ad-hoc macOS signing is enabled
+### macOS code signing
 
 `src-tauri/tauri.conf.json` sets:
 
@@ -97,7 +97,17 @@ The model itself is not bundled: it is downloaded at runtime from HuggingFace at
 }
 ```
 
-That tells Tauri to build with ad-hoc signing rather than expecting a configured signing identity.
+so local builds are signed ad-hoc and need no certificate. Release builds are signed with a self-signed certificate instead: `release.yml` imports it into a temporary keychain, marks it trusted for code signing, and passes its SHA-1 identity to `tauri build` through a `--config` override (`$RUNNER_TEMP/signing.conf.json`).
+
+Why: macOS keys privacy permissions (notifications, Reminders) to the app's code-signing requirement. An ad-hoc requirement is the hash of that exact build, so every update looks like a new app and permissions reset. A certificate-based requirement stays the same across builds signed with the same certificate. It is not notarized, so a first manual `.dmg` install still needs the quarantine flag removed (see README); updates never get quarantined.
+
+One-time setup (maintainer, on a Mac):
+
+1. Keychain Access → Certificate Assistant → Create a Certificate…: name `Badger Code Signing`, Identity Type `Self-Signed Root`, Certificate Type `Code Signing`. Optionally tick "Let me override defaults" and set a long validity (the default is one year; an expired certificate fails the release).
+2. In the login keychain, select the certificate together with its private key and export them as `badger-signing.p12` with a strong password. Back both up in a password manager.
+3. Add the GitHub Actions secrets `MACOS_CERTIFICATE` (`base64 -i badger-signing.p12 | pbcopy`) and `MACOS_CERTIFICATE_PASSWORD`. Never commit them. The release fails if either is missing.
+
+Keep using the same certificate. A new certificate changes the signing requirement once, so macOS asks for permissions again after that update. The switch from ad-hoc is such a change too. To sign a local bundled build the same way, pass `--config '{"bundle":{"macOS":{"signingIdentity":"Badger Code Signing"}}}'` to `npm run tauri build`.
 
 ### Updater and release signing
 

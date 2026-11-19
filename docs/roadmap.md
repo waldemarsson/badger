@@ -23,46 +23,18 @@ Comments (and trailing commas) in JSON notes; today they show as lint errors and
 - `@codemirror/legacy-modes` (a transitive dependency) has a `json` stream mode that tokenizes `//` and `/* */` comments correctly. Highlighting is therefore possible through `StreamLanguage` (a new direct dependency), but a stream mode gives no syntax tree, so there would be no tree-based lint, folding or Format.
 - Lossless JSONC formatting needs a JSONC parser (a new dependency, for example `jsonc-parser`), because custom parsers are ruled out. ```` ```jsonc ```` and ```` ```json5 ```` blocks in markdown notes are not formatted either, for the same reason.
 
-## 3. Release pipeline hardening
-
-Implemented on `feature/updater` (gates job, SHA pins, permissions); confirm on the first tag run. `release.yml` published a release on every `v*` tag push without running the gates. Add a gate job (`cargo test`, `cargo clippy --all -- -D warnings`, `cargo fmt --check`, `npm run check`, `npm run lint`, `node --test tests/*.mjs`) that the release job `needs:`; pin third-party actions (`actions/*`, `dtolnay/rust-toolchain`, `swatinem/rust-cache`, `tauri-apps/tauri-action`) to commit SHAs; default the workflow to `permissions: contents: read` and grant `contents: write` only to the release job.
-
-## 4. Updater
-
-In-app updates through `tauri-plugin-updater`, served from GitHub Releases. Needs a public repo (the `latest.json` endpoint must be reachable without a token) and section 3 first, because the updater pushes every tag to every install. Updates are downloaded by Rust, not a browser, so they should not get `com.apple.quarantine` and the ad-hoc signed app should not need `xattr` again after the first manual install (to be confirmed in the last step).
-
-Prerequisites:
-
-- [x] Scan the full git history for secrets and personal data (`gitleaks` or `trufflehog`), check what Releases and Issues expose, then make the repo public
-- [ ] Release gates from section 3 in place (implemented; tick after the first green tag run)
-- [x] Generate the update signing key (public key committed, secrets set) (`npm run tauri signer generate -- -w ~/.tauri/badger.key`; separate from Apple code signing), store key and password as the `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` GitHub secrets, and back the key up offline (losing it strands every install); never commit it
-
-Build (`feature/updater`):
-
-- [x] Dependency: `tauri-plugin-updater` (cargo) only; the check and install run in Rust commands, so no npm package, process plugin or capability entry
-- [x] `tauri.conf.json`: `bundle.createUpdaterArtifacts: true`, `plugins.updater.pubkey` and `endpoints: ["https://github.com/waldemarsson/badger/releases/latest/download/latest.json"]`; CSP unchanged (the request is made in Rust)
-- [x] Rust: register the plugin in `lib.rs`; `commands/updater.rs` with `check_for_update` (version and notes, or none) and `install_update` (download, install, flush unsaved notes, restart; `restart` ignores `prevent_exit`, so it flushes explicitly); registered in both `generate_handler!` lists; `AppError` messages, no `unwrap`
-- [x] Frontend: current version and "Check for updates" → "Install and restart" in Settings; a quiet check on launch that shows a toast and a dot on the gear (never interrupting an edit); inline errors; no toggle for the launch check (add one if it's ever wanted)
-- [x] `release.yml`: pass both signing secrets to `tauri-action` so it uploads `Badger.app.tar.gz`, its `.sig` and `latest.json`; gates fail while the pubkey is the placeholder
-- [x] Tags: no change needed; `latest.json` takes its version from `tauri.conf.json`, not the tag
-
-Rollout:
-
-- [ ] Ship version N with the updater and install it by hand (last `xattr` needed)
-- [ ] Tag N+1 and verify end to end: update found, installed, relaunched; unsaved notes survive; `xattr -l /Applications/Badger.app` shows no `com.apple.quarantine`; notification permission still works
-- [x] Document key location, secrets and versions in `docs/configuration.md` (Updater and release signing) and `docs/architecture.md` (Updater)
-- [ ] Move this section to Done after the end-to-end check
-
-## 5. Dependency monitoring
+## 3. Dependency monitoring
 
 Dependabot for npm, cargo and GitHub Actions (grouped weekly updates), plus a `cargo deny check advisories` (or `cargo audit`) step and `npm audit --omit=dev` in the gate job.
 
-## 6. Major dependency upgrades
+## 4. Major dependency upgrades
 
 Each on its own branch: `sqlx` 0.9, `sha2` 0.11, `tokenizers` 0.23 first; then `typescript` 7, `prettier-plugin-svelte` 4, `@types/node` 26 and `tailwind-merge` 3; Tailwind 4 last (touches all styling and `app.css`).
 
 ## Done
 
+- Updater — in-app updates through `tauri-plugin-updater` from GitHub Releases (`latest.json`, signed with the update key; see `docs/configuration.md`, Updater and release signing): a quiet check on launch shows a toast and a dot on the Settings gear, and Settings has "Check for updates" → "Install and restart", which flushes unsaved notes before restarting. Verified end to end: an update installs and relaunches without needing `xattr` again. Known wart: after an update the Dock shows an extra Badger icon
+- Release pipeline hardening — `release.yml` runs the gates in a job the release job `needs:`, third-party actions are pinned to commit SHAs, and the workflow defaults to `permissions: contents: read` with `contents: write` only on the release job; green on every tag since v1.2.0
 - JS playground — a `/playground` page (nav tab beside Notes, ⌘K "Go to Playground" and "New script") to write, save and run JavaScript, for munging JSON notes; scripts are saved documents in their own `scripts` table (not notes: no search, links or semantic index; titles are not unique), listed with a title filter and ⌘N, autosaved and flushed on quit, and included in backup/restore (older backups restore with none); Run (⌘↵) executes the editor's current text, including unsaved edits, in a sandboxed QuickJS engine (`rquickjs`, a direct dependency) that has no DOM, network, timers, modules or Tauri access; `note("Title")` is the only host input (JSON note → parsed value, markdown note → string, unknown → error; case-insensitive) and `note("` autocompletes titles; output (`console.*` with levels plus the last expression value, REPL-style) shows when the run ends, never streams and is kept in memory per script, not persisted; each run is limited to 10 s, 256 MB and a 1 MB stack, and output to 1 MB or 10,000 lines; Stop button or Esc cancels; one run at a time app-wide; JavaScript only, no TypeScript
 - JSON notes — a note or the scratchpad can be switched between markdown and JSON (header toggle, or "Switch to JSON" / "Switch to Markdown" in the note context menu; the body is never rewritten, new notes start as markdown); JSON mode is a code editor with highlighting, folding, bracket matching and closing, and a lint gutter showing the first parse error, without live preview, `#`/`[[` completion or the slash menu, and ⌘E and Copy as HTML are hidden; Format and Minify are lossless (a printer over the Lezer JSON syntax tree that copies number, string and key text verbatim, so big integers, `1.0`, escapes and duplicate keys survive; 2-space indent; invalid JSON is refused with "Invalid JSON: line L, col C"); bodies are capped at 5 MB (markdown is not); JSON notes are title-only in search, have no tags or links and are never embedded, show no excerpt, and carry a "JSON" badge in the tree, search list and ⌘K; in markdown editors (notes, scratchpad, handovers) a ```` ```json ```` block gets Format and Minify chips on its fence line while the cursor is inside it, and ⇧⌥F formats the block; stored in a `Kind` column on `notes` and `scratchpad`, with a `kind` field in backups (older backups restore as markdown); `@codemirror/lang-json` and `@codemirror/lint` are direct dependencies
 - Encrypted backups — one automatic backup folder, `backups/` beside the database by default or any writable folder (iCloud Drive, Dropbox) picked in Settings; flat `badger-YYYY-MM-DD.json.gz` files, only files matching that name are listed, trimmed or deleted, and old dated-folder backups are left alone; optional `age` encryption (`.json.gz.age`, decrypts with `age -d … | gunzip`) with a generated key pair whose secret is shown once and must be pasted back before encryption turns on, or your own `age1…` key; restore asks for the secret key for encrypted files; Back up now, last success and last error in Settings, no fallback to another folder or to plaintext when a backup fails; "Delete unencrypted" after turning encryption on; `age` is a direct dependency

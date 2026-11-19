@@ -234,7 +234,7 @@ Slack-style reminders: a text, a time, an optional repeat and an optional link t
 **Caveats.**
 
 - Reminders fire only while the app runs. Closing the window quits (see Quit/close flush guard); the launch catch-up covers what was missed. There is no menu bar or close-to-hide mode.
-- Notification permission cannot be detected or requested on desktop: the plugin's `request_permission` always reports granted, so a user who denied notifications in macOS System Settings gets no error, only silence (the toast and badge still work). Release builds are ad-hoc signed (`signingIdentity: "-"`), so macOS may treat each update as a new app and reset the notification permission; dev builds are attributed to Terminal.
+- Notification permission cannot be detected or requested on desktop: the plugin's `request_permission` always reports granted, so a user who denied notifications in macOS System Settings gets no error, only silence (the toast and badge still work). Release builds are signed with a self-signed certificate (see `docs/configuration.md`, macOS code signing), so the permission should survive updates; local ad-hoc builds may lose it on each rebuild, and dev builds are attributed to Terminal.
 - The scheduler's click handler must be installed before the first notification is shown, or the plugin does not report clicks on it (`install_click_handler`, called in `setup` before the spawn).
 - Native notifications, notification click, focus suppression and the dock badge have not been verified in the real macOS app: only the logic around them is unit-tested, and the UI was checked as mocked renders.
 

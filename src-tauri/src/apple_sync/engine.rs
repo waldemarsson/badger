@@ -248,9 +248,21 @@ impl Row {
         self.snap().done
     }
 
-    /// A recurring reminder stays Mac-only (D7).
-    fn recurring(&self) -> bool {
-        matches!(self, Row::Reminder(r) if r.repeat != "none")
+    /// Out of the sync, so never pushed or deleted because of the phone: a recurring
+    /// reminder (D7), or a row kept off the phone (its own flag, or a reminder's todo's).
+    fn off_phone(&self) -> bool {
+        match self {
+            Row::Todo(t) => t.mac_only,
+            Row::Reminder(r) => r.repeat != "none" || r.mac_only,
+        }
+    }
+
+    /// "Keep off phone" (a reminder's own flag or its todo's).
+    fn mac_only(&self) -> bool {
+        match self {
+            Row::Todo(t) => t.mac_only,
+            Row::Reminder(r) => r.mac_only,
+        }
     }
 }
 
@@ -530,7 +542,8 @@ async fn pass<S: ReminderStore>(
     // Mass-delete guard: an empty list while open items are paired to it, or most of the
     // Badger rows a miss would delete missing at once, is more likely an iCloud or account
     // problem than the user deleting everything. Items moved to the other list aren't
-    // missing; rows deleted, done or recurring in Badger only unpair, so they don't count.
+    // missing; rows deleted, done, recurring or Mac-only in Badger only unpair, so they
+    // don't count (Mac-only ones not even toward an empty list).
     if !delete_anyway {
         let items = |kind: ListKind| {
             lists
@@ -539,21 +552,22 @@ async fn pass<S: ReminderStore>(
                 .unwrap_or(&[])
         };
         for kind in ListKind::ALL {
+            let rows = load_rows(kind, pool).await?;
             let open: Vec<&Pairing> = pairings
                 .iter()
                 .filter(|p| p.kind == kind && !p.phone_snap.done)
+                .filter(|p| !rows.get(&p.badger_id).is_some_and(Row::mac_only))
                 .collect();
             // One open item can be the user clearing their last one; the two-pass rule
             // still covers a glitch then.
             if items(kind).is_empty() && open.len() >= EMPTY_LIST_MIN {
                 return Ok(paused_empty(kind, open.len()));
             }
-            let rows = load_rows(kind, pool).await?;
             let deletable: Vec<&&Pairing> = open
                 .iter()
                 .filter(|p| {
                     rows.get(&p.badger_id)
-                        .is_some_and(|r| !r.done() && !r.recurring())
+                        .is_some_and(|r| !r.done() && !r.off_phone())
                 })
                 .collect();
             let missing = deletable
@@ -642,8 +656,9 @@ async fn process_pairings<S: ReminderStore>(
             }
         }
         let result = match (rows.get(&pair.badger_id), phone.get(&pair.ek_id)) {
-            (Some(row), Some(p)) if row.recurring() => {
-                // Became recurring in Badger: it leaves the phone (D7).
+            (Some(row), Some(p)) if row.off_phone() => {
+                // Became recurring (D7) or Mac-only in Badger: it leaves the phone; the
+                // Badger row stays.
                 delete_on_phone(ctx, pair, p, report).await
             }
             (Some(row), Some(p)) => merge_pair(ctx, kind, pair, row, p, report).await,
@@ -663,7 +678,8 @@ async fn process_pairings<S: ReminderStore>(
     Ok(())
 }
 
-/// Deletes the phone item and its pairing (Badger deleted the row, or it became recurring).
+/// Deletes the phone item and its pairing (Badger deleted the row, or it became recurring
+/// or Mac-only).
 async fn delete_on_phone<S: ReminderStore>(
     ctx: &mut Ctx<'_, S>,
     pair: &Pairing,
@@ -689,8 +705,9 @@ async fn phone_missing<S: ReminderStore>(
     row: &Row,
     report: &mut PassReport,
 ) -> Result<(), AppError> {
-    if row.recurring() || row.done() || pair.phone_snap.done {
-        // Completed items cleared on the phone, or rows that left the sync: only unpair.
+    if row.off_phone() || row.done() || pair.phone_snap.done {
+        // Completed items cleared on the phone, or rows that left the sync (recurring,
+        // Mac-only): only unpair. A Mac-only row is never deleted because of the phone.
         return delete_pairing(pair.id, ctx.pool).await;
     }
     if ctx.authoritative {
@@ -710,7 +727,7 @@ async fn phone_missing<S: ReminderStore>(
     }
     // Edited in Badger meanwhile: Badger wins.
     match load_row(kind, row.id(), ctx.pool).await? {
-        Some(row) if !(row.recurring() || row.done()) => {
+        Some(row) if !(row.off_phone() || row.done()) => {
             push_new(ctx, kind, &row, Some(pair.id), report).await
         }
         _ => delete_pairing(pair.id, ctx.pool).await,

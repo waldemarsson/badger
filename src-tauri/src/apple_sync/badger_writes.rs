@@ -57,11 +57,13 @@ pub struct BTodo {
     pub notes: Option<String>,
     pub status: String,
     pub due_date: Option<String>,
+    /// "Keep off phone": out of the sync.
+    pub mac_only: bool,
 }
 
 impl BTodo {
     pub fn in_scope(&self) -> bool {
-        self.status != "done"
+        self.status != "done" && !self.mac_only
     }
 
     pub fn snap(&self) -> Snap {
@@ -83,12 +85,14 @@ pub struct BReminder {
     pub state: String,
     pub todo_title: Option<String>,
     pub note_title: Option<String>,
+    /// Effective "Keep off phone": set on the reminder or on its linked todo.
+    pub mac_only: bool,
 }
 
 impl BReminder {
-    /// One-off and not done: pushed when unpaired.
+    /// One-off, not done and not Mac-only: pushed when unpaired.
     pub fn in_scope(&self) -> bool {
-        self.repeat == "none" && self.state != "done"
+        self.repeat == "none" && self.state != "done" && !self.mac_only
     }
 
     /// The line Badger writes into the phone item's notes; `None` when unlinked.
@@ -120,10 +124,11 @@ pub fn normalize_timestamp(s: &str) -> String {
 }
 
 const TODO_COLUMNS: &str = "SELECT id, Title AS title, Notes AS notes, Status AS status, \
-     DueDate AS due_date FROM todos";
+     DueDate AS due_date, MacOnly AS mac_only FROM todos";
 
 const REMINDER_COLUMNS: &str = "SELECT r.id, r.Text AS text, r.RemindAt AS remind_at, \
-     r.Repeat AS repeat, r.State AS state, t.Title AS todo_title, n.Title AS note_title \
+     r.Repeat AS repeat, r.State AS state, t.Title AS todo_title, n.Title AS note_title, \
+     (r.MacOnly OR COALESCE(t.MacOnly, 0)) AS mac_only \
      FROM reminders r LEFT JOIN todos t ON t.id = r.TodoId LEFT JOIN notes n ON n.id = r.NoteId";
 
 /// Open todos plus every paired todo (done ones included, so they aren't taken for deleted).
@@ -597,8 +602,9 @@ pub fn badger_edited(kind: ListKind, now: &Snap, synced: &Snap) -> bool {
 
 /// Deletes a Badger row the phone deleted, and its pairing, in one transaction. A todo's
 /// reminders cascade away, as when it's deleted on the board. Conditional on the row still
-/// matching the last-synced snapshot `synced`: when it was edited in Badger meanwhile,
-/// nothing is deleted and `Ok(false)` comes back (Badger wins; the caller re-pushes).
+/// matching the last-synced snapshot `synced` and still being synced: when it was edited
+/// in Badger meanwhile, or made Mac-only or recurring, nothing is deleted and `Ok(false)`
+/// comes back (Badger wins; the caller re-pushes or unpairs).
 pub async fn delete_and_unpair(
     kind: ListKind,
     badger_id: i64,
@@ -614,7 +620,7 @@ pub async fn delete_and_unpair(
                 .bind(badger_id)
                 .fetch_optional(&mut *tx)
                 .await?
-                .map(|t| t.snap())
+                .map(|t| (t.snap(), t.mac_only))
         }
         ListKind::Reminders => {
             let sql = format!("{REMINDER_COLUMNS} WHERE r.id = ?");
@@ -622,10 +628,13 @@ pub async fn delete_and_unpair(
                 .bind(badger_id)
                 .fetch_optional(&mut *tx)
                 .await?
-                .map(|r| r.snap())
+                .map(|r| {
+                    let off_phone = r.mac_only || r.repeat != "none";
+                    (r.snap(), off_phone)
+                })
         }
     };
-    if now.is_some_and(|now| badger_edited(kind, &now, synced)) {
+    if now.is_some_and(|(now, off_phone)| off_phone || badger_edited(kind, &now, synced)) {
         return Ok(false);
     }
     let sql = match kind {
@@ -745,6 +754,65 @@ mod tests {
         );
         assert!(inner_get_todo(t.id, &pool).await.is_err());
         assert!(load_pairings(&pool).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_phone_delete_never_deletes_a_row_made_mac_only_meanwhile() {
+        let pool = crate::test_db().await;
+        let t = inner_create_todo("Call", None, None, "not_started", None, &pool)
+            .await
+            .unwrap();
+        let synced = load_todo(t.id, &pool).await.unwrap().unwrap().snap();
+        let state = PairingState {
+            ek_id: "ek-1".to_string(),
+            external_id: None,
+            badger_snap: synced.clone(),
+            phone_snap: synced.clone(),
+            phone_due: None,
+        };
+        let mut conn = pool.acquire().await.unwrap();
+        let pairing = insert_pairing(ListKind::Todos, t.id, &state, &mut conn)
+            .await
+            .unwrap();
+        drop(conn);
+
+        crate::commands::todos::inner_set_todo_mac_only(t.id, true, &pool)
+            .await
+            .unwrap();
+        assert!(
+            !delete_and_unpair(ListKind::Todos, t.id, pairing, &synced, &pool)
+                .await
+                .unwrap()
+        );
+        assert!(inner_get_todo(t.id, &pool).await.unwrap().mac_only);
+    }
+
+    #[tokio::test]
+    async fn a_reminder_of_a_mac_only_todo_loads_as_mac_only() {
+        let pool = crate::test_db().await;
+        let t = inner_create_todo("Call", None, None, "not_started", None, &pool)
+            .await
+            .unwrap();
+        let input = crate::commands::reminders::ReminderInput {
+            text: "Ring".to_string(),
+            remind_at: "2026-11-20T09:00".to_string(),
+            repeat: "none".to_string(),
+            todo_id: Some(t.id),
+            ..Default::default()
+        };
+        let now = parse_timestamp("2026-11-19T12:00").unwrap();
+        let r = crate::commands::reminders::inner_create_reminder(&input, now, &pool)
+            .await
+            .unwrap();
+        let loaded = load_reminder(r.id, &pool).await.unwrap().unwrap();
+        assert!(loaded.in_scope());
+
+        crate::commands::todos::inner_set_todo_mac_only(t.id, true, &pool)
+            .await
+            .unwrap();
+        let loaded = load_reminder(r.id, &pool).await.unwrap().unwrap();
+        assert!(loaded.mac_only && !loaded.in_scope());
+        assert!(!load_todo(t.id, &pool).await.unwrap().unwrap().in_scope());
     }
 
     #[test]

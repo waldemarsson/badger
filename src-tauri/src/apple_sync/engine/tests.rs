@@ -57,6 +57,7 @@ async fn reminder_in(pool: &Pool<Sqlite>, text: &str, when: &str, repeat: &str) 
         month_day: None,
         todo_id: None,
         note_id: None,
+        mac_only: None,
     };
     inner_create_reminder(&input, at(CREATED), pool)
         .await
@@ -1521,4 +1522,289 @@ async fn a_synced_reminder_is_left_to_the_phone_until_its_time_differs() {
     let mut item = store.item(&ek).unwrap();
     item.alarms.clear();
     assert_eq!(phone_due(ListKind::Reminders, &item), None);
+}
+
+// ── Keep off phone (Mac-only) ─────────────────────────────────────────────────
+
+use crate::commands::reminders::inner_set_reminder_mac_only;
+use crate::commands::todos::{inner_create_todo_full, inner_set_todo_mac_only};
+
+async fn mac_only_reminder(pool: &Pool<Sqlite>, text: &str, when: &str) -> Reminder {
+    let input = ReminderInput {
+        text: text.to_string(),
+        remind_at: when.to_string(),
+        repeat: "none".to_string(),
+        mac_only: Some(true),
+        ..Default::default()
+    };
+    inner_create_reminder(&input, at(CREATED), pool)
+        .await
+        .unwrap()
+}
+
+fn titles(store: &FakeStore, list: &str) -> Vec<String> {
+    let mut t: Vec<String> = store.items(list).into_iter().map(|i| i.title).collect();
+    t.sort();
+    t
+}
+
+#[tokio::test]
+async fn mac_only_rows_are_never_pushed_and_go_out_when_turned_off() {
+    let (pool, store) = setup().await;
+    todo(&pool, "Synced", "not_started").await;
+    let private = inner_create_todo_full("Private", None, None, "in_progress", None, true, &pool)
+        .await
+        .unwrap();
+    // Linked to a Mac-only todo: Mac-only too, though its own flag is off.
+    let follows =
+        linked_reminder(&pool, "Follows", "2026-11-20T09:00", Some(private.id), None).await;
+    assert!(!follows.mac_only && follows.todo_mac_only);
+    let own = mac_only_reminder(&pool, "Own flag", "2026-11-20T10:00").await;
+    reminder(&pool, "Synced reminder", "2026-11-20T11:00").await;
+
+    let report = sync_ok(&pool, &store).await;
+    assert_eq!(report.phone_writes, 2);
+    assert_eq!(titles(&store, &todos_list(&store)), vec!["Synced"]);
+    assert_eq!(
+        titles(&store, &reminders_list(&store)),
+        vec!["Synced reminder"]
+    );
+    assert_eq!(pairing_count(&pool).await, 2);
+    assert_eq!(sync_ok(&pool, &store).await.phone_writes, 0);
+
+    // Turned off: pushed on the next pass, the linked reminder with its todo.
+    inner_set_todo_mac_only(private.id, false, &pool)
+        .await
+        .unwrap();
+    inner_set_reminder_mac_only(own.id, false, &pool)
+        .await
+        .unwrap();
+    let report = sync_ok(&pool, &store).await;
+    assert_eq!(report.phone_writes, 3);
+    assert!(!report.badger_changed());
+    assert_eq!(
+        titles(&store, &todos_list(&store)),
+        vec!["Private", "Synced"]
+    );
+    assert_eq!(
+        titles(&store, &reminders_list(&store)),
+        vec!["Follows", "Own flag", "Synced reminder"]
+    );
+    let item = store
+        .item(&ek_of(&pool, ListKind::Reminders, follows.id).await)
+        .unwrap();
+    assert_eq!(item.notes.as_deref(), Some("Todo: Private"));
+    assert_eq!(sync_ok(&pool, &store).await.phone_writes, 0);
+}
+
+#[tokio::test]
+async fn keeping_a_paired_row_off_the_phone_deletes_the_phone_item_only() {
+    let (pool, store) = setup().await;
+    let t = todo(&pool, "T", "not_started").await;
+    let r = reminder(&pool, "R", "2026-11-20T09:00").await;
+    todo(&pool, "Other", "not_started").await;
+    sync_ok(&pool, &store).await;
+    let ek_t = ek_of(&pool, ListKind::Todos, t.id).await;
+    let ek_r = ek_of(&pool, ListKind::Reminders, r.id).await;
+
+    inner_set_todo_mac_only(t.id, true, &pool).await.unwrap();
+    inner_set_reminder_mac_only(r.id, true, &pool)
+        .await
+        .unwrap();
+    let report = sync_ok(&pool, &store).await;
+    assert_eq!(report.phone_writes, 2);
+    assert!(!report.badger_changed(), "not a Badger delete");
+    assert!(store.item(&ek_t).is_none());
+    assert!(store.item(&ek_r).is_none());
+    assert!(pairing_of(&pool, ListKind::Todos, t.id).await.is_none());
+    assert!(pairing_of(&pool, ListKind::Reminders, r.id).await.is_none());
+    assert_eq!(inner_get_todo(t.id, &pool).await.unwrap().title, "T");
+    assert_eq!(
+        inner_get_reminder(r.id, &pool).await.unwrap().state,
+        "pending"
+    );
+    assert_eq!(store.items(&todos_list(&store)).len(), 1, "Other stays");
+    assert_eq!(sync_ok(&pool, &store).await.phone_writes, 0, "stays off");
+
+    // Back on: pushed again as new phone items.
+    inner_set_todo_mac_only(t.id, false, &pool).await.unwrap();
+    inner_set_reminder_mac_only(r.id, false, &pool)
+        .await
+        .unwrap();
+    assert_eq!(sync_ok(&pool, &store).await.phone_writes, 2);
+    let new_t = ek_of(&pool, ListKind::Todos, t.id).await;
+    let new_r = ek_of(&pool, ListKind::Reminders, r.id).await;
+    assert_ne!(new_t, ek_t);
+    assert_eq!(store.item(&new_t).unwrap().title, "T");
+    assert_eq!(
+        store.item(&new_r).unwrap().due,
+        Some(PhoneDue::DateTime(at("2026-11-20T09:00")))
+    );
+}
+
+#[tokio::test]
+async fn a_linked_reminder_follows_its_todo_off_the_phone_and_back() {
+    let (pool, store) = setup().await;
+    let t = todo(&pool, "T", "not_started").await;
+    let r = linked_reminder(&pool, "Call", "2026-11-20T09:00", Some(t.id), None).await;
+    let other = reminder(&pool, "Other", "2026-11-20T10:00").await;
+    sync_ok(&pool, &store).await;
+    let ek_r = ek_of(&pool, ListKind::Reminders, r.id).await;
+
+    inner_set_todo_mac_only(t.id, true, &pool).await.unwrap();
+    sync_ok(&pool, &store).await;
+    assert!(
+        store.item(&ek_r).is_none(),
+        "follows its todo off the phone"
+    );
+    assert!(pairing_of(&pool, ListKind::Reminders, r.id).await.is_none());
+    assert!(pairing_of(&pool, ListKind::Reminders, other.id)
+        .await
+        .is_some());
+    let kept = inner_get_reminder(r.id, &pool).await.unwrap();
+    assert_eq!((kept.mac_only, kept.todo_mac_only), (false, true));
+
+    inner_set_todo_mac_only(t.id, false, &pool).await.unwrap();
+    sync_ok(&pool, &store).await;
+    let item = store
+        .item(&ek_of(&pool, ListKind::Reminders, r.id).await)
+        .unwrap();
+    assert_eq!(item.title, "Call");
+    assert!(store
+        .item(&ek_of(&pool, ListKind::Todos, t.id).await)
+        .is_some());
+}
+
+#[tokio::test]
+async fn a_mac_only_row_is_never_deleted_when_its_phone_item_vanishes() {
+    let (pool, store) = setup().await;
+    let t = todo(&pool, "T", "not_started").await;
+    let r = reminder(&pool, "R", "2026-11-20T09:00").await;
+    todo(&pool, "Other", "not_started").await;
+    reminder(&pool, "Other", "2026-11-20T10:00").await;
+    sync_ok(&pool, &store).await;
+
+    // Deleted on the phone while Badger made them Mac-only, missed for several passes,
+    // and even with "Delete in Badger anyway".
+    store.remove(&ek_of(&pool, ListKind::Todos, t.id).await);
+    store.remove(&ek_of(&pool, ListKind::Reminders, r.id).await);
+    sync_ok(&pool, &store).await; // first miss
+    inner_set_todo_mac_only(t.id, true, &pool).await.unwrap();
+    inner_set_reminder_mac_only(r.id, true, &pool)
+        .await
+        .unwrap();
+    let report = sync_ok(&pool, &store).await;
+    assert!(!report.badger_changed());
+    run_pass(&pool, &store, at(NOW), PassMode::DeleteAnyway).await;
+    sync_ok(&pool, &store).await;
+
+    assert!(inner_get_todo(t.id, &pool).await.is_ok());
+    assert!(inner_get_reminder(r.id, &pool).await.is_ok());
+    assert!(pairing_of(&pool, ListKind::Todos, t.id).await.is_none());
+    assert!(pairing_of(&pool, ListKind::Reminders, r.id).await.is_none());
+}
+
+#[tokio::test]
+async fn mac_only_rows_do_not_count_toward_the_mass_delete_guards() {
+    let (pool, store) = setup().await;
+    let mut t = Vec::new();
+    for title in ["A", "B", "C", "D", "E"] {
+        t.push(todo(&pool, title, "not_started").await);
+    }
+    sync_ok(&pool, &store).await;
+    // Three of five go missing, but they were also kept off the phone: not a mass delete.
+    for x in &t[..3] {
+        store.remove(&ek_of(&pool, ListKind::Todos, x.id).await);
+        inner_set_todo_mac_only(x.id, true, &pool).await.unwrap();
+    }
+    sync_ok(&pool, &store).await;
+    assert_eq!(todo_count(&pool).await, 5);
+    assert_eq!(pairing_count(&pool).await, 2);
+
+    // An emptied list whose open pairings are all Mac-only rows doesn't pause either.
+    for x in &t[3..] {
+        inner_set_todo_mac_only(x.id, true, &pool).await.unwrap();
+    }
+    store.clear_list(&todos_list(&store));
+    sync_ok(&pool, &store).await;
+    assert_eq!(todo_count(&pool).await, 5);
+    assert_eq!(pairing_count(&pool).await, 0);
+    assert_eq!(get_apple_sync_settings(&pool).await.unwrap().paused, None);
+}
+
+#[tokio::test]
+async fn phone_created_items_are_never_mac_only() {
+    let (pool, store) = setup().await;
+    sync_ok(&pool, &store).await;
+    store.add(&todos_list(&store), phone("From phone"));
+    store.add(
+        &reminders_list(&store),
+        with_time("Phone reminder", "2026-11-20T09:00"),
+    );
+    sync_ok(&pool, &store).await;
+    let todos = inner_list_todos(&pool).await.unwrap();
+    assert_eq!(todos.len(), 1);
+    assert!(!todos[0].mac_only);
+    let reminders = crate::commands::reminders::inner_list_reminders(&pool)
+        .await
+        .unwrap();
+    assert_eq!(reminders.len(), 1);
+    assert!(!reminders[0].mac_only);
+    assert_eq!(pairing_count(&pool).await, 2);
+}
+
+#[tokio::test]
+async fn after_a_restore_a_mac_only_row_still_leaves_the_phone() {
+    let (pool, store) = setup().await;
+    let t = todo(&pool, "T", "not_started").await;
+    todo(&pool, "Other", "not_started").await;
+    sync_ok(&pool, &store).await;
+    let ek = ek_of(&pool, ListKind::Todos, t.id).await;
+    inner_set_todo_mac_only(t.id, true, &pool).await.unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    set_apple_sync_restore_pending(&mut conn, true)
+        .await
+        .unwrap();
+    drop(conn);
+
+    sync_ok(&pool, &store).await;
+    assert!(store.item(&ek).is_none());
+    assert!(pairing_of(&pool, ListKind::Todos, t.id).await.is_none());
+    assert!(inner_get_todo(t.id, &pool).await.is_ok());
+}
+
+#[tokio::test]
+async fn a_mac_only_reminder_notifies_on_the_mac() {
+    use crate::apple_sync::phone_notifies;
+    let (pool, store) = setup().await;
+    let r = reminder(&pool, "R", "2026-11-19T09:00").await;
+    let t = todo(&pool, "T", "not_started").await;
+    let linked = linked_reminder(&pool, "L", "2026-11-19T09:00", Some(t.id), None).await;
+    sync_ok(&pool, &store).await;
+    let fired = inner_fire_due(&pool, at(NOW)).await.unwrap();
+    assert_eq!(fired.len(), 2);
+    let skip = phone_notifies(&pool, &fired).await;
+    assert!(
+        skip.contains(&r.id) && skip.contains(&linked.id),
+        "both on the phone"
+    );
+
+    // Flagged, before the pass drops the pairings: the Mac notifies already.
+    inner_set_reminder_mac_only(r.id, true, &pool)
+        .await
+        .unwrap();
+    inner_set_todo_mac_only(t.id, true, &pool).await.unwrap();
+    let fired = vec![
+        inner_get_reminder(r.id, &pool).await.unwrap(),
+        inner_get_reminder(linked.id, &pool).await.unwrap(),
+    ];
+    assert!(phone_notifies(&pool, &fired).await.is_empty());
+
+    // After the pass: unpaired, so the existing rule notifies on the Mac.
+    sync_ok(&pool, &store).await;
+    assert!(pairing_of(&pool, ListKind::Reminders, r.id).await.is_none());
+    assert!(pairing_of(&pool, ListKind::Reminders, linked.id)
+        .await
+        .is_none());
+    assert!(phone_notifies(&pool, &fired).await.is_empty());
 }

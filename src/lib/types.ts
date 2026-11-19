@@ -87,6 +87,8 @@ export interface TodoRow {
 	project_name: string | null;
 	customer_id: number | null;
 	customer_name: string | null;
+	/** "Keep off phone": never synced to Apple Reminders (nor are its reminders). */
+	mac_only: boolean;
 }
 
 /** A trip; km and amount (kr) are null when not entered. */
@@ -268,6 +270,10 @@ export interface Reminder {
 	note_title: string | null;
 	created_at: string;
 	updated_at: string;
+	/** "Keep off phone" set on the reminder itself. */
+	mac_only: boolean;
+	/** Its linked todo is Mac-only, so it is too (whatever `mac_only` says). */
+	todo_mac_only: boolean;
 }
 
 /** create_reminder / update_reminder argument (`invoke(cmd, { input })`, camelCase).
@@ -280,6 +286,8 @@ export interface ReminderInput {
 	monthDay: number | null;
 	todoId: number | null;
 	noteId: number | null;
+	/** "Keep off phone". Omitted: synced on create, unchanged on update. */
+	macOnly?: boolean;
 }
 
 /** Backup folder and encryption settings (`get_backup_settings`). */

@@ -309,6 +309,8 @@ mod tests {
             note_title: None,
             created_at: String::new(),
             updated_at: String::new(),
+            mac_only: false,
+            todo_mac_only: false,
         }
     }
 

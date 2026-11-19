@@ -1,8 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-const { appleSyncPill, formatLastSync, skippedSummary, TODOS_CHANGED_EVENT, APPLE_SYNC_STATUS_EVENT } =
-	await import('../src/lib/apple-sync.ts');
+const {
+	appleSyncPill,
+	formatLastSync,
+	skippedSummary,
+	TODOS_CHANGED_EVENT,
+	APPLE_SYNC_STATUS_EVENT,
+	syncShowsMacOnly,
+	reminderMacOnly,
+	reminderMacOnlyControl
+} = await import('../src/lib/apple-sync.ts');
 
 const base = {
 	available: true,
@@ -49,4 +57,25 @@ test('skipped summary counts per reason', () => {
 		skippedSummary([s('needs a date'), s('needs a title'), s('needs a date')]),
 		'2 need a date, 1 needs a title'
 	);
+});
+
+test('Mac-only controls show only while sync is on', () => {
+	assert.equal(syncShowsMacOnly(null), false);
+	assert.equal(syncShowsMacOnly({ available: true, enabled: false }), false);
+	assert.equal(syncShowsMacOnly({ available: false, enabled: true }), false);
+	assert.equal(syncShowsMacOnly({ available: true, enabled: true }), true);
+});
+
+test('a reminder is Mac-only by its own flag or its todo', () => {
+	assert.equal(reminderMacOnly({ mac_only: false, todo_mac_only: false }), false);
+	assert.equal(reminderMacOnly({ mac_only: true, todo_mac_only: false }), true);
+	assert.equal(reminderMacOnly({ mac_only: false, todo_mac_only: true }), true);
+});
+
+test('reminder form: toggle, locked to its todo, or hidden', () => {
+	assert.equal(reminderMacOnlyControl(true, 'none', false), 'toggle');
+	assert.equal(reminderMacOnlyControl(true, 'none', true), 'follows-todo');
+	assert.equal(reminderMacOnlyControl(true, 'daily', false), 'hidden', 'recurring never syncs');
+	assert.equal(reminderMacOnlyControl(true, 'weekly', true), 'hidden');
+	assert.equal(reminderMacOnlyControl(false, 'none', false), 'hidden', 'sync off');
 });

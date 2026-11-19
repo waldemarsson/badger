@@ -8,8 +8,8 @@ Badger stores its working data in a local SQLite database. The schema is intenti
 - `projects` — customer-owned projects, also with a default marker
 - `issues` — project-owned work items, identified by title
 - `time_entries` — dated hour records linked to issues
-- `todos` — standalone kanban todos (`Status`: not started / in progress / done, ordered by `Position`) with an optional link to an issue
-- `reminders` — Slack-style reminders: `Text` (trimmed, 1–500 characters), `RemindAt` (the current occurrence, naive local time `%Y-%m-%dT%H:%M:%S%.3f`), `TimeOfDay` (`HH:MM` recurrence anchor), `Repeat` (`none`/`daily`/`weekdays`/`weekly`/`monthly`), `Weekdays` (ISO numbers as text, e.g. `1,4` for Mon and Thu), `MonthDay` (1–31, monthly only), `State` (`pending`/`fired`/`done`), and an optional `TodoId` or `NoteId`. Both links are `ON DELETE CASCADE`, so deleting a todo or note deletes its reminders (unlike issue links, which only clear), and a `CHECK` allows at most one link. Created by `SCHEMA_SQL` with no migration. Semantics are in `docs/architecture.md` (Reminders)
+- `todos` — standalone kanban todos (`Status`: not started / in progress / done, ordered by `Position`) with an optional link to an issue, and `MacOnly` (0/1, default 0: "Keep off phone", never synced to Apple Reminders, nor are its reminders; added to existing databases by `migrate_mac_only`)
+- `reminders` — Slack-style reminders: `Text` (trimmed, 1–500 characters), `RemindAt` (the current occurrence, naive local time `%Y-%m-%dT%H:%M:%S%.3f`), `TimeOfDay` (`HH:MM` recurrence anchor), `Repeat` (`none`/`daily`/`weekdays`/`weekly`/`monthly`), `Weekdays` (ISO numbers as text, e.g. `1,4` for Mon and Thu), `MonthDay` (1–31, monthly only), `State` (`pending`/`fired`/`done`), and an optional `TodoId` or `NoteId`. Both links are `ON DELETE CASCADE`, so deleting a todo or note deletes its reminders (unlike issue links, which only clear), and a `CHECK` allows at most one link. `MacOnly` (0/1, default 0) keeps the reminder off Apple Reminders; it is also Mac-only while its linked todo is. Created by `SCHEMA_SQL`; `MacOnly` is added to older databases by `migrate_mac_only`. Semantics are in `docs/architecture.md` (Reminders, and Apple Reminders sync › Keep off phone)
 - `travel` — standalone business trips: date, from/to place, and optional km and amount (kr), stored as NULL when not entered
 - `notes` — markdown notes: unique `Title` (case-insensitive, via a `COLLATE NOCASE` unique index), `Body`, `Pinned`, `CreatedAt`/`UpdatedAt`, an optional `FolderId`, and `Position` (manual order within the folder; added to existing databases by the idempotent `migrate_notes_position`, see Manual order below), and `Kind` (`markdown` or `json`, default `markdown`, a `CHECK` limits it to those two; added to existing databases by the idempotent `migrate_notes_kind`). Kind is the editor mode: a JSON note is title-only in `notes_fts`, has no `note_refs`, is never embedded, and its body is limited to 5 MB (UTF-8 bytes, enforced in Rust on body save and on switching to JSON, not on restore). Switching kind never changes the body. Semantics are in `docs/architecture.md` (Notes editor › JSON notes)
 - `folders` — nestable note folders (`ParentId`, root = NULL, `Name`, `Position`, manual order among siblings; see Manual order below). Names are trimmed, 1–100 characters, may not contain `/`, and are unique among siblings ignoring case (Rust `to_lowercase()`, like note titles)
@@ -136,11 +136,11 @@ The document contains:
 - `projects`
 - `issues`
 - `time_entries`
-- `todos` (optional on import, so backups made before todos existed still restore)
+- `todos` (optional on import, so backups made before todos existed still restore; `mac_only` is optional too, so todos from older backups restore as synced)
 - `travel` (optional on import, so backups made before travel existed still restore)
 - `folders` (optional on import, so backups made before notes existed still restore)
 - `notes` (optional on import, same reason; each note carries `kind`, `markdown` or `json`)
-- `reminders` (optional on import, so backups made before reminders existed still restore)
+- `reminders` (optional on import, so backups made before reminders existed still restore; `mac_only` is optional too, so reminders from older backups restore as synced)
 - `handovers` (optional on import, so backups made before handovers existed still restore; each has `date`, `body`, `dismissed_at`, `created_at`, `updated_at`)
 - `scripts` (optional on import, so backups made before the playground existed still restore; each has `id`, `title`, `body`, `created_at`, `updated_at`)
 - `scratchpad` (an object with `body`, `updated_at` and `kind`, or `null` when never written; optional on import, so backups made before the scratchpad existed still restore)

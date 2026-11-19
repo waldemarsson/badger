@@ -55,6 +55,9 @@ pub struct BackupTodo {
     pub due_date: Option<String>,
     pub created_at: String,
     pub issue_id: Option<i64>,
+    /// "Keep off phone". Missing in backups from before it: synced.
+    #[serde(default)]
+    pub mac_only: bool,
     /// Legacy flag from the first todos format (before `status`); read-only.
     #[serde(default, skip_serializing)]
     #[sqlx(default)]
@@ -116,6 +119,9 @@ pub struct BackupReminder {
     pub note_id: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
+    /// "Keep off phone". Missing in backups from before it: synced.
+    #[serde(default)]
+    pub mac_only: bool,
 }
 
 /// The scratchpad as stored in a backup file.
@@ -241,7 +247,7 @@ pub async fn inner_backup_data(pool: &Pool<Sqlite>) -> Result<String, AppError> 
     .await?;
 
     let todos = sqlx::query_as::<_, BackupTodo>(
-        "SELECT id, Title as title, Notes as notes, Status as status, Position as position, DueDate as due_date, CreatedAt as created_at, IssueId as issue_id FROM todos ORDER BY id",
+        "SELECT id, Title as title, Notes as notes, Status as status, Position as position, DueDate as due_date, CreatedAt as created_at, IssueId as issue_id, MacOnly as mac_only FROM todos ORDER BY id",
     )
     .fetch_all(pool)
     .await?;
@@ -265,7 +271,7 @@ pub async fn inner_backup_data(pool: &Pool<Sqlite>) -> Result<String, AppError> 
     .await?;
 
     let reminders = sqlx::query_as::<_, BackupReminder>(
-        "SELECT id, Text as text, RemindAt as remind_at, TimeOfDay as time_of_day, Repeat as repeat, Weekdays as weekdays, MonthDay as month_day, State as state, TodoId as todo_id, NoteId as note_id, CreatedAt as created_at, UpdatedAt as updated_at FROM reminders ORDER BY id",
+        "SELECT id, Text as text, RemindAt as remind_at, TimeOfDay as time_of_day, Repeat as repeat, Weekdays as weekdays, MonthDay as month_day, State as state, TodoId as todo_id, NoteId as note_id, CreatedAt as created_at, UpdatedAt as updated_at, MacOnly as mac_only FROM reminders ORDER BY id",
     )
     .fetch_all(pool)
     .await?;
@@ -577,7 +583,7 @@ async fn insert_todos(
 ) -> Result<(), AppError> {
     for t in todos {
         sqlx::query(
-            "INSERT INTO todos (id, Title, Notes, Status, Position, DueDate, CreatedAt, IssueId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO todos (id, Title, Notes, Status, Position, DueDate, CreatedAt, IssueId, MacOnly) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(t.id)
         .bind(&t.title)
@@ -587,6 +593,7 @@ async fn insert_todos(
         .bind(&t.due_date)
         .bind(&t.created_at)
         .bind(t.issue_id)
+        .bind(t.mac_only)
         .execute(&mut **tx)
         .await?;
     }
@@ -600,7 +607,7 @@ async fn insert_reminders(
 ) -> Result<(), AppError> {
     for r in reminders {
         sqlx::query(
-            "INSERT INTO reminders (id, Text, RemindAt, TimeOfDay, Repeat, Weekdays, MonthDay, State, TodoId, NoteId, CreatedAt, UpdatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO reminders (id, Text, RemindAt, TimeOfDay, Repeat, Weekdays, MonthDay, State, TodoId, NoteId, CreatedAt, UpdatedAt, MacOnly) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(r.id)
         .bind(&r.text)
@@ -614,6 +621,7 @@ async fn insert_reminders(
         .bind(r.note_id)
         .bind(&r.created_at)
         .bind(&r.updated_at)
+        .bind(r.mac_only)
         .execute(&mut **tx)
         .await?;
     }
@@ -1864,6 +1872,69 @@ mod tests {
         assert_eq!(result.reminders[1].note_id, Some(2));
         assert_eq!(result.reminders[0].weekdays, "1,4");
         assert_eq!(result.reminders[1].month_day, Some(31));
+    }
+
+    #[tokio::test]
+    async fn test_backup_restore_roundtrips_mac_only() {
+        let pool = crate::test_db().await;
+        seed_reminders(&pool).await;
+        sqlx::raw_sql(
+            "UPDATE todos SET MacOnly = 1 WHERE id = 1;
+             UPDATE reminders SET MacOnly = 1 WHERE id = 3;",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let json = inner_backup_data(&pool).await.expect("backup failed");
+        let original: BackupData = serde_json::from_str(&json).unwrap();
+        let flags = |b: &BackupData| {
+            (
+                b.todos
+                    .iter()
+                    .map(|t| (t.id, t.mac_only))
+                    .collect::<Vec<_>>(),
+                b.reminders
+                    .iter()
+                    .map(|r| (r.id, r.mac_only))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(
+            flags(&original),
+            (
+                vec![(1, true), (2, false)],
+                vec![(1, false), (2, false), (3, true)]
+            )
+        );
+
+        sqlx::raw_sql("UPDATE todos SET MacOnly = 0; UPDATE reminders SET MacOnly = 0;")
+            .execute(&pool)
+            .await
+            .unwrap();
+        inner_restore_data(&json, &pool)
+            .await
+            .expect("restore failed");
+        let result: BackupData =
+            serde_json::from_str(&inner_backup_data(&pool).await.unwrap()).unwrap();
+        assert_eq!(flags(&result), flags(&original));
+    }
+
+    #[tokio::test]
+    async fn test_restore_backup_without_mac_only_keeps_items_synced() {
+        let pool = crate::test_db().await;
+        seed_test_data(&pool).await;
+        let legacy = r#"{"customers":[],"projects":[],"issues":[],"time_entries":[],
+            "todos":[{"id":5,"title":"T","notes":null,"status":"not_started","position":0,"due_date":null,"created_at":"2024-01-01T00:00:00.000","issue_id":null}],
+            "reminders":[{"id":1,"text":"x","remind_at":"2026-11-09T09:00:00.000","time_of_day":"09:00","repeat":"none","weekdays":"","month_day":null,"state":"pending","todo_id":5,"note_id":null,"created_at":"c","updated_at":"u"}]}"#;
+        inner_restore_data(legacy, &pool)
+            .await
+            .expect("backup without mac_only must restore");
+        let flags: Vec<(i64,)> =
+            sqlx::query_as("SELECT MacOnly FROM todos UNION ALL SELECT MacOnly FROM reminders")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(flags, vec![(0,), (0,)]);
     }
 
     #[tokio::test]

@@ -3,7 +3,10 @@
 	import type { Reminder } from '#lib/types.js';
 	import { SNOOZE_CHOICES, snoozeUntil, formatRemindAt, formatRepeat, splitTimestamp, toLocalTimestamp } from '#lib/reminders.js';
 	import { completeReminder, deleteReminder, snoozeReminder } from '#lib/reminders-state.svelte.js';
+	import { reminderMacOnly } from '#lib/apple-sync.js';
+	import { appleSync } from '#lib/apple-sync-state.svelte.js';
 	import ContextMenu, { type MenuItem } from '#lib/components/ContextMenu.svelte';
+	import MacOnlyBadge from '#lib/components/MacOnlyBadge.svelte';
 	import AlarmClock from '@lucide/svelte/icons/alarm-clock';
 	import Bell from '@lucide/svelte/icons/bell';
 	import BellRing from '@lucide/svelte/icons/bell-ring';
@@ -50,6 +53,7 @@
 	);
 	const timeLabel = $derived(formatRemindAt(r.remind_at, now));
 	const repeatLabel = $derived(formatRepeat(r));
+	const macOnly = $derived(appleSync.on && reminderMacOnly(r));
 
 	const badgeClasses: Record<string, string> = {
 		overdue: 'bg-red-50 text-red-700 ring-red-200 dark:bg-red-500/10 dark:text-red-300 dark:ring-red-500/30',
@@ -105,6 +109,9 @@
 					<Repeat size={12} class="shrink-0" />
 					{repeatLabel}
 				</span>
+			{/if}
+			{#if macOnly}
+				<MacOnlyBadge title={r.mac_only ? 'Mac only: kept off your phone' : 'Mac only: follows its todo'} />
 			{/if}
 			{#if showLink && r.todo_id !== null}
 				<a href={resolve('/todos')} class="reminder-link min-w-0" title="Todo: {r.todo_title}">

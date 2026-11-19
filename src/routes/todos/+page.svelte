@@ -6,6 +6,8 @@ import { fade } from 'svelte/transition';
 import type { TodoRow, TodoStatus } from '#lib/types.js';
 import { COLUMNS, columnCards, dueState, formatDue } from '#lib/todos.js';
 import TodoModal from '#lib/components/TodoModal.svelte';
+import MacOnlyBadge from '#lib/components/MacOnlyBadge.svelte';
+import { appleSync } from '#lib/apple-sync-state.svelte.js';
 import { changes } from '#lib/palette-state.svelte.js';
 import Plus from '@lucide/svelte/icons/plus';
 import X from '@lucide/svelte/icons/x';
@@ -211,7 +213,8 @@ void load();
 <p class="mt-1 line-clamp-2 text-xs leading-relaxed text-slate-500 dark:text-neutral-400">{t.notes}</p>
 {/if}
 {@const bell = bells.get(t.id)}
-{#if t.due_date || t.issue_title || bell}
+{@const macOnly = appleSync.on && t.mac_only}
+{#if t.due_date || t.issue_title || bell || macOnly}
 <div class="mt-2.5 flex flex-wrap items-center gap-1.5">
 {#if bell}
 <span class="kanban-badge {bell.state === 'fired' ? dueClasses.overdue : 'bg-sky-50 dark:bg-sky-500/10 text-sky-700 dark:text-sky-300 ring-sky-200 dark:ring-sky-500/30'}" title="{bell.state === 'fired' ? 'Overdue reminder' : 'Reminder'}: {bell.text}">
@@ -230,6 +233,9 @@ void load();
 <Link2 size={12} class="shrink-0" />
 <span class="truncate">{t.project_name} · {t.issue_title}</span>
 </span>
+{/if}
+{#if macOnly}
+<MacOnlyBadge />
 {/if}
 </div>
 {/if}

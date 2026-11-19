@@ -227,7 +227,9 @@ impl ReminderStore for UnsupportedStore {
 /// The fired reminders whose native macOS notification the scheduler skips because the
 /// phone notifies: only while sync is on and healthy (not paused, last pass without
 /// errors), for paired one-offs whose pushed phone time equals the firing `RemindAt`.
-/// On any error nothing is skipped (a duplicate beats a missed reminder).
+/// Mac-only reminders (own flag or their todo's) always notify, even while a pairing the
+/// next pass drops is still there. On any error nothing is skipped (a duplicate beats a
+/// missed reminder).
 pub async fn phone_notifies(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     fired: &[crate::commands::reminders::Reminder],
@@ -245,7 +247,11 @@ pub async fn phone_notifies(
     }
     for r in fired.iter().filter(|r| r.repeat == "none") {
         let pushed: Result<Option<(Option<String>,)>, sqlx::Error> = sqlx::query_as(
-            "SELECT PhoneDue FROM apple_sync_items WHERE Kind = 'reminder' AND BadgerId = ?",
+            "SELECT p.PhoneDue FROM apple_sync_items p \
+             JOIN reminders r ON r.id = p.BadgerId \
+             LEFT JOIN todos t ON t.id = r.TodoId \
+             WHERE p.Kind = 'reminder' AND p.BadgerId = ? \
+               AND r.MacOnly = 0 AND COALESCE(t.MacOnly, 0) = 0",
         )
         .bind(r.id)
         .fetch_optional(pool)

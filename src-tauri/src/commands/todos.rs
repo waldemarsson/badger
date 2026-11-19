@@ -25,6 +25,8 @@ pub struct TodoRow {
     pub project_name: Option<String>,
     pub customer_id: Option<i64>,
     pub customer_name: Option<String>,
+    /// "Keep off phone": never synced to Apple Reminders (nor are its reminders).
+    pub mac_only: bool,
 }
 
 const SELECT_TODOS: &str = "SELECT t.id,
@@ -39,7 +41,8 @@ const SELECT_TODOS: &str = "SELECT t.id,
         p.id        AS project_id,
         p.Name      AS project_name,
         c.id        AS customer_id,
-        c.Name      AS customer_name
+        c.Name      AS customer_name,
+        t.MacOnly   AS mac_only
  FROM todos t
  LEFT JOIN issues    i ON i.id = t.IssueId
  LEFT JOIN projects  p ON p.id = i.ProjectId
@@ -124,6 +127,19 @@ pub async fn inner_create_todo(
     issue_id: Option<i64>,
     pool: &Pool<Sqlite>,
 ) -> Result<TodoRow, AppError> {
+    inner_create_todo_full(title, notes, due_date, status, issue_id, false, pool).await
+}
+
+/// [`inner_create_todo`] with the "Keep off phone" flag.
+pub async fn inner_create_todo_full(
+    title: &str,
+    notes: Option<&str>,
+    due_date: Option<&str>,
+    status: &str,
+    issue_id: Option<i64>,
+    mac_only: bool,
+    pool: &Pool<Sqlite>,
+) -> Result<TodoRow, AppError> {
     let title = clean_title(title)?;
     let due_date = clean_due_date(due_date)?;
     check_status(status)?;
@@ -133,8 +149,8 @@ pub async fn inner_create_todo(
         .to_string();
 
     let row: (i64,) = sqlx::query_as(
-        "INSERT INTO todos (Title, Notes, Status, Position, DueDate, CreatedAt, IssueId) \
-         VALUES (?, ?, ?, (SELECT COALESCE(MAX(Position), -1) + 1 FROM todos WHERE Status = ?), ?, ?, ?) \
+        "INSERT INTO todos (Title, Notes, Status, Position, DueDate, CreatedAt, IssueId, MacOnly) \
+         VALUES (?, ?, ?, (SELECT COALESCE(MAX(Position), -1) + 1 FROM todos WHERE Status = ?), ?, ?, ?, ?) \
          RETURNING id",
     )
     .bind(&title)
@@ -144,6 +160,7 @@ pub async fn inner_create_todo(
     .bind(&due_date)
     .bind(&created_at)
     .bind(issue_id)
+    .bind(mac_only)
     .fetch_one(pool)
     .await?;
 
@@ -159,19 +176,35 @@ pub async fn inner_update_todo(
     issue_id: Option<i64>,
     pool: &Pool<Sqlite>,
 ) -> Result<TodoRow, AppError> {
+    inner_update_todo_full(id, title, notes, due_date, issue_id, None, pool).await
+}
+
+/// [`inner_update_todo`] that also sets "Keep off phone" (`None` keeps it).
+pub async fn inner_update_todo_full(
+    id: i64,
+    title: &str,
+    notes: Option<&str>,
+    due_date: Option<&str>,
+    issue_id: Option<i64>,
+    mac_only: Option<bool>,
+    pool: &Pool<Sqlite>,
+) -> Result<TodoRow, AppError> {
     let title = clean_title(title)?;
     let due_date = clean_due_date(due_date)?;
     ensure_issue_exists(issue_id, pool).await?;
 
-    let result =
-        sqlx::query("UPDATE todos SET Title = ?, Notes = ?, DueDate = ?, IssueId = ? WHERE id = ?")
-            .bind(&title)
-            .bind(clean_notes(notes))
-            .bind(&due_date)
-            .bind(issue_id)
-            .bind(id)
-            .execute(pool)
-            .await?;
+    let result = sqlx::query(
+        "UPDATE todos SET Title = ?, Notes = ?, DueDate = ?, IssueId = ?, \
+             MacOnly = COALESCE(?, MacOnly) WHERE id = ?",
+    )
+    .bind(&title)
+    .bind(clean_notes(notes))
+    .bind(&due_date)
+    .bind(issue_id)
+    .bind(mac_only)
+    .bind(id)
+    .execute(pool)
+    .await?;
     if result.rows_affected() == 0 {
         return Err(not_found());
     }
@@ -253,6 +286,24 @@ pub async fn inner_delete_todo(id: i64, pool: &Pool<Sqlite>) -> Result<(), AppEr
     Ok(())
 }
 
+/// Sets "Keep off phone". A Mac-only todo, and every reminder linked to it, leaves Apple
+/// Reminders on the next sync pass; turning it off pushes them again.
+pub async fn inner_set_todo_mac_only(
+    id: i64,
+    mac_only: bool,
+    pool: &Pool<Sqlite>,
+) -> Result<TodoRow, AppError> {
+    let result = sqlx::query("UPDATE todos SET MacOnly = ? WHERE id = ?")
+        .bind(mac_only)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    if result.rows_affected() == 0 {
+        return Err(not_found());
+    }
+    inner_get_todo(id, pool).await
+}
+
 /// Creates (or reuses a same-title) issue in `project_id` and links the todo.
 pub async fn inner_create_issue_for_todo(
     todo_id: i64,
@@ -278,21 +329,24 @@ pub async fn list_todos(pool: State<'_, Pool<Sqlite>>) -> Result<Vec<TodoRow>, A
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn create_todo(
     title: String,
     notes: Option<String>,
     due_date: Option<String>,
     status: String,
     issue_id: Option<i64>,
+    mac_only: Option<bool>,
     app: tauri::AppHandle,
     pool: State<'_, Pool<Sqlite>>,
 ) -> Result<TodoRow, AppError> {
-    let todo = inner_create_todo(
+    let todo = inner_create_todo_full(
         &title,
         notes.as_deref(),
         due_date.as_deref(),
         &status,
         issue_id,
+        mac_only.unwrap_or(false),
         pool.inner(),
     )
     .await?;
@@ -301,26 +355,38 @@ pub async fn create_todo(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn update_todo(
     id: i64,
     title: String,
     notes: Option<String>,
     due_date: Option<String>,
     issue_id: Option<i64>,
+    mac_only: Option<bool>,
     app: tauri::AppHandle,
     pool: State<'_, Pool<Sqlite>>,
 ) -> Result<TodoRow, AppError> {
-    let todo = inner_update_todo(
+    let before = inner_get_todo(id, pool.inner()).await?.mac_only;
+    let todo = inner_update_todo_full(
         id,
         &title,
         notes.as_deref(),
         due_date.as_deref(),
         issue_id,
+        mac_only,
         pool.inner(),
     )
     .await?;
+    if todo.mac_only != before {
+        todos_changed(&app);
+    }
     reminders_changed(&app, pool.inner()).await; // linked reminders show the todo's title
     Ok(todo)
+}
+
+/// Tells the todos board, Today and TodoModal to re-read.
+fn todos_changed(app: &tauri::AppHandle) {
+    crate::apple_sync::runner::emit(app, crate::apple_sync::TODOS_CHANGED_EVENT);
 }
 
 #[tauri::command]
@@ -517,6 +583,34 @@ mod tests {
             err_msg(inner_create_issue_for_todo(42, 1, "x", &pool).await)
                 .contains("Todo not found")
         );
+    }
+
+    #[tokio::test]
+    async fn mac_only_is_set_on_create_kept_on_update_and_toggled() {
+        let pool = crate::test_db().await;
+        let plain = new_todo("a", "not_started", &pool).await;
+        assert!(!plain.mac_only, "synced by default");
+        let t = inner_create_todo_full("b", None, None, "not_started", None, true, &pool)
+            .await
+            .unwrap();
+        assert!(t.mac_only);
+
+        // An update that doesn't say keeps it; one that does sets it.
+        let t = inner_update_todo(t.id, "b2", None, None, None, &pool)
+            .await
+            .unwrap();
+        assert!(t.mac_only);
+        let t = inner_update_todo_full(t.id, "b2", None, None, None, Some(false), &pool)
+            .await
+            .unwrap();
+        assert!(!t.mac_only);
+
+        let t = inner_set_todo_mac_only(t.id, true, &pool).await.unwrap();
+        assert!(t.mac_only);
+        assert!(inner_list_todos(&pool).await.unwrap()[1].mac_only);
+        let t = inner_set_todo_mac_only(t.id, false, &pool).await.unwrap();
+        assert!(!t.mac_only);
+        assert!(err_msg(inner_set_todo_mac_only(42, true, &pool).await).contains("Todo not found"));
     }
 
     #[tokio::test]

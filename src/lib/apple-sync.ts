@@ -1,6 +1,6 @@
-// Pure helpers for Apple Reminders sync in Settings: event names, the status pill and the
-// skipped-items summary.
-import type { AppleSyncSkipped, AppleSyncStatus } from '#lib/types.js';
+// Pure helpers for Apple Reminders sync: event names, the Settings status pill and
+// skipped-items summary, and the "Keep off phone" (Mac-only) rules for todos and reminders.
+import type { AppleSyncSkipped, AppleSyncStatus, Reminder, ReminderRepeat } from '#lib/types.js';
 
 /** Tauri event sent whenever the sync status changes (no payload). */
 export const APPLE_SYNC_STATUS_EVENT = 'apple-sync-status';
@@ -40,4 +40,23 @@ export function skippedSummary(skipped: readonly AppleSyncSkipped[]): string {
 	return [...counts]
 		.map(([reason, n]) => `${n} ${n === 1 ? reason : reason.replace(/^needs /, 'need ')}`)
 		.join(', ');
+}
+
+/** Whether sync is on, so the "Keep off phone" controls and "Mac only" marks show. */
+export function syncShowsMacOnly(status: Pick<AppleSyncStatus, 'available' | 'enabled'> | null): boolean {
+	return !!status && status.available && status.enabled;
+}
+
+/** A reminder stays on the Mac when it or its linked todo is kept off the phone. */
+export function reminderMacOnly(r: Pick<Reminder, 'mac_only' | 'todo_mac_only'>): boolean {
+	return r.mac_only || r.todo_mac_only;
+}
+
+/** How the reminder form offers "Keep off phone": hidden when sync is off or the reminder
+ *  repeats (recurring ones never sync), locked on when its todo is Mac-only, else a toggle. */
+export type MacOnlyControl = 'hidden' | 'follows-todo' | 'toggle';
+
+export function reminderMacOnlyControl(syncOn: boolean, repeat: ReminderRepeat, todoMacOnly: boolean): MacOnlyControl {
+	if (!syncOn || repeat !== 'none') return 'hidden';
+	return todoMacOnly ? 'follows-todo' : 'toggle';
 }

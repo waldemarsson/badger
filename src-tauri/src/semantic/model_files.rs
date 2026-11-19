@@ -298,8 +298,14 @@ async fn verified(path: &Path, f: &RemoteFile) -> bool {
             return false;
         };
         let mut hasher = Sha256::new();
-        if std::io::copy(&mut file, &mut hasher).is_err() {
-            return false;
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            match std::io::Read::read(&mut file, &mut buf) {
+                Ok(0) => break,
+                Ok(n) => hasher.update(&buf[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => return false,
+            }
         }
         hex(&hasher.finalize()) == expected
     })

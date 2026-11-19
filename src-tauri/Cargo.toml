@@ -36,9 +36,9 @@ tauri-plugin-opener = "2.5"
 # prebuilt binaries `ort` downloads at build time), its tokenizer, and the opt-in model
 # download (GET only, SHA-256 verified).
 ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "download-binaries", "tls-rustls", "api-22"] }
-tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"] }
+tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
-sha2 = "0.10"
+sha2 = "0.11"
 # Optional encryption of automatic backups (X25519 recipients; files decrypt with the age CLI).
 age = { version = "0.11", default-features = false }
 # Playground: sandboxed JavaScript (QuickJS). A fresh runtime per run, no host access

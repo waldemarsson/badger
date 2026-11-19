@@ -29,7 +29,7 @@ Dependabot for npm, cargo and GitHub Actions (grouped weekly updates), plus a `c
 
 ## 4. Major dependency upgrades
 
-Each on its own branch: `sqlx` 0.9, `sha2` 0.11, `tokenizers` 0.23 first; then `typescript` 7, `prettier-plugin-svelte` 4, `@types/node` 26 and `tailwind-merge` 3; Tailwind 4 last (touches all styling and `app.css`).
+Each on its own branch: `sha2` 0.11, `tokenizers` 0.23 first; then `typescript` 7, `prettier-plugin-svelte` 4, `@types/node` 26 and `tailwind-merge` 3; Tailwind 4 last (touches all styling and `app.css`).
 
 ## Done
 

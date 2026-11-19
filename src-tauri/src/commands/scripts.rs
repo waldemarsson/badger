@@ -52,7 +52,7 @@ fn clean_script_title(title: &str) -> Result<String, AppError> {
 
 async fn get_summary(id: i64, pool: &Pool<Sqlite>) -> Result<ScriptSummary, AppError> {
     let sql = format!("{SELECT_SUMMARIES} WHERE id = ?");
-    sqlx::query_as::<_, ScriptSummary>(&sql)
+    sqlx::query_as::<_, ScriptSummary>(sqlx::AssertSqlSafe(sql))
         .bind(id)
         .fetch_optional(pool)
         .await?
@@ -64,14 +64,14 @@ async fn get_summary(id: i64, pool: &Pool<Sqlite>) -> Result<ScriptSummary, AppE
 /// All scripts without bodies, most recently changed first.
 pub async fn inner_list_scripts(pool: &Pool<Sqlite>) -> Result<Vec<ScriptSummary>, AppError> {
     let sql = format!("{SELECT_SUMMARIES} ORDER BY UpdatedAt DESC, id DESC");
-    Ok(sqlx::query_as::<_, ScriptSummary>(&sql)
+    Ok(sqlx::query_as::<_, ScriptSummary>(sqlx::AssertSqlSafe(sql))
         .fetch_all(pool)
         .await?)
 }
 
 pub async fn inner_get_script(id: i64, pool: &Pool<Sqlite>) -> Result<Script, AppError> {
     let sql = format!("{SELECT_SCRIPTS} WHERE id = ?");
-    sqlx::query_as::<_, Script>(&sql)
+    sqlx::query_as::<_, Script>(sqlx::AssertSqlSafe(sql))
         .bind(id)
         .fetch_optional(pool)
         .await?

@@ -271,17 +271,20 @@ const KIND_COLUMN: &str =
     "Kind TEXT NOT NULL DEFAULT 'markdown' CHECK (Kind IN ('markdown', 'json'))";
 
 /// Adds `Kind` to `table` unless it has it; existing rows read as `markdown`.
-async fn add_kind_column(pool: &Pool<Sqlite>, table: &str) -> Result<(), sqlx::Error> {
-    let columns: Vec<(String,)> =
-        sqlx::query_as(&format!("SELECT name FROM pragma_table_info('{table}')"))
-            .fetch_all(pool)
-            .await?;
+async fn add_kind_column(pool: &Pool<Sqlite>, table: &'static str) -> Result<(), sqlx::Error> {
+    let columns: Vec<(String,)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT name FROM pragma_table_info('{table}')"
+    )))
+    .fetch_all(pool)
+    .await?;
     if columns.iter().any(|(name,)| name == "Kind") {
         return Ok(());
     }
-    sqlx::query(&format!("ALTER TABLE {table} ADD COLUMN {KIND_COLUMN}"))
-        .execute(pool)
-        .await?;
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "ALTER TABLE {table} ADD COLUMN {KIND_COLUMN}"
+    )))
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -984,7 +987,10 @@ mod tests {
                 super::SCHEMA_SQL,
                 "old shape must drop Position"
             );
-            sqlx::raw_sql(&old_schema).execute(&pool).await.unwrap();
+            sqlx::raw_sql(sqlx::AssertSqlSafe(old_schema))
+                .execute(&pool)
+                .await
+                .unwrap();
             sqlx::query(
                 "INSERT INTO notes (Title, CreatedAt, UpdatedAt) VALUES ('a', 'x', '1'), ('b', 'x', '2')",
             )
@@ -1081,7 +1087,10 @@ mod tests {
                 0,
                 "old shape must drop both Kind columns"
             );
-            sqlx::raw_sql(&old_schema).execute(&pool).await.unwrap();
+            sqlx::raw_sql(sqlx::AssertSqlSafe(old_schema))
+                .execute(&pool)
+                .await
+                .unwrap();
             sqlx::raw_sql(
                 "INSERT INTO notes (Title, Body, CreatedAt, UpdatedAt) VALUES ('Old', 'see #tag', 'x', 'x');
                  INSERT INTO scratchpad (id, Body, UpdatedAt) VALUES (1, 'jot', 'x');",

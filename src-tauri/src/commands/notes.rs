@@ -508,13 +508,15 @@ pub(crate) async fn insert_titled_note(
 /// within each folder).
 pub async fn inner_list_notes(pool: &Pool<Sqlite>) -> Result<Vec<NoteSummary>, AppError> {
     let sql = format!("{SELECT_NOTE_LIST} ORDER BY Pinned DESC, Position, id");
-    let notes = sqlx::query_as::<_, Note>(&sql).fetch_all(pool).await?;
+    let notes = sqlx::query_as::<_, Note>(sqlx::AssertSqlSafe(sql))
+        .fetch_all(pool)
+        .await?;
     Ok(notes.into_iter().map(NoteSummary::from).collect())
 }
 
 pub async fn inner_get_note(id: i64, pool: &Pool<Sqlite>) -> Result<Note, AppError> {
     let sql = format!("{SELECT_NOTES} WHERE id = ?");
-    sqlx::query_as::<_, Note>(&sql)
+    sqlx::query_as::<_, Note>(sqlx::AssertSqlSafe(sql))
         .bind(id)
         .fetch_optional(pool)
         .await?
@@ -774,9 +776,9 @@ async fn index_note(id: i64, conn: &mut SqliteConnection) -> Result<(), sqlx::Er
         .bind(id)
         .execute(&mut *conn)
         .await?;
-    let row: Option<(String, String, String)> = sqlx::query_as(&format!(
+    let row: Option<(String, String, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT Title, {INDEXED_BODY}, Kind FROM notes WHERE id = ?"
-    ))
+    )))
     .bind(id)
     .fetch_optional(&mut *conn)
     .await?;
@@ -822,10 +824,11 @@ pub(crate) async fn rebuild_refs(conn: &mut SqliteConnection) -> Result<(), sqlx
     sqlx::query("DELETE FROM note_refs")
         .execute(&mut *conn)
         .await?;
-    let notes: Vec<(i64, String, String)> =
-        sqlx::query_as(&format!("SELECT id, {INDEXED_BODY}, Kind FROM notes"))
-            .fetch_all(&mut *conn)
-            .await?;
+    let notes: Vec<(i64, String, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT id, {INDEXED_BODY}, Kind FROM notes"
+    )))
+    .fetch_all(&mut *conn)
+    .await?;
     for (id, body, kind) in notes {
         index_refs(id, &body, &kind, conn).await?;
     }
@@ -868,9 +871,9 @@ pub(crate) async fn rebuild_index(conn: &mut SqliteConnection) -> Result<(), sql
     sqlx::query("DELETE FROM notes_fts")
         .execute(&mut *conn)
         .await?;
-    let notes: Vec<(i64, String, String, String)> = sqlx::query_as(&format!(
+    let notes: Vec<(i64, String, String, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT id, Title, {INDEXED_BODY}, Kind FROM notes"
-    ))
+    )))
     .fetch_all(&mut *conn)
     .await?;
     for (id, title, body, kind) in notes {
@@ -962,7 +965,7 @@ pub async fn inner_search_notes(
     let sql_limit = if short.is_empty() { limit } else { None };
     sql.push_str(" LIMIT ?");
 
-    let mut q = sqlx::query_as::<_, HitRow>(&sql);
+    let mut q = sqlx::query_as::<_, HitRow>(sqlx::AssertSqlSafe(sql));
     if !long.is_empty() {
         let phrases: Vec<String> = long.iter().map(|t| fts_phrase(t)).collect();
         q = q.bind(phrases.join(" "));

@@ -472,7 +472,7 @@ fn schedule(requested: &str, rule: Option<Rule>, now: NaiveDateTime) -> Result<S
 
 pub async fn inner_get_reminder(id: i64, pool: &Pool<Sqlite>) -> Result<Reminder, AppError> {
     let sql = format!("{SELECT_REMINDERS} WHERE r.id = ?");
-    sqlx::query_as::<_, ReminderRow>(&sql)
+    sqlx::query_as::<_, ReminderRow>(sqlx::AssertSqlSafe(sql))
         .bind(id)
         .fetch_optional(pool)
         .await?
@@ -488,14 +488,14 @@ pub async fn inner_list_reminders(pool: &Pool<Sqlite>) -> Result<Vec<Reminder>, 
     let done = format!(
         "{SELECT_REMINDERS} WHERE r.State = 'done' ORDER BY r.UpdatedAt DESC, r.id DESC LIMIT ?"
     );
-    let mut list: Vec<Reminder> = sqlx::query_as::<_, ReminderRow>(&open)
+    let mut list: Vec<Reminder> = sqlx::query_as::<_, ReminderRow>(sqlx::AssertSqlSafe(open))
         .fetch_all(pool)
         .await?
         .into_iter()
         .map(Reminder::from)
         .collect();
     list.extend(
-        sqlx::query_as::<_, ReminderRow>(&done)
+        sqlx::query_as::<_, ReminderRow>(sqlx::AssertSqlSafe(done))
             .bind(DONE_LIST_LIMIT)
             .fetch_all(pool)
             .await?
@@ -733,7 +733,7 @@ pub async fn inner_fire_due(
     .collect();
 
     let sql = format!("{SELECT_REMINDERS} WHERE r.State = 'fired' AND r.Repeat != 'none'");
-    let recurring = sqlx::query_as::<_, ReminderRow>(&sql)
+    let recurring = sqlx::query_as::<_, ReminderRow>(sqlx::AssertSqlSafe(sql))
         .fetch_all(&mut *tx)
         .await?;
     for row in recurring.into_iter().map(Reminder::from) {
@@ -762,7 +762,7 @@ pub async fn inner_fire_due(
     let placeholders = vec!["?"; ids.len()].join(", ");
     let sql =
         format!("{SELECT_REMINDERS} WHERE r.id IN ({placeholders}) ORDER BY r.RemindAt, r.id");
-    let mut query = sqlx::query_as::<_, ReminderRow>(&sql);
+    let mut query = sqlx::query_as::<_, ReminderRow>(sqlx::AssertSqlSafe(sql));
     for id in &ids {
         query = query.bind(id);
     }

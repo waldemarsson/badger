@@ -95,7 +95,7 @@ pub(crate) async fn ensure_folder_exists(
 
 async fn get_folder(id: i64, executor: impl SqliteExecutor<'_>) -> Result<Folder, AppError> {
     let sql = format!("{SELECT_FOLDERS} WHERE id = ?");
-    sqlx::query_as::<_, Folder>(&sql)
+    sqlx::query_as::<_, Folder>(sqlx::AssertSqlSafe(sql))
         .bind(id)
         .fetch_optional(executor)
         .await?
@@ -164,7 +164,9 @@ async fn is_self_or_descendant(
 /// All folders in manual order (`Position`, then id); grouped by parent, that is the tree.
 pub async fn inner_list_folders(pool: &Pool<Sqlite>) -> Result<Vec<Folder>, AppError> {
     let sql = format!("{SELECT_FOLDERS} ORDER BY Position, id");
-    Ok(sqlx::query_as::<_, Folder>(&sql).fetch_all(pool).await?)
+    Ok(sqlx::query_as::<_, Folder>(sqlx::AssertSqlSafe(sql))
+        .fetch_all(pool)
+        .await?)
 }
 
 /// Creates a folder at the end of `parent_id` (root = None). A given `name` is validated

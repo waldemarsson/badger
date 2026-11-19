@@ -1109,6 +1109,8 @@ async fn guard_pauses_without_deleting_when_access_is_lost() {
 async fn guard_pauses_on_an_empty_list_until_delete_anyway() {
     let (pool, store) = setup().await;
     let (t, r) = synced_pair(&pool, &store).await;
+    let t2 = todo(&pool, "Second", "not_started").await;
+    sync_ok(&pool, &store).await;
     let other = todo(&pool, "Not yet pushed", "not_started").await;
     store.clear_list(&todos_list(&store));
     let report = sync(&pool, &store).await;
@@ -1120,14 +1122,36 @@ async fn guard_pauses_on_an_empty_list_until_delete_anyway() {
         }
     ));
     assert_eq!(report.phone_writes, 0, "the pass writes nothing at all");
-    assert_nothing_deleted(&pool, &t, &r).await;
+    assert!(inner_get_todo(t.id, &pool).await.is_ok());
+    assert!(inner_get_todo(t2.id, &pool).await.is_ok());
+    assert!(inner_get_reminder(r.id, &pool).await.is_ok());
+    assert_eq!(pairing_count(&pool).await, 3);
     assert!(pairing_of(&pool, ListKind::Todos, other.id).await.is_none());
 
     // Confirmed: the deletions apply once.
     let report = run_pass(&pool, &store, at(NOW), PassMode::DeleteAnyway).await;
     assert_eq!(report.outcome, Outcome::Synced);
     assert!(inner_get_todo(t.id, &pool).await.is_err());
+    assert!(inner_get_todo(t2.id, &pool).await.is_err());
     assert!(inner_get_todo(other.id, &pool).await.is_ok());
+    assert_eq!(get_apple_sync_settings(&pool).await.unwrap().paused, None);
+}
+
+#[tokio::test]
+async fn deleting_the_only_open_item_on_the_phone_does_not_pause() {
+    let (pool, store) = setup().await;
+    let t = todo(&pool, "Only one", "not_started").await;
+    sync_ok(&pool, &store).await;
+    store.clear_list(&todos_list(&store));
+
+    // First miss: no pause, nothing deleted yet (two-pass rule).
+    let report = sync(&pool, &store).await;
+    assert_eq!(report.outcome, Outcome::Synced);
+    assert!(inner_get_todo(t.id, &pool).await.is_ok());
+
+    // Second miss: deleted in Badger.
+    assert_eq!(sync(&pool, &store).await.outcome, Outcome::Synced);
+    assert!(inner_get_todo(t.id, &pool).await.is_err());
     assert_eq!(get_apple_sync_settings(&pool).await.unwrap().paused, None);
 }
 

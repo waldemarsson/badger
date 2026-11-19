@@ -38,6 +38,8 @@ const MISSES_BEFORE_DELETE: i64 = 2;
 /// Mass-delete guard: this many open items missing from one list in one pass, if they are
 /// also more than half of its open items, pauses sync.
 const MASS_MISSING_MIN: usize = 3;
+/// Open pairings a list must have before an empty fetch of it pauses sync.
+const EMPTY_LIST_MIN: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PassMode {
@@ -541,7 +543,9 @@ async fn pass<S: ReminderStore>(
                 .iter()
                 .filter(|p| p.kind == kind && !p.phone_snap.done)
                 .collect();
-            if items(kind).is_empty() && !open.is_empty() {
+            // One open item can be the user clearing their last one; the two-pass rule
+            // still covers a glitch then.
+            if items(kind).is_empty() && open.len() >= EMPTY_LIST_MIN {
                 return Ok(paused_empty(kind, open.len()));
             }
             let rows = load_rows(kind, pool).await?;

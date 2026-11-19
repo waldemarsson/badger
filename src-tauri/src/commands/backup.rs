@@ -419,6 +419,9 @@ pub async fn inner_restore_data(json: &str, pool: &Pool<Sqlite>) -> Result<(), A
     // The search and link indexes are derived and not in the backup: rebuild them in the
     // same transaction.
     crate::commands::notes::rebuild_index(&mut tx).await?;
+    // Apple Reminders pairings are device-local and survive; the next sync pass treats
+    // Badger as authoritative. Set here so a crash can't lose it.
+    crate::app_settings::set_apple_sync_restore_pending(&mut tx, true).await?;
 
     tx.commit().await.map_err(|e| match &e {
         sqlx::Error::Database(db) if db.is_foreign_key_violation() => {
@@ -729,10 +732,15 @@ pub async fn restore_data(
     app: tauri::AppHandle,
     pool: State<'_, Pool<Sqlite>>,
     semantic: State<'_, crate::semantic::SemanticState>,
+    sync: State<'_, crate::apple_sync::runner::SyncHandle>,
 ) -> Result<(), AppError> {
-    inner_restore_data(&json, &pool).await?;
+    {
+        // No sync pass runs while the data is replaced.
+        let _sync = sync.lock.lock().await;
+        inner_restore_data(&json, &pool).await?;
+    }
     crate::commands::semantic::after_restore(semantic.inner(), pool.inner()).await;
-    crate::reminders_scheduler::reminders_changed(&app, pool.inner()).await;
+    crate::reminders_scheduler::reminders_changed(&app, pool.inner()).await; // nudges sync
     Ok(())
 }
 
@@ -991,6 +999,50 @@ mod tests {
             !json.contains("\"done\":"),
             "legacy flag must not be exported"
         );
+    }
+
+    #[tokio::test]
+    async fn test_restore_keeps_apple_sync_pairings_and_backup_excludes_them() {
+        let pool = crate::test_db().await;
+        seed_test_data(&pool).await;
+        sqlx::query(
+            "INSERT INTO apple_sync_items (Kind, BadgerId, EkId, BadgerSnap, PhoneSnap, SyncedAt) \
+             VALUES ('todo', 1, 'ek-1', '{}', '{}', 'x')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let json = inner_backup_data(&pool).await.expect("backup failed");
+        assert!(!json.contains("ek-1"), "pairings are device-local");
+
+        inner_restore_data(&json, &pool)
+            .await
+            .expect("restore failed");
+
+        let (n,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM apple_sync_items WHERE Kind = 'todo' AND BadgerId = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(n, 1, "restore's deletes don't reach the pairings");
+        let sync = crate::app_settings::get_apple_sync_settings(&pool)
+            .await
+            .unwrap();
+        assert!(
+            sync.restore_pending,
+            "the next sync pass is Badger-authoritative"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_failed_restore_leaves_no_apple_sync_flag() {
+        let pool = crate::test_db().await;
+        assert!(inner_restore_data("{not json", &pool).await.is_err());
+        let sync = crate::app_settings::get_apple_sync_settings(&pool)
+            .await
+            .unwrap();
+        assert!(!sync.restore_pending);
     }
 
     #[tokio::test]

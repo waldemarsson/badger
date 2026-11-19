@@ -154,6 +154,30 @@ export interface SemanticStatus {
 	index_bytes: number;
 }
 
+/** Reminders access as EventKit reports it (`unsupported` off macOS). */
+export type AppleSyncAccess = 'not_determined' | 'granted' | 'denied' | 'restricted' | 'unsupported';
+
+/** A phone item the last sync pass left alone, and why ("needs a date", "needs a title"). */
+export interface AppleSyncSkipped {
+	title: string;
+	list: string;
+	reason: string;
+}
+
+/** get_apple_sync_status and the other Apple Reminders sync commands. */
+export interface AppleSyncStatus {
+	available: boolean;
+	enabled: boolean;
+	access: AppleSyncAccess;
+	last_sync_at: string | null;
+	last_error: string | null;
+	/** Why the mass-delete guard holds sync, while it does. */
+	paused: 'access' | 'list_missing' | 'empty_fetch' | null;
+	skipped: AppleSyncSkipped[];
+	reminders_list: string;
+	todos_list: string;
+}
+
 /** search_index_stats / rebuild_search_index. */
 export interface SearchIndexStats {
 	notes: number;

@@ -670,6 +670,11 @@
     @apply bg-red-50 text-red-700 dark:bg-red-500/10 dark:text-red-400;
   }
 
+  /* Also used by Settings › Apple Reminders (paused, no access). */
+  .semantic-pill-warn {
+    @apply bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400;
+  }
+
   .semantic-progress {
     @apply h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-neutral-800;
   }

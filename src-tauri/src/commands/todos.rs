@@ -1,6 +1,6 @@
 use crate::AppError;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Pool, Sqlite};
+use sqlx::{FromRow, Pool, Sqlite, SqliteConnection};
 use tauri::State;
 
 use super::issues::inner_resolve_issue;
@@ -47,7 +47,7 @@ const SELECT_TODOS: &str = "SELECT t.id,
 
 // ── Validation helpers ────────────────────────────────────────────────────────
 
-fn clean_title(title: &str) -> Result<String, AppError> {
+pub(crate) fn clean_title(title: &str) -> Result<String, AppError> {
     let t = title.trim();
     if t.is_empty() {
         return Err(AppError::Custom("Title is required".to_string()));
@@ -55,14 +55,14 @@ fn clean_title(title: &str) -> Result<String, AppError> {
     Ok(t.to_string())
 }
 
-fn clean_notes(notes: Option<&str>) -> Option<String> {
+pub(crate) fn clean_notes(notes: Option<&str>) -> Option<String> {
     notes
         .map(str::trim)
         .filter(|n| !n.is_empty())
         .map(str::to_string)
 }
 
-fn clean_due_date(due_date: Option<&str>) -> Result<Option<String>, AppError> {
+pub(crate) fn clean_due_date(due_date: Option<&str>) -> Result<Option<String>, AppError> {
     match due_date.map(str::trim).filter(|d| !d.is_empty()) {
         None => Ok(None),
         Some(d) => chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d")
@@ -188,7 +188,20 @@ pub async fn inner_move_todo(
 ) -> Result<TodoRow, AppError> {
     check_status(status)?;
     let mut tx = pool.begin().await?;
+    move_todo_in(id, status, index, &mut tx).await?;
+    tx.commit().await?;
 
+    inner_get_todo(id, pool).await
+}
+
+/// [`inner_move_todo`]'s writes, on the caller's transaction (sync reuses them).
+pub(crate) async fn move_todo_in(
+    id: i64,
+    status: &str,
+    index: i64,
+    tx: &mut SqliteConnection,
+) -> Result<(), AppError> {
+    check_status(status)?;
     let previous: Option<(String,)> = sqlx::query_as("SELECT Status FROM todos WHERE id = ?")
         .bind(id)
         .fetch_optional(&mut *tx)
@@ -224,11 +237,9 @@ pub async fn inner_move_todo(
     }
     // Finishing a todo finishes its reminders (reopening doesn't bring them back).
     if status == "done" && previous_status != "done" {
-        crate::commands::reminders::complete_for_todo(id, &mut tx).await?;
+        crate::commands::reminders::complete_for_todo(id, tx).await?;
     }
-    tx.commit().await?;
-
-    inner_get_todo(id, pool).await
+    Ok(())
 }
 
 pub async fn inner_delete_todo(id: i64, pool: &Pool<Sqlite>) -> Result<(), AppError> {
@@ -273,9 +284,10 @@ pub async fn create_todo(
     due_date: Option<String>,
     status: String,
     issue_id: Option<i64>,
+    app: tauri::AppHandle,
     pool: State<'_, Pool<Sqlite>>,
 ) -> Result<TodoRow, AppError> {
-    inner_create_todo(
+    let todo = inner_create_todo(
         &title,
         notes.as_deref(),
         due_date.as_deref(),
@@ -283,7 +295,9 @@ pub async fn create_todo(
         issue_id,
         pool.inner(),
     )
-    .await
+    .await?;
+    crate::apple_sync::runner::nudge(&app);
+    Ok(todo)
 }
 
 #[tauri::command]
@@ -321,6 +335,8 @@ pub async fn move_todo(
     // Moving to done may have completed reminders.
     if status == "done" {
         reminders_changed(&app, pool.inner()).await;
+    } else {
+        crate::apple_sync::runner::nudge(&app); // reopening syncs too
     }
     Ok(todo)
 }

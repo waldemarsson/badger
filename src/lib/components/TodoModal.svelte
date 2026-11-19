@@ -9,6 +9,7 @@
 	import ReminderRow from '#lib/components/ReminderRow.svelte';
 	import { activeForTodo } from '#lib/reminders.js';
 	import { clock, reminders } from '#lib/reminders-state.svelte.js';
+	import { changes } from '#lib/palette-state.svelte.js';
 	import { backdropDismiss } from '#lib/backdrop.js';
 	import Bell from '@lucide/svelte/icons/bell';
 	import X from '@lucide/svelte/icons/x';
@@ -51,6 +52,32 @@
 	const todoReminders = $derived(activeForTodo(reminders.list, current.id));
 	let addingReminder = $state(false);
 	let editingReminder = $state<number | null>(null);
+
+	// Sync (Apple Reminders) changed todos: re-read this one. Fields the user hasn't touched
+	// follow the new values; a todo deleted on the phone closes the modal.
+	let seenTodoChanges = changes.todos;
+	$effect(() => {
+		if (changes.todos === seenTodoChanges) return;
+		seenTodoChanges = changes.todos;
+		void reread();
+	});
+
+	async function reread(): Promise<void> {
+		try {
+			const fresh = (await invoke<TodoRow[]>('list_todos')).find((t) => t.id === current.id);
+			if (!fresh) {
+				onclose();
+				return;
+			}
+			if (title === current.title) title = fresh.title;
+			if (notes === (current.notes ?? '')) notes = fresh.notes ?? '';
+			if (dueDate === (current.due_date ?? '')) dueDate = fresh.due_date ?? '';
+			if (status === current.status) status = fresh.status;
+			current = fresh;
+		} catch {
+			// Keep the form as it is; saving reports any problem.
+		}
+	}
 
 	async function save(): Promise<void> {
 		error = '';

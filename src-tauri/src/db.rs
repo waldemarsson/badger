@@ -171,6 +171,28 @@ CREATE TABLE IF NOT EXISTS note_embeddings (
     Vector      BLOB    NOT NULL,
     PRIMARY KEY (NoteId, ChunkIndex)
 );
+
+-- Apple Reminders sync pairings: one Badger reminder or todo ↔ one EventKit item, with the
+-- synced fields as each side looked after the last sync (JSON), for the three-way merge.
+-- PhoneDue is the pushed due time of a reminder (the native notification skip compares it).
+-- MissedPasses counts consecutive passes the open phone item was missing from its list; a
+-- phone delete applies to Badger on the second, so a one-pass glitch deletes nothing.
+-- No foreign keys on purpose: a missing Badger row means it was deleted in Badger, and restore's
+-- DELETEs must not cascade pairings away. Device-local: not part of backups.
+CREATE TABLE IF NOT EXISTS apple_sync_items (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    Kind        TEXT    NOT NULL CHECK (Kind IN ('reminder', 'todo')),
+    BadgerId    INTEGER NOT NULL,
+    EkId        TEXT    NOT NULL,
+    ExternalId  TEXT,
+    BadgerSnap  TEXT    NOT NULL,
+    PhoneSnap   TEXT    NOT NULL,
+    PhoneDue    TEXT,
+    SyncedAt    TEXT    NOT NULL,
+    MissedPasses INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (Kind, BadgerId),
+    UNIQUE (EkId)
+);
 ";
 
 /// Opens (or creates) the SQLite database at `db_path` with WAL mode and FK enforcement,
@@ -497,6 +519,40 @@ mod tests {
             names.contains(&"note_embeddings"),
             "note_embeddings table missing"
         );
+        assert!(
+            names.contains(&"apple_sync_items"),
+            "apple_sync_items table missing"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_apple_sync_items_is_unique_per_badger_row_and_per_eventkit_id() {
+        let pool = crate::test_db().await;
+        let insert = |kind: &'static str, badger_id: i64, ek_id: &'static str| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query(
+                    "INSERT INTO apple_sync_items (Kind, BadgerId, EkId, BadgerSnap, PhoneSnap, SyncedAt) \
+                     VALUES (?, ?, ?, '{}', '{}', 'x')",
+                )
+                .bind(kind)
+                .bind(badger_id)
+                .bind(ek_id)
+                .execute(&pool)
+                .await
+            }
+        };
+        insert("reminder", 1, "ek-1").await.unwrap();
+        // Same Badger id under the other kind is a different row.
+        insert("todo", 1, "ek-2").await.unwrap();
+        assert!(
+            insert("reminder", 1, "ek-3").await.is_err(),
+            "kind + id is unique"
+        );
+        assert!(insert("todo", 2, "ek-1").await.is_err(), "EkId is unique");
+        assert!(insert("note", 3, "ek-4").await.is_err(), "kind is checked");
+        // No foreign keys: a pairing may point at a Badger row that doesn't exist.
+        insert("todo", 999, "ek-5").await.unwrap();
     }
 
     async fn object_names(pool: &sqlx::SqlitePool, kind: &str) -> Vec<String> {

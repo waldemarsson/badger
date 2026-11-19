@@ -23,6 +23,24 @@ pub const SEMANTIC_ENABLED_KEY: &str = "semantic_search_enabled";
 pub const BACKUP_DIR_KEY: &str = "backup_dir";
 /// `age1…` public key that automatic backups are encrypted to; unset means unencrypted.
 pub const BACKUP_PUBLIC_KEY_KEY: &str = "backup_public_key";
+/// "true" while Apple Reminders sync is switched on.
+pub const APPLE_SYNC_ENABLED_KEY: &str = "apple_sync_enabled";
+/// EventKit `calendarIdentifier` of the "Badger Reminders" list.
+pub const APPLE_SYNC_REMINDERS_LIST_KEY: &str = "apple_sync_reminders_list_id";
+/// EventKit `calendarIdentifier` of the "Badger Todos" list.
+pub const APPLE_SYNC_TODOS_LIST_KEY: &str = "apple_sync_todos_list_id";
+/// Local timestamp of the last pass that finished without a pass-level error.
+pub const APPLE_SYNC_LAST_SYNC_KEY: &str = "apple_sync_last_sync_at";
+/// User-facing message of the last pass's error; unset when it went fine.
+pub const APPLE_SYNC_LAST_ERROR_KEY: &str = "apple_sync_last_error";
+/// Why the last pass was held back by the mass-delete guard (`access`, `list_missing`,
+/// `empty_fetch`); unset when it wasn't.
+pub const APPLE_SYNC_PAUSED_KEY: &str = "apple_sync_paused";
+/// JSON array of the phone items the last pass skipped, with reasons.
+pub const APPLE_SYNC_SKIPPED_KEY: &str = "apple_sync_skipped";
+/// "true" after a restore until one Badger-authoritative pass has run. Written inside the
+/// restore transaction.
+pub const APPLE_SYNC_RESTORE_PENDING_KEY: &str = "apple_sync_restore_pending";
 
 /// Command palette preferences. Last-used ids may point at deleted rows;
 /// the frontend falls back when they do.
@@ -259,6 +277,116 @@ pub async fn set_backup_public_key(pool: &Pool<Sqlite>, key: Option<&str>) -> Re
         Some(key) => set_value(pool, BACKUP_PUBLIC_KEY_KEY, key).await,
         None => delete_value(pool, BACKUP_PUBLIC_KEY_KEY).await,
     }
+}
+
+/// Apple Reminders sync settings and the last pass's outcome, as stored.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AppleSyncSettings {
+    pub enabled: bool,
+    pub reminders_list_id: Option<String>,
+    pub todos_list_id: Option<String>,
+    pub last_sync_at: Option<String>,
+    pub last_error: Option<String>,
+    pub paused: Option<String>,
+    /// JSON array; the sync module owns its shape.
+    pub skipped: Option<String>,
+    pub restore_pending: bool,
+}
+
+pub async fn get_apple_sync_settings(pool: &Pool<Sqlite>) -> Result<AppleSyncSettings, AppError> {
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT Key, Value FROM app_settings WHERE Key LIKE 'apple_sync_%'")
+            .fetch_all(pool)
+            .await?;
+    let mut s = AppleSyncSettings::default();
+    for (key, value) in rows {
+        let text = Some(value.clone()).filter(|v| !v.trim().is_empty());
+        match key.as_str() {
+            APPLE_SYNC_ENABLED_KEY => s.enabled = value == "true",
+            APPLE_SYNC_REMINDERS_LIST_KEY => s.reminders_list_id = text,
+            APPLE_SYNC_TODOS_LIST_KEY => s.todos_list_id = text,
+            APPLE_SYNC_LAST_SYNC_KEY => s.last_sync_at = text,
+            APPLE_SYNC_LAST_ERROR_KEY => s.last_error = text,
+            APPLE_SYNC_PAUSED_KEY => s.paused = text,
+            APPLE_SYNC_SKIPPED_KEY => s.skipped = text,
+            APPLE_SYNC_RESTORE_PENDING_KEY => s.restore_pending = value == "true",
+            _ => {}
+        }
+    }
+    Ok(s)
+}
+
+/// Sets `key`, or removes it for `None`.
+async fn put_value(
+    executor: impl sqlx::SqliteExecutor<'_>,
+    key: &str,
+    value: Option<&str>,
+) -> Result<(), AppError> {
+    match value {
+        Some(v) => set_value(executor, key, v).await,
+        None => {
+            sqlx::query("DELETE FROM app_settings WHERE Key = ?")
+                .bind(key)
+                .execute(executor)
+                .await?;
+            Ok(())
+        }
+    }
+}
+
+pub async fn set_apple_sync_enabled(pool: &Pool<Sqlite>, enabled: bool) -> Result<(), AppError> {
+    set_value(
+        pool,
+        APPLE_SYNC_ENABLED_KEY,
+        if enabled { "true" } else { "false" },
+    )
+    .await
+}
+
+/// Stores (or forgets, for `None`) a list id; `key` is one of the two list keys.
+pub async fn set_apple_sync_list_id(
+    pool: &Pool<Sqlite>,
+    key: &str,
+    id: Option<&str>,
+) -> Result<(), AppError> {
+    if key != APPLE_SYNC_REMINDERS_LIST_KEY && key != APPLE_SYNC_TODOS_LIST_KEY {
+        return Err(AppError::Custom("Unknown list setting".to_string()));
+    }
+    put_value(pool, key, id).await
+}
+
+/// Records a pass's outcome in one transaction. `last_sync_at = None` keeps the previous
+/// successful time.
+pub async fn set_apple_sync_outcome(
+    pool: &Pool<Sqlite>,
+    last_sync_at: Option<&str>,
+    last_error: Option<&str>,
+    paused: Option<&str>,
+    skipped: Option<&str>,
+) -> Result<(), AppError> {
+    let mut tx = pool.begin().await?;
+    if let Some(at) = last_sync_at {
+        set_value(&mut *tx, APPLE_SYNC_LAST_SYNC_KEY, at).await?;
+    }
+    put_value(&mut *tx, APPLE_SYNC_LAST_ERROR_KEY, last_error).await?;
+    put_value(&mut *tx, APPLE_SYNC_PAUSED_KEY, paused).await?;
+    put_value(&mut *tx, APPLE_SYNC_SKIPPED_KEY, skipped).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Sets or clears the restore flag; takes the caller's connection so restore writes it in
+/// its own transaction.
+pub async fn set_apple_sync_restore_pending(
+    conn: &mut SqliteConnection,
+    pending: bool,
+) -> Result<(), AppError> {
+    put_value(
+        conn,
+        APPLE_SYNC_RESTORE_PENDING_KEY,
+        pending.then_some("true"),
+    )
+    .await
 }
 
 /// Parses a stored id list; anything unparseable reads as empty.
@@ -669,6 +797,78 @@ mod tests {
             vec![1],
             "a folder deleted behind the setting's back is skipped"
         );
+    }
+
+    #[tokio::test]
+    async fn apple_sync_settings_round_trip() {
+        use super::*;
+        let pool = crate::test_db().await;
+        assert_eq!(
+            get_apple_sync_settings(&pool).await.unwrap(),
+            AppleSyncSettings::default(),
+            "off and empty by default"
+        );
+
+        set_apple_sync_enabled(&pool, true).await.unwrap();
+        set_apple_sync_list_id(&pool, APPLE_SYNC_REMINDERS_LIST_KEY, Some("cal-r"))
+            .await
+            .unwrap();
+        set_apple_sync_list_id(&pool, APPLE_SYNC_TODOS_LIST_KEY, Some("cal-t"))
+            .await
+            .unwrap();
+        assert!(set_apple_sync_list_id(&pool, THEME_KEY, Some("x"))
+            .await
+            .is_err());
+        set_apple_sync_outcome(
+            &pool,
+            Some("2026-11-19T10:00:00.000"),
+            Some("Boom"),
+            Some("empty_fetch"),
+            Some("[]"),
+        )
+        .await
+        .unwrap();
+        let mut conn = pool.acquire().await.unwrap();
+        set_apple_sync_restore_pending(&mut conn, true)
+            .await
+            .unwrap();
+        drop(conn);
+
+        let s = get_apple_sync_settings(&pool).await.unwrap();
+        assert_eq!(
+            s,
+            AppleSyncSettings {
+                enabled: true,
+                reminders_list_id: Some("cal-r".to_string()),
+                todos_list_id: Some("cal-t".to_string()),
+                last_sync_at: Some("2026-11-19T10:00:00.000".to_string()),
+                last_error: Some("Boom".to_string()),
+                paused: Some("empty_fetch".to_string()),
+                skipped: Some("[]".to_string()),
+                restore_pending: true,
+            }
+        );
+
+        // A later outcome without a sync time keeps the old one and clears the rest.
+        set_apple_sync_outcome(&pool, None, None, None, None)
+            .await
+            .unwrap();
+        set_apple_sync_enabled(&pool, false).await.unwrap();
+        set_apple_sync_list_id(&pool, APPLE_SYNC_TODOS_LIST_KEY, None)
+            .await
+            .unwrap();
+        let mut conn = pool.acquire().await.unwrap();
+        set_apple_sync_restore_pending(&mut conn, false)
+            .await
+            .unwrap();
+        drop(conn);
+        let s = get_apple_sync_settings(&pool).await.unwrap();
+        assert!(!s.enabled);
+        assert_eq!(s.todos_list_id, None);
+        assert_eq!(s.reminders_list_id.as_deref(), Some("cal-r"));
+        assert_eq!(s.last_sync_at.as_deref(), Some("2026-11-19T10:00:00.000"));
+        assert_eq!((s.last_error, s.paused, s.skipped), (None, None, None));
+        assert!(!s.restore_pending);
     }
 
     #[tokio::test]

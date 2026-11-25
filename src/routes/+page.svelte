@@ -332,4 +332,3 @@
 
 <svelte:window onfocus={reloadIfNewDay} />
 <svelte:document onvisibilitychange={reloadIfNewDay} />
-

@@ -353,20 +353,20 @@ test('labels: offsets, custom, repeat', () => {
 	assert.equal(r('monthly'), 'Monthly');
 });
 
-test('chips: due tone per group, a reminder at the due folds into the due chip', () => {
-	const kinds = (chips) => chips.map((c) => `${c.icon}:${c.tone}:${c.label}`);
+test('chips: due tone per group, a reminder at the due is a bell after the due chip', () => {
+	const kinds = (chips) => chips.map((c) => `${c.icon}:${c.tone}:${c.label || c.title}`);
 	// Overdue, untimed, linked issue.
 	assert.deepEqual(
 		kinds(taskChips(task({ due_date: '2026-11-23', issue_title: 'Invoicing', project_name: 'Northwind', customer_name: 'NW' }), NOW)),
 		['cal:red:Mon 23 Nov', 'link:violet:Northwind · Invoicing']
 	);
-	// Today 09:00 with "At due time", already past: a red ringing due chip, nothing else.
+	// Today 09:00 with "At due time", already past: red due, then a red ringing bell.
 	const atDue = rem({ offset_minutes: 0, state: 'sent', fire_at: '2026-11-25T09:00:00.000' });
-	assert.deepEqual(kinds(taskChips(task({ due_date: '2026-11-25', due_time: '09:00', reminders: [atDue] }), NOW)), ['ring:red:09:00']);
+	assert.deepEqual(kinds(taskChips(task({ due_date: '2026-11-25', due_time: '09:00', reminders: [atDue] }), NOW)), ['due:red:09:00', 'ring:red:Reminder at due time']);
 	// Today 14:00 with 1 h before: amber due, sky next reminder.
 	const hourBefore = rem({ offset_minutes: 60, fire_at: '2026-11-25T13:00:00.000' });
 	assert.deepEqual(kinds(taskChips(task({ due_date: '2026-11-25', due_time: '14:00', reminders: [hourBefore] }), NOW)), [
-		'cal:amber:14:00',
+		'due:amber:14:00',
 		'bell:sky:13:00'
 	]);
 	// Today untimed, a custom reminder later today.
@@ -380,7 +380,8 @@ test('chips: due tone per group, a reminder at the due folds into the due chip',
 		rem({ offset_minutes: 60, fire_at: '2026-11-27T09:00:00.000' })
 	];
 	assert.deepEqual(kinds(taskChips(task({ due_date: '2026-11-27', due_time: '10:00', reminders: two }), NOW)), [
-		'bell:slate:Fri 27 Nov · 10:00',
+		'due:slate:Fri 27 Nov · 10:00',
+		'bell:sky:Reminder at due time',
 		'bell:sky:Thu 26 Nov 10:00 +1'
 	]);
 	// A sent reminder (not at due) wins over pending ones.
@@ -389,7 +390,7 @@ test('chips: due tone per group, a reminder at the due folds into the due chip',
 	// Relative without a due: no chip. Repeat, note, Mac only (only while sync is on).
 	const dormant = rem({ offset_minutes: 15, fire_at: null });
 	const t = task({ reminders: [dormant], note_title: 'Architecture review', mac_only: true, repeat: 'daily', due_date: '2026-11-25', due_time: '18:00' });
-	assert.deepEqual(kinds(taskChips(t, NOW)), ['cal:amber:18:00', 'repeat:slate:Daily', 'note:slate:Architecture review']);
+	assert.deepEqual(kinds(taskChips(t, NOW)), ['due:amber:18:00', 'repeat:slate:Daily', 'note:slate:Architecture review']);
 	assert.deepEqual(kinds(taskChips(t, NOW, true)).at(-1), 'mac:slate:Mac only');
 	// Done: slate due, no reminder chip.
 	assert.deepEqual(kinds(taskChips(task({ done: true, due_date: '2026-11-20', reminders: mixed }), NOW)), ['cal:slate:Fri 20 Nov']);

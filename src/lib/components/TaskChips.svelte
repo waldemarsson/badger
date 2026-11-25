@@ -2,6 +2,7 @@
 	import type { Chip, ChipIcon, ChipTone } from '#lib/tasks.js';
 	import Bell from '@lucide/svelte/icons/bell';
 	import BellRing from '@lucide/svelte/icons/bell-ring';
+	import CalendarClock from '@lucide/svelte/icons/calendar-clock';
 	import CalendarDays from '@lucide/svelte/icons/calendar-days';
 	import Laptop from '@lucide/svelte/icons/laptop';
 	import Link2 from '@lucide/svelte/icons/link-2';
@@ -29,6 +30,7 @@
 	};
 	const ICONS: Record<ChipIcon, typeof Bell> = {
 		cal: CalendarDays,
+		due: CalendarClock,
 		bell: Bell,
 		ring: BellRing,
 		repeat: Repeat,
@@ -42,11 +44,11 @@
 	{@const Icon = ICONS[chip.icon]}
 	{#if variant === 'bare'}
 		<span class="task-chip-bare {BARE_TONES[chip.tone]}" title={chip.title}>
-			<Icon size={13} class="shrink-0" aria-hidden="true" /><span class="truncate">{chip.label}</span>
+			<Icon size={13} class="shrink-0" aria-hidden="true" />{#if chip.label}<span class="truncate">{chip.label}</span>{:else}<span class="sr-only">{chip.title}</span>{/if}
 		</span>
 	{:else}
 		<span class="task-chip {TONES[chip.tone]}" title={chip.title}>
-			<Icon size={12} class="shrink-0" aria-hidden="true" /><span class="truncate">{chip.label}</span>
+			<Icon size={12} class="shrink-0" aria-hidden="true" />{#if chip.label}<span class="truncate">{chip.label}</span>{:else}<span class="sr-only">{chip.title}</span>{/if}
 		</span>
 	{/if}
 {/each}

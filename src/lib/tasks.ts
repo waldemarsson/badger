@@ -326,9 +326,10 @@ function ordinal(n: number): string {
 // Row chips
 
 export type ChipTone = 'red' | 'amber' | 'sky' | 'violet' | 'slate';
-export type ChipIcon = 'cal' | 'bell' | 'ring' | 'repeat' | 'link' | 'note' | 'mac';
+export type ChipIcon = 'cal' | 'due' | 'bell' | 'ring' | 'repeat' | 'link' | 'note' | 'mac';
 
 export interface Chip {
+	/** Empty: an icon-only chip; `title` then names it. */
 	label: string;
 	tone: ChipTone;
 	icon: ChipIcon;
@@ -345,7 +346,8 @@ function liveTimes(t: Task): { at: string; sent: boolean }[] {
 }
 
 /**
- * Chips under a row: due (a reminder at the due time folds in as a bell), the reminder that
+ * Chips under a row: due (calendar icon, with a clock when timed), a label-less bell right after
+ * it for a reminder at the due time, the reminder that
  * matters (the latest sent one in red, else the next pending one with `+N`), repeat, issue,
  * note, and `Mac only` while sync is on. Done rows show no reminder chip.
  */
@@ -360,7 +362,11 @@ export function taskChips(t: Task, now: Date, syncOn = false): Chip[] {
 		const over = isPastDue(t, now);
 		const label = group === 'today' ? (t.due_time ?? 'Today') : `${formatDay(t.due_date, now)}${t.due_time ? ` · ${t.due_time}` : ''}`;
 		const tone: ChipTone = t.done ? 'slate' : over ? 'red' : group === 'today' ? 'amber' : 'slate';
-		chips.push({ label, tone, icon: atDue ? (over || times.some((x) => x.at === due && x.sent) ? 'ring' : 'bell') : 'cal' });
+		chips.push({ label, tone, icon: t.due_time ? 'due' : 'cal' });
+		if (atDue && !t.done) {
+			const rang = over || times.some((x) => x.at === due && x.sent);
+			chips.push({ label: '', tone: rang ? 'red' : 'sky', icon: rang ? 'ring' : 'bell', title: 'Reminder at due time' });
+		}
 	}
 	if (!t.done && others.length) {
 		const sent = others.filter((x) => x.sent);
@@ -620,7 +626,7 @@ export function planInput(plan: QuickAddPlan, extra: Partial<TaskInput> = {}): {
 /** The preview chips under the quick-add field. */
 export function planChips(plan: QuickAddPlan, now: Date): Chip[] {
 	const chips: Chip[] = [];
-	if (plan.dueDate) chips.push({ label: `${formatDay(plan.dueDate, now)}${plan.dueTime ? ` · ${plan.dueTime}` : ''}`, tone: 'slate', icon: 'cal' });
+	if (plan.dueDate) chips.push({ label: `${formatDay(plan.dueDate, now)}${plan.dueTime ? ` · ${plan.dueTime}` : ''}`, tone: 'slate', icon: plan.dueTime ? 'due' : 'cal' });
 	if (plan.reminders.length) chips.push({ label: 'Reminder at due time', tone: 'sky', icon: 'bell' });
 	const repeat = repeatLabel({ repeat: plan.repeat, weekdays: plan.weekdays, month_day: plan.monthDay });
 	if (repeat) chips.push({ label: repeat, tone: 'slate', icon: 'repeat' });

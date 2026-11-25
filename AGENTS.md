@@ -53,7 +53,7 @@ Gotchas:
 ### Schema changes
 
 - Tables are created by `SCHEMA_SQL` in `src-tauri/src/db.rs` with `CREATE TABLE IF NOT EXISTS`. That does **not** alter existing tables.
-- Changing an existing table needs an idempotent migration function in `db.rs`, called from `init_db` after `SCHEMA_SQL`, with a test that builds the old shape and migrates it (see `migrate_notes_position`). A destructive one-time migration is guarded by an `app_settings` marker, not by "the old table exists", so a downgrade and re-upgrade never repeats it (see `migrate_to_tasks`).
+- Changing an existing table needs an idempotent migration function in `db.rs`, called from `init_db` after `SCHEMA_SQL`, with a test that builds the old shape and migrates it. A destructive one-time migration is guarded by an `app_settings` marker, not by "the old table exists", so a downgrade and re-upgrade never repeats it. Once every install has upgraded, the migration and its test can be removed.
 - `SCHEMA_SQL` runs against old table shapes first, so a standalone `CREATE INDEX` on a column that older databases lack fails at startup: put constraints inline in the table DDL, or create the index in the migration.
 - Foreign keys are on. Choose `ON DELETE CASCADE` vs `SET NULL` on purpose and test it.
 - **Every new table must be included in backup/restore** (`commands/backup.rs`), except derived indexes (`notes_fts`, `note_refs`, `note_embeddings`), which restore rebuilds: export, restore (overwrite-only: add an explicit `DELETE`, since cascades won't reach a new table), and `#[serde(default)]` on the new `BackupData` field so older backups still restore. Add a round-trip test.

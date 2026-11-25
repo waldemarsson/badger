@@ -239,9 +239,6 @@ export interface AppleSyncStatus {
 	skipped: AppleSyncSkipped[];
 	/** The synced list's name ("Badger"; "Badger Dev" in debug builds). */
 	list: string;
-	/** Show the one-time note that the old lists (`old_lists`) can be deleted on the phone. */
-	old_lists_note: boolean;
-	old_lists: string[];
 }
 
 /** search_index_stats / rebuild_search_index. */

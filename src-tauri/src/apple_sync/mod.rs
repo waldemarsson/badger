@@ -52,15 +52,6 @@ pub fn list_name() -> &'static str {
     }
 }
 
-/// The lists synced before tasks; never touched, Settings says they can be deleted.
-pub fn old_list_names() -> [&'static str; 2] {
-    if cfg!(debug_assertions) {
-        ["Badger Dev Todos", "Badger Dev Reminders"]
-    } else {
-        ["Badger Todos", "Badger Reminders"]
-    }
-}
-
 /// A phone item's due: a floating local date, or a date and time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhoneDue {
@@ -294,10 +285,6 @@ mod tests {
     fn debug_builds_use_the_dev_list() {
         if cfg!(debug_assertions) {
             assert_eq!(list_name(), "Badger Dev");
-            assert_eq!(
-                old_list_names(),
-                ["Badger Dev Todos", "Badger Dev Reminders"]
-            );
         } else {
             assert_eq!(list_name(), "Badger");
         }

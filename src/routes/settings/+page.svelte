@@ -138,7 +138,7 @@
 
   // ── Apple Reminders sync ──────────────────────────────────────────────────────
   // Status from get_apple_sync_status, re-read on Rust's status events; actions reply with a fresh one.
-  type AppleSyncAction = 'toggle' | 'access' | 'sync' | 'recreate' | 'delete' | 'dismiss';
+  type AppleSyncAction = 'toggle' | 'access' | 'sync' | 'recreate' | 'delete';
   let appleSync = $state<AppleSyncStatus | null>(null);
   let appleSyncBusy = $state<'' | AppleSyncAction>('');
   let appleSyncError = $state('');
@@ -851,18 +851,6 @@
               {/if}
             </div>
           {/if}
-        {/if}
-
-        {#if appleSync?.available && appleSync.old_lists_note}
-          <div class="alert-panel alert-warning flex flex-wrap items-start justify-between gap-3" out:fade={{ duration: 150 }}>
-            <div class="min-w-0">
-              <p class="alert-warning-title">Your old lists are no longer synced</p>
-              <p class="alert-warning-copy">
-                Todos and reminders became tasks, which sync with “{appleSync.list}”. {appleSync.old_lists.length ? `“${appleSync.old_lists.join('” and “')}”` : 'The old Badger lists'} on your phone {appleSync.old_lists.length === 1 ? 'is' : 'are'} left as they were; delete {appleSync.old_lists.length === 1 ? 'it' : 'them'} in Reminders when you no longer need {appleSync.old_lists.length === 1 ? 'it' : 'them'}.
-              </p>
-            </div>
-            <button type="button" class="btn-secondary-sm shrink-0" onclick={() => appleSyncAction('dismiss', 'dismiss_apple_sync_old_lists_note')} disabled={appleSyncBusy !== ''}>Dismiss</button>
-          </div>
         {/if}
 
         {#if appleSyncError}

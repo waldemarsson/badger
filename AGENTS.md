@@ -70,7 +70,7 @@ Gotchas:
 - **Icons:** `@lucide/svelte`, imported per icon (`import X from '@lucide/svelte/icons/x'`).
 - **Routes:** add new pages to `navLinks` in `src/routes/+layout.svelte` (it feeds ⌘K; `as const` keeps `resolve()` type-checked), and to a group in `navGroups` if the page gets a nav tab. The two reports share one "Reports" tab and switch with `ReportSwitch.svelte`; Settings is the gear.
 - **Pickers:** reuse `src/lib/components/Combobox.svelte` for customer, project, and issue selection.
-- **Menus:** reuse `src/lib/components/ContextMenu.svelte` (items `{label, icon, hint, danger, run}`) for popup action menus; position with `placeMenu` in `src/lib/context-menu.ts`.
+- **Menus:** reuse `src/lib/components/ContextMenu.svelte` (items `{label, icon, hint, danger, confirm, run}`; `confirm` makes the item ask first, inline) for popup action menus; position with `placeMenu` in `src/lib/context-menu.ts`.
 - `svelte-ignore state_referenced_locally` is acceptable only for intentionally snapshotting a prop at mount (see `TaskRemindDialog.svelte`).
 
 ## UI / UX

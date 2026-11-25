@@ -129,22 +129,34 @@ export function overdueCount(tasks: readonly Task[], now: Date): number {
 // ---------------------------------------------------------------------------
 // Groups and order (D3, D15)
 
-export type GroupKey = 'overdue' | 'today' | 'upcoming' | 'none';
+export type GroupKey = 'overdue' | 'today' | 'tomorrow' | 'week' | 'later' | 'none';
 
 export const GROUPS: { key: GroupKey; label: string }[] = [
 	{ key: 'overdue', label: 'Overdue' },
 	{ key: 'today', label: 'Today' },
-	{ key: 'upcoming', label: 'Upcoming' },
+	{ key: 'tomorrow', label: 'Tomorrow' },
+	{ key: 'week', label: 'This week' },
+	{ key: 'later', label: 'Later' },
 	{ key: 'none', label: 'No date' }
 ];
 
-/** Which list group an open task sits in; done tasks are `done`. */
+/** Sunday of the week containing `day` (weeks start on Monday). */
+function weekEnd(day: string): string {
+	return addDays(weekStart(day), 6);
+}
+
+/**
+ * Which list group an open task sits in; done tasks are `done`. This week runs from the day
+ * after tomorrow through Sunday, so it is empty on Saturdays and Sundays.
+ */
 export function taskGroup(t: Pick<Task, 'done' | 'due_date'>, now: Date): GroupKey | 'done' {
 	if (t.done) return 'done';
 	if (!t.due_date) return 'none';
 	const today = ymd(now);
 	if (t.due_date < today) return 'overdue';
-	return t.due_date === today ? 'today' : 'upcoming';
+	if (t.due_date === today) return 'today';
+	if (t.due_date === addDays(today, 1)) return 'tomorrow';
+	return t.due_date <= weekEnd(today) ? 'week' : 'later';
 }
 
 /** Open order: due date, due time (untimed last), created, id. */
@@ -201,8 +213,67 @@ export function todayTasks(tasks: readonly Task[], now: Date): Task[] {
 		.sort(compareOpen);
 }
 
-export function dueTodayCount(tasks: readonly Task[], now: Date): number {
-	return tasks.filter((t) => taskGroup(t, now) === 'today').length;
+// ---------------------------------------------------------------------------
+// Scopes (the segmented control on /tasks)
+
+export type TaskScope = 'all' | 'today' | 'tomorrow' | 'week';
+
+/** The scopes in control order, with their empty state. */
+export const SCOPES: { key: TaskScope; label: string; empty: string }[] = [
+	{ key: 'all', label: 'All', empty: 'Nothing open. Nice.' },
+	{ key: 'today', label: 'Today', empty: 'Nothing due today' },
+	{ key: 'tomorrow', label: 'Tomorrow', empty: 'Nothing due tomorrow' },
+	{ key: 'week', label: 'This week', empty: 'Nothing due this week' }
+];
+
+/**
+ * A quick-add phrase that lands in the scope (its empty-state hint). This week: Friday until
+ * Thursday, Sunday on a Friday, and today on the weekend; '' for All.
+ */
+export function scopePhrase(scope: TaskScope, now: Date): string {
+	switch (scope) {
+		case 'all':
+			return '';
+		case 'today':
+			return 'today';
+		case 'tomorrow':
+			return 'tomorrow 9';
+		case 'week': {
+			const day = now.getDay();
+			return day === 0 || day === 6 ? 'today' : day === 5 ? 'sun 10:00' : 'fri 14:00';
+		}
+	}
+}
+
+/**
+ * Whether a task shows under a scope. All: everything, Completed included. The others are
+ * open tasks only and cumulative: Today = overdue and today, Tomorrow = tomorrow only,
+ * This week = overdue through Sunday.
+ */
+export function inScope(t: Pick<Task, 'done' | 'due_date'>, scope: TaskScope, now: Date): boolean {
+	if (scope === 'all') return true;
+	if (t.done || !t.due_date) return false;
+	const today = ymd(now);
+	if (scope === 'today') return t.due_date <= today;
+	if (scope === 'tomorrow') return t.due_date === addDays(today, 1);
+	return t.due_date <= weekEnd(today);
+}
+
+export function scopeTasks(tasks: readonly Task[], scope: TaskScope, now: Date): Task[] {
+	return tasks.filter((t) => inScope(t, scope, now));
+}
+
+/** Open tasks per scope, plus how many in the Today scope need attention (its red dot). */
+export function scopeCounts(tasks: readonly Task[], now: Date): Record<TaskScope, number> & { attention: number } {
+	const open = tasks.filter((t) => !t.done);
+	const count = (scope: TaskScope) => open.filter((t) => inScope(t, scope, now)).length;
+	return {
+		all: open.length,
+		today: count('today'),
+		tomorrow: count('tomorrow'),
+		week: count('week'),
+		attention: open.filter((t) => inScope(t, 'today', now) && needsAttention(t, now)).length
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -255,9 +326,10 @@ function ordinal(n: number): string {
 // Row chips
 
 export type ChipTone = 'red' | 'amber' | 'sky' | 'violet' | 'slate';
-export type ChipIcon = 'cal' | 'bell' | 'ring' | 'repeat' | 'link' | 'note' | 'mac';
+export type ChipIcon = 'cal' | 'due' | 'bell' | 'ring' | 'repeat' | 'link' | 'note' | 'mac';
 
 export interface Chip {
+	/** Empty: an icon-only chip; `title` then names it. */
 	label: string;
 	tone: ChipTone;
 	icon: ChipIcon;
@@ -274,7 +346,8 @@ function liveTimes(t: Task): { at: string; sent: boolean }[] {
 }
 
 /**
- * Chips under a row: due (a reminder at the due time folds in as a bell), the reminder that
+ * Chips under a row: due (calendar icon, with a clock when timed), a label-less bell right after
+ * it for a reminder at the due time, the reminder that
  * matters (the latest sent one in red, else the next pending one with `+N`), repeat, issue,
  * note, and `Mac only` while sync is on. Done rows show no reminder chip.
  */
@@ -289,7 +362,11 @@ export function taskChips(t: Task, now: Date, syncOn = false): Chip[] {
 		const over = isPastDue(t, now);
 		const label = group === 'today' ? (t.due_time ?? 'Today') : `${formatDay(t.due_date, now)}${t.due_time ? ` · ${t.due_time}` : ''}`;
 		const tone: ChipTone = t.done ? 'slate' : over ? 'red' : group === 'today' ? 'amber' : 'slate';
-		chips.push({ label, tone, icon: atDue ? (over || times.some((x) => x.at === due && x.sent) ? 'ring' : 'bell') : 'cal' });
+		chips.push({ label, tone, icon: t.due_time ? 'due' : 'cal' });
+		if (atDue && !t.done) {
+			const rang = over || times.some((x) => x.at === due && x.sent);
+			chips.push({ label: '', tone: rang ? 'red' : 'sky', icon: rang ? 'ring' : 'bell', title: 'Reminder at due time' });
+		}
 	}
 	if (!t.done && others.length) {
 		const sent = others.filter((x) => x.sent);
@@ -395,6 +472,66 @@ export function dueEdit(date: string | null, time: string | null, now: Date): Pa
 }
 
 // ---------------------------------------------------------------------------
+// Schedule (row menu)
+
+export type SchedulePreset = 'today' | 'tomorrow' | 'weekend' | 'nextweek' | 'none';
+
+const SCHEDULE_LABELS: Record<SchedulePreset, string> = {
+	today: 'Today',
+	tomorrow: 'Tomorrow',
+	weekend: 'This weekend',
+	nextweek: 'Next week',
+	none: 'No date'
+};
+
+/**
+ * The due date a preset moves to: This weekend is the next Saturday (today on a Saturday or
+ * Sunday), Next week the next Monday; No date is null.
+ */
+export function scheduleDate(preset: SchedulePreset, now: Date): string | null {
+	const today = ymd(now);
+	switch (preset) {
+		case 'today':
+			return today;
+		case 'tomorrow':
+			return addDays(today, 1);
+		case 'weekend': {
+			const day = now.getDay();
+			return day === 0 || day === 6 ? today : addDays(today, 6 - day);
+		}
+		case 'nextweek':
+			return addDays(weekStart(today), 7);
+		case 'none':
+			return null;
+	}
+}
+
+/** The Schedule menu: label and a date hint (`Wed` for today, `Thu 26 Nov`, none for No date). */
+export function schedulePresets(now: Date): { key: SchedulePreset; label: string; hint: string }[] {
+	const today = ymd(now);
+	return (Object.keys(SCHEDULE_LABELS) as SchedulePreset[]).map((key) => {
+		const date = scheduleDate(key, now);
+		const hint = date === null ? '' : date === today ? DAY_NAMES[now.getDay()] : formatDay(date, now);
+		return { key, label: SCHEDULE_LABELS[key], hint };
+	});
+}
+
+/**
+ * The update for moving `t` to a preset: only the date changes and the due time stays; No
+ * date clears the time and the repeat too (as in the panel). Null when the date is unchanged.
+ */
+export function scheduleInput(t: Task, preset: SchedulePreset, now: Date): TaskInput | null {
+	const date = scheduleDate(preset, now);
+	if (date === t.due_date) return null;
+	return taskInput(t, dueEdit(date, date ? t.due_time : null, now));
+}
+
+/** The note tag that links (and chips) a task. */
+export function taskLink(id: number): string {
+	return `#task/${id}`;
+}
+
+// ---------------------------------------------------------------------------
 // Quick add (D17)
 
 export interface IssueTarget {
@@ -489,7 +626,7 @@ export function planInput(plan: QuickAddPlan, extra: Partial<TaskInput> = {}): {
 /** The preview chips under the quick-add field. */
 export function planChips(plan: QuickAddPlan, now: Date): Chip[] {
 	const chips: Chip[] = [];
-	if (plan.dueDate) chips.push({ label: `${formatDay(plan.dueDate, now)}${plan.dueTime ? ` · ${plan.dueTime}` : ''}`, tone: 'slate', icon: 'cal' });
+	if (plan.dueDate) chips.push({ label: `${formatDay(plan.dueDate, now)}${plan.dueTime ? ` · ${plan.dueTime}` : ''}`, tone: 'slate', icon: plan.dueTime ? 'due' : 'cal' });
 	if (plan.reminders.length) chips.push({ label: 'Reminder at due time', tone: 'sky', icon: 'bell' });
 	const repeat = repeatLabel({ repeat: plan.repeat, weekdays: plan.weekdays, month_day: plan.monthDay });
 	if (repeat) chips.push({ label: repeat, tone: 'slate', icon: 'repeat' });

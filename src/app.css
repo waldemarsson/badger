@@ -866,6 +866,24 @@
     @apply mx-1 my-1 h-px bg-slate-100 dark:bg-neutral-800;
   }
 
+  /* An item that asks first (`confirm`): its prompt, Cancel and the red action in one row,
+     which needs a little more width than the item did. */
+  .ctx-menu-confirmable {
+    @apply min-w-[15rem];
+  }
+
+  .ctx-menu-confirm {
+    @apply flex items-center gap-2 rounded-lg bg-red-50 py-1 pl-2.5 pr-1 text-red-700 dark:bg-red-500/10 dark:text-red-300;
+  }
+
+  .ctx-menu-confirm-cancel {
+    @apply shrink-0 rounded-md px-1.5 py-1 text-xs text-slate-500 outline-none hover:text-slate-900 focus:bg-white focus:text-slate-900 dark:text-neutral-400 dark:hover:text-neutral-100 dark:focus:bg-neutral-800 dark:focus:text-neutral-100;
+  }
+
+  .ctx-menu-confirm-ok {
+    @apply shrink-0 rounded-md bg-red-600 px-2.5 py-1 text-xs font-semibold text-white outline-none hover:bg-red-700 focus:ring-2 focus:ring-red-300 focus:ring-offset-1 focus:ring-offset-red-50 dark:bg-red-500 dark:text-white dark:hover:bg-red-600 dark:focus:ring-red-400/60 dark:focus:ring-offset-neutral-900;
+  }
+
   .note-title-input {
     @apply -mx-2 min-w-0 flex-1 rounded-lg border border-transparent bg-transparent px-2 py-0.5 text-xl font-semibold tracking-tight text-slate-950 outline-none transition placeholder:text-slate-300 hover:border-slate-200 focus:border-sky-300 focus:ring-4 focus:ring-sky-100 dark:text-neutral-100 dark:placeholder:text-neutral-600 dark:hover:border-neutral-700 dark:focus:border-sky-500/60 dark:focus:ring-sky-500/10;
   }
@@ -1313,6 +1331,31 @@
     @apply flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-slate-200 px-1 pb-3 pt-1 dark:border-neutral-800;
   }
 
+  /* Scope control (All · Today · Tomorrow · This week), each with its count. */
+  .task-scope {
+    @apply inline-flex gap-0.5 rounded-[10px] bg-slate-100 p-[3px] ring-1 ring-inset ring-slate-200 dark:bg-neutral-900 dark:ring-neutral-800;
+  }
+
+  .task-scope-option {
+    @apply inline-flex items-center gap-1.5 rounded-lg px-3 py-[5px] text-[13px] leading-5 text-slate-500 transition-colors duration-150 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 dark:text-neutral-400 dark:hover:text-neutral-100;
+  }
+
+  .task-scope-option-active {
+    @apply bg-white font-medium text-slate-950 shadow-sm ring-1 ring-inset ring-slate-200 hover:text-slate-950 dark:bg-neutral-800 dark:text-neutral-100 dark:shadow-black/40 dark:ring-neutral-700 dark:hover:text-neutral-100;
+  }
+
+  .task-scope-count {
+    @apply text-xs font-normal tabular-nums text-slate-400 dark:text-neutral-500;
+  }
+
+  .task-scope-option-active .task-scope-count {
+    @apply text-slate-500 dark:text-neutral-400;
+  }
+
+  .task-scope-dot {
+    @apply h-1.5 w-1.5 shrink-0 rounded-full bg-red-500 dark:bg-red-400;
+  }
+
   .task-group-header {
     @apply m-0 flex w-full items-center gap-2 rounded-lg px-3 pb-1.5 pt-3.5 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-neutral-400;
   }
@@ -1342,12 +1385,20 @@
     @apply bg-amber-500 dark:bg-amber-400;
   }
 
-  .task-dot-upcoming {
+  .task-dot-tomorrow {
     @apply bg-sky-500 dark:bg-sky-400;
   }
 
-  .task-dot-none {
+  .task-dot-week {
+    @apply bg-sky-300 dark:bg-sky-300;
+  }
+
+  .task-dot-later {
     @apply bg-slate-400 dark:bg-neutral-500;
+  }
+
+  .task-dot-none {
+    @apply bg-transparent ring-[1.5px] ring-inset ring-slate-400 dark:bg-transparent dark:ring-neutral-500;
   }
 
   .task-dot-done {
@@ -1358,8 +1409,48 @@
     @apply flex items-start gap-3 rounded-xl px-3 py-2.5 transition-colors duration-150 hover:bg-slate-50 dark:hover:bg-neutral-800/50;
   }
 
+  .task-row-menu-open {
+    @apply bg-slate-50 dark:bg-neutral-800/50;
+  }
+
   .task-row-selected {
     @apply bg-sky-50 ring-1 ring-inset ring-sky-200 hover:bg-sky-50 dark:bg-sky-500/10 dark:ring-sky-500/30 dark:hover:bg-sky-500/10;
+  }
+
+  /* A list item wrapping one row: a hairline above every one but the first, indented to the
+     title, hidden beside a hovered or selected row (their tint already separates them). */
+  .task-row-item {
+    @apply relative;
+  }
+
+  /* `task-rows-more`: a nested block that continues the list (Completed › Show older). */
+  .task-row-item + .task-row-item::before,
+  .task-row-item + .task-rows-more > .task-row-item:first-child::before {
+    content: '';
+    @apply pointer-events-none absolute -top-px left-[46px] right-3 h-px bg-slate-200 dark:bg-neutral-800;
+  }
+
+  .task-row-item:is(:hover, :has(.task-row-selected), :has(.task-row-menu-open))::before,
+  .task-row-item:is(:hover, :has(.task-row-selected), :has(.task-row-menu-open)) + .task-row-item::before,
+  .task-row-item:is(:hover, :has(.task-row-selected), :has(.task-row-menu-open)) + .task-rows-more > .task-row-item:first-child::before {
+    @apply bg-transparent dark:bg-transparent;
+  }
+
+  /* Row actions at the right: shown on hover, keyboard focus, or while one's menu is open. */
+  .task-row-actions {
+    @apply -my-1 -mr-1 flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity duration-150 group-focus-within:opacity-100 group-hover:opacity-100;
+  }
+
+  .task-row-actions-open {
+    @apply opacity-100;
+  }
+
+  .task-row-action {
+    @apply inline-flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-200;
+  }
+
+  .task-row-action-on {
+    @apply bg-slate-100 text-slate-700 dark:bg-neutral-800 dark:text-neutral-200;
   }
 
   .task-row-button {
@@ -1386,7 +1477,7 @@
   }
 
   .task-chips {
-    @apply mt-1 flex flex-wrap gap-1.5;
+    @apply mt-0.5 flex flex-wrap gap-x-3.5 gap-y-1;
   }
 
   .task-chip {
@@ -1411,6 +1502,31 @@
 
   .task-chip-slate {
     @apply bg-slate-50 text-slate-600 ring-slate-200 dark:bg-neutral-800/40 dark:text-neutral-400 dark:ring-neutral-800;
+  }
+
+  /* Row chips: icon and colored text, no pill. */
+  .task-chip-bare {
+    @apply inline-flex max-w-full items-center gap-1 whitespace-nowrap text-xs leading-4;
+  }
+
+  .task-chip-bare-red {
+    @apply text-red-700 dark:text-red-300;
+  }
+
+  .task-chip-bare-amber {
+    @apply text-amber-700 dark:text-amber-300;
+  }
+
+  .task-chip-bare-sky {
+    @apply text-sky-700 dark:text-sky-300;
+  }
+
+  .task-chip-bare-violet {
+    @apply text-violet-700 dark:text-violet-300;
+  }
+
+  .task-chip-bare-slate {
+    @apply text-slate-500 dark:text-neutral-400;
   }
 
   /* The round check: hover previews the tick; completing pops it, draws the tick, sparks. */

@@ -21,7 +21,7 @@
 	import { todayTasks } from '#lib/tasks.js';
 	import { clock, completeTask, completing, shownTasks, tasks } from '#lib/tasks-state.svelte.js';
 	import { appleSync } from '#lib/apple-sync-state.svelte.js';
-	import { rowLeave } from '#lib/task-transitions.js';
+	import { keepRowFocus, rowLeave } from '#lib/task-transitions.js';
 	import TaskRow from '#lib/components/TaskRow.svelte';
 	import HandoverIncoming from '#lib/components/HandoverIncoming.svelte';
 	import HandoverToday from '#lib/components/HandoverToday.svelte';
@@ -46,6 +46,8 @@
 	let loadError = $state('');
 	let loadSeq = 0;
 	let actionError = $state('');
+	let taskListEl = $state<HTMLElement>();
+	let newTaskEl = $state<HTMLElement>();
 
 	/** Loads the week and target (tasks come from the shared list). Overlapping calls are fine: only the latest applies. */
 	async function load(): Promise<void> {
@@ -151,7 +153,7 @@
 </script>
 
 {#snippet logTimeAction(t: Task)}
-	<button type="button" class="btn-icon-ghost" title="Log time on {t.issue_title}" aria-label="Log time for {t.title}" onclick={() => logTime(t)}>
+	<button type="button" class="task-row-action" title="Log time on {t.issue_title}" aria-label="Log time for {t.title}" onclick={() => logTime(t)}>
 		<Clock size={16} />
 	</button>
 {/snippet}
@@ -212,22 +214,25 @@
 							{#if dueTasks.length}
 								<span class="today-count">{dueTasks.length}</span>
 							{/if}
-							<a href="{resolve('/tasks')}?new=1" class="btn-icon-ghost ml-auto -my-1" title="New task" aria-label="New task"><Plus size={15} /></a>
+							<a bind:this={newTaskEl} href="{resolve('/tasks')}?new=1" class="btn-icon-ghost ml-auto -my-1" title="New task" aria-label="New task"><Plus size={15} /></a>
 							<a href={resolve('/tasks')} class="-my-1 inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-xs font-medium text-slate-500 transition hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200">
 								All <ArrowRight size={12} />
 							</a>
 						</header>
 						<!-- The list stays mounted so the last row's slide-out plays before the empty line fades in. -->
-						<div class="py-1">
+						<div bind:this={taskListEl} class="flex flex-col gap-0.5 py-1">
 							{#each dueTasks as t (t.id)}
-								<div out:rowLeave>
+								<div class="task-row-item" out:rowLeave>
 									<TaskRow
 										task={t}
 										{now}
 										ticking={completing.rows[t.id]?.phase === 'tick'}
 										syncOn={appleSync.on}
+										menus
 										onselect={() => openTask(t)}
 										ontoggle={() => void complete(t)}
+										onerror={(message) => (actionError = message)}
+										keepfocus={() => keepRowFocus(taskListEl, t.id, () => newTaskEl)}
 										actions={t.project_id !== null && t.issue_title ? logTimeAction : undefined}
 									/>
 								</div>

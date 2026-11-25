@@ -15,10 +15,18 @@ const {
 	overdueCount,
 	taskGroup,
 	groupTasks,
+	SCOPES,
+	inScope,
+	scopeTasks,
+	scopeCounts,
+	scopePhrase,
+	scheduleDate,
+	schedulePresets,
+	scheduleInput,
+	taskLink,
 	completedTasks,
 	moreDone,
 	todayTasks,
-	dueTodayCount,
 	offsetLabel,
 	reminderLabel,
 	repeatLabel,
@@ -137,7 +145,7 @@ test('overdue (D10): past due date, today with a time that has come, or a sent r
 	assert.equal(overdueCount([], NOW), 0);
 });
 
-test('groups: overdue, today, upcoming, no date; ordered by due date, time (untimed last), created', () => {
+test('groups: overdue, today, tomorrow, this week, later, no date; ordered by due date, time (untimed last), created', () => {
 	const a = task({ title: 'a', due_date: '2026-11-25' });
 	const b = task({ title: 'b', due_date: '2026-11-25', due_time: '14:00' });
 	const c = task({ title: 'c', due_date: '2026-11-25', due_time: '09:00' });
@@ -146,20 +154,153 @@ test('groups: overdue, today, upcoming, no date; ordered by due date, time (unti
 	const f = task({ title: 'f', due_date: '2026-11-27' });
 	const g = task({ title: 'g', created_at: '2026-11-21T00:00:00.000' });
 	const h = task({ title: 'h', created_at: '2026-11-19T00:00:00.000' });
+	const i = task({ title: 'i', due_date: '2026-11-26' });
+	const j = task({ title: 'j', due_date: '2026-11-29' });
+	const k = task({ title: 'k', due_date: '2026-11-30' });
 	const done = task({ title: 'done', done: true, completed_at: '2026-11-25T08:00:00.000' });
-	const groups = groupTasks([a, b, c, d, e, f, g, h, done], NOW);
+	const groups = groupTasks([a, b, c, d, e, f, g, h, i, j, k, done], NOW);
 	assert.deepEqual(
 		groups.map((x) => [x.key, x.label, x.items.map((t) => t.title).join('')]),
 		[
 			['overdue', 'Overdue', 'd'],
 			['today', 'Today', 'cba'],
-			['upcoming', 'Upcoming', 'ef'],
+			['tomorrow', 'Tomorrow', 'i'],
+			['week', 'This week', 'efj'],
+			['later', 'Later', 'k'],
 			['none', 'No date', 'hg']
 		]
 	);
 	assert.deepEqual(groupTasks([done], NOW), [], 'empty groups are left out');
 	assert.equal(taskGroup(done, NOW), 'done');
-	assert.equal(dueTodayCount([a, b, c, d, done], NOW), 3);
+});
+
+test('groups on a Saturday and a Sunday: tomorrow wins over this week, next week is later', () => {
+	const sat = new Date(2026, 10, 28, 10, 0);
+	const sun = new Date(2026, 10, 29, 10, 0);
+	const at = (due_date) => task({ due_date });
+	assert.equal(taskGroup(at('2026-11-28'), sat), 'today');
+	assert.equal(taskGroup(at('2026-11-29'), sat), 'tomorrow', 'Sunday is tomorrow on Saturday');
+	assert.equal(taskGroup(at('2026-11-30'), sat), 'later', 'Monday starts the next week');
+	assert.equal(taskGroup(at('2026-11-29'), sun), 'today');
+	assert.equal(taskGroup(at('2026-11-30'), sun), 'tomorrow', 'Monday (next week) is tomorrow on Sunday');
+	assert.equal(taskGroup(at('2026-12-01'), sun), 'later');
+	assert.equal(taskGroup(at('2026-11-27'), sun), 'overdue');
+	assert.deepEqual(
+		groupTasks([at('2026-11-30'), at('2026-12-01'), at('2026-11-29')], sun).map((g) => g.key),
+		['today', 'tomorrow', 'later'],
+		'This week is empty on a Sunday'
+	);
+	// Monday: the whole week through Sunday.
+	const mon = new Date(2026, 10, 23, 10, 0);
+	assert.equal(taskGroup(at('2026-11-24'), mon), 'tomorrow');
+	assert.equal(taskGroup(at('2026-11-25'), mon), 'week');
+	assert.equal(taskGroup(at('2026-11-29'), mon), 'week');
+	assert.equal(taskGroup(at('2026-11-30'), mon), 'later');
+});
+
+test('scopes: cumulative sets, open only except All, counts match', () => {
+	const over = task({ title: 'over', due_date: '2026-11-23' });
+	const today = task({ title: 'today', due_date: '2026-11-25', due_time: '14:00' });
+	const tomorrow = task({ title: 'tomorrow', due_date: '2026-11-26' });
+	const week = task({ title: 'week', due_date: '2026-11-29' });
+	const later = task({ title: 'later', due_date: '2026-11-30' });
+	const none = task({ title: 'none' });
+	const done = task({ title: 'done', done: true, due_date: '2026-11-25', completed_at: '2026-11-25T08:00:00.000' });
+	const list = [over, today, tomorrow, week, later, none, done];
+	const titles = (scope, now = NOW) => scopeTasks(list, scope, now).map((t) => t.title);
+	assert.deepEqual(SCOPES.map((s) => s.key), ['all', 'today', 'tomorrow', 'week']);
+	assert.deepEqual(titles('all'), ['over', 'today', 'tomorrow', 'week', 'later', 'none', 'done'], 'All keeps done (Completed)');
+	assert.deepEqual(titles('today'), ['over', 'today']);
+	assert.deepEqual(titles('tomorrow'), ['tomorrow']);
+	assert.deepEqual(titles('week'), ['over', 'today', 'tomorrow', 'week']);
+	assert.equal(inScope(done, 'today', NOW), false);
+	assert.equal(inScope(done, 'all', NOW), true);
+	assert.deepEqual(scopeCounts(list, NOW), { all: 6, today: 2, tomorrow: 1, week: 4, attention: 1 });
+	// Sunday: tomorrow (Monday) is next week, so Week stops at today.
+	const sun = new Date(2026, 10, 29, 10, 0);
+	assert.deepEqual(titles('week', sun), ['over', 'today', 'tomorrow', 'week']);
+	assert.deepEqual(titles('tomorrow', sun), ['later']);
+	assert.deepEqual(scopeCounts(list, sun), { all: 6, today: 4, tomorrow: 1, week: 4, attention: 3 });
+	// Saturday: tomorrow (Sunday) is still this week.
+	const sat = new Date(2026, 10, 28, 10, 0);
+	assert.deepEqual(titles('week', sat), ['over', 'today', 'tomorrow', 'week']);
+	assert.deepEqual(titles('tomorrow', sat), ['week']);
+});
+
+test('scope empty-state phrases land in their scope on every weekday, morning and night', () => {
+	for (let day = 23; day <= 29; day++) {
+		for (const hour of [9, 22]) {
+			const now = new Date(2026, 10, day, hour, 0);
+			for (const scope of ['today', 'tomorrow', 'week']) {
+				const phrase = scopePhrase(scope, now);
+				const plan = planQuickAdd(`Call ${phrase}`, now, [], parseReminder);
+				assert.ok(plan.dueDate && inScope({ done: false, due_date: plan.dueDate }, scope, now), `${scope} “${phrase}” on ${now.toString()} → ${plan.dueDate}`);
+			}
+		}
+	}
+	assert.equal(scopePhrase('week', NOW), 'fri 14:00');
+	assert.equal(scopePhrase('all', NOW), '');
+});
+
+test('scopes: the Today dot counts what needs attention in the Today scope', () => {
+	const none = scopeCounts([task({ due_date: '2026-11-25', due_time: '14:00' }), task({ due_date: '2026-11-26' })], NOW);
+	assert.equal(none.attention, 0);
+	const pastTime = scopeCounts([task({ due_date: '2026-11-25', due_time: '10:00' })], NOW);
+	assert.equal(pastTime.attention, 1, 'today with a time that has come');
+	const sent = task({ due_date: '2026-11-25', reminders: [rem({ state: 'sent', fire_at: '2026-11-25T08:00:00.000' })] });
+	assert.equal(scopeCounts([sent], NOW).attention, 1, 'a sent reminder');
+	assert.equal(scopeCounts([], NOW).attention, 0);
+});
+
+test('schedule presets: today, tomorrow, this weekend, next week, no date', () => {
+	const on = (d) => Object.fromEntries(['today', 'tomorrow', 'weekend', 'nextweek', 'none'].map((p) => [p, scheduleDate(p, d)]));
+	assert.deepEqual(on(NOW), { today: '2026-11-25', tomorrow: '2026-11-26', weekend: '2026-11-28', nextweek: '2026-11-30', none: null });
+	const sat = new Date(2026, 10, 28, 10, 0);
+	assert.deepEqual(on(sat), { today: '2026-11-28', tomorrow: '2026-11-29', weekend: '2026-11-28', nextweek: '2026-11-30', none: null });
+	const sun = new Date(2026, 10, 29, 10, 0);
+	assert.deepEqual(on(sun), { today: '2026-11-29', tomorrow: '2026-11-30', weekend: '2026-11-29', nextweek: '2026-11-30', none: null });
+	const mon = new Date(2026, 10, 30, 10, 0);
+	assert.equal(scheduleDate('weekend', mon), '2026-12-05');
+	assert.equal(scheduleDate('nextweek', mon), '2026-12-07');
+	const fri = new Date(2026, 11, 31, 10, 0);
+	assert.equal(scheduleDate('nextweek', fri), '2027-01-04', 'across the year');
+
+	assert.deepEqual(
+		schedulePresets(NOW).map((p) => [p.key, p.label, p.hint]),
+		[
+			['today', 'Today', 'Wed'],
+			['tomorrow', 'Tomorrow', 'Thu 26 Nov'],
+			['weekend', 'This weekend', 'Sat 28 Nov'],
+			['nextweek', 'Next week', 'Mon 30 Nov'],
+			['none', 'No date', '']
+		]
+	);
+});
+
+test('schedule input: keeps the time, moves only the date; No date clears time and repeat; same date is a no-op', () => {
+	const t = task({ title: 'Call', notes: 'n', due_date: '2026-11-25', due_time: '15:30', repeat: 'weekly', weekdays: [3], issue_id: 7, note_id: 2, mac_only: true });
+	assert.deepEqual(scheduleInput(t, 'tomorrow', NOW), {
+		title: 'Call',
+		notes: 'n',
+		dueDate: '2026-11-26',
+		dueTime: '15:30',
+		repeat: 'weekly',
+		weekdays: [3],
+		monthDay: null,
+		issueId: 7,
+		noteId: 2,
+		macOnly: true
+	});
+	assert.equal(scheduleInput(t, 'today', NOW), null, 'already due today');
+	const cleared = scheduleInput(t, 'none', NOW);
+	assert.deepEqual([cleared.dueDate, cleared.dueTime, cleared.repeat, cleared.weekdays, cleared.monthDay], [null, null, 'none', [], null]);
+	assert.equal(scheduleInput(task(), 'none', NOW), null, 'already without a date');
+	const untimed = scheduleInput(task(), 'nextweek', NOW);
+	assert.deepEqual([untimed.dueDate, untimed.dueTime], ['2026-11-30', null]);
+});
+
+test('task link is the note tag', () => {
+	assert.equal(taskLink(42), '#task/42');
 });
 
 test('completed: newest first, split at this week’s Monday', () => {
@@ -212,20 +353,20 @@ test('labels: offsets, custom, repeat', () => {
 	assert.equal(r('monthly'), 'Monthly');
 });
 
-test('chips: due tone per group, a reminder at the due folds into the due chip', () => {
-	const kinds = (chips) => chips.map((c) => `${c.icon}:${c.tone}:${c.label}`);
+test('chips: due tone per group, a reminder at the due is a bell after the due chip', () => {
+	const kinds = (chips) => chips.map((c) => `${c.icon}:${c.tone}:${c.label || c.title}`);
 	// Overdue, untimed, linked issue.
 	assert.deepEqual(
 		kinds(taskChips(task({ due_date: '2026-11-23', issue_title: 'Invoicing', project_name: 'Northwind', customer_name: 'NW' }), NOW)),
 		['cal:red:Mon 23 Nov', 'link:violet:Northwind · Invoicing']
 	);
-	// Today 09:00 with "At due time", already past: a red ringing due chip, nothing else.
+	// Today 09:00 with "At due time", already past: red due, then a red ringing bell.
 	const atDue = rem({ offset_minutes: 0, state: 'sent', fire_at: '2026-11-25T09:00:00.000' });
-	assert.deepEqual(kinds(taskChips(task({ due_date: '2026-11-25', due_time: '09:00', reminders: [atDue] }), NOW)), ['ring:red:09:00']);
+	assert.deepEqual(kinds(taskChips(task({ due_date: '2026-11-25', due_time: '09:00', reminders: [atDue] }), NOW)), ['due:red:09:00', 'ring:red:Reminder at due time']);
 	// Today 14:00 with 1 h before: amber due, sky next reminder.
 	const hourBefore = rem({ offset_minutes: 60, fire_at: '2026-11-25T13:00:00.000' });
 	assert.deepEqual(kinds(taskChips(task({ due_date: '2026-11-25', due_time: '14:00', reminders: [hourBefore] }), NOW)), [
-		'cal:amber:14:00',
+		'due:amber:14:00',
 		'bell:sky:13:00'
 	]);
 	// Today untimed, a custom reminder later today.
@@ -239,7 +380,8 @@ test('chips: due tone per group, a reminder at the due folds into the due chip',
 		rem({ offset_minutes: 60, fire_at: '2026-11-27T09:00:00.000' })
 	];
 	assert.deepEqual(kinds(taskChips(task({ due_date: '2026-11-27', due_time: '10:00', reminders: two }), NOW)), [
-		'bell:slate:Fri 27 Nov · 10:00',
+		'due:slate:Fri 27 Nov · 10:00',
+		'bell:sky:Reminder at due time',
 		'bell:sky:Thu 26 Nov 10:00 +1'
 	]);
 	// A sent reminder (not at due) wins over pending ones.
@@ -248,7 +390,7 @@ test('chips: due tone per group, a reminder at the due folds into the due chip',
 	// Relative without a due: no chip. Repeat, note, Mac only (only while sync is on).
 	const dormant = rem({ offset_minutes: 15, fire_at: null });
 	const t = task({ reminders: [dormant], note_title: 'Architecture review', mac_only: true, repeat: 'daily', due_date: '2026-11-25', due_time: '18:00' });
-	assert.deepEqual(kinds(taskChips(t, NOW)), ['cal:amber:18:00', 'repeat:slate:Daily', 'note:slate:Architecture review']);
+	assert.deepEqual(kinds(taskChips(t, NOW)), ['due:amber:18:00', 'repeat:slate:Daily', 'note:slate:Architecture review']);
 	assert.deepEqual(kinds(taskChips(t, NOW, true)).at(-1), 'mac:slate:Mac only');
 	// Done: slate due, no reminder chip.
 	assert.deepEqual(kinds(taskChips(task({ done: true, due_date: '2026-11-20', reminders: mixed }), NOW)), ['cal:slate:Fri 20 Nov']);

@@ -7,16 +7,19 @@
 	import { fade, slide } from 'svelte/transition';
 	import type { LinkTargets, Task } from '#lib/types.js';
 	import {
+		SCOPES,
 		completedTasks,
-		moreDone,
-		dueTodayCount,
 		groupTasks,
+		inScope,
+		moreDone,
 		nextFocusId,
-		overdueCount,
 		planChips,
 		planError,
 		planInput,
 		planQuickAdd,
+		scopeCounts,
+		scopePhrase,
+		scopeTasks,
 		type GroupKey,
 		type IssueTarget
 	} from '#lib/tasks.js';
@@ -31,12 +34,13 @@
 		refreshTasks,
 		reopenTask,
 		shownTasks,
+		taskView,
 		tasks,
 		toastArea
 	} from '#lib/tasks-state.svelte.js';
 	import { appleSync } from '#lib/apple-sync-state.svelte.js';
 	import { appleSyncPill, formatLastSync } from '#lib/apple-sync.js';
-	import { groupLeave, motionMs, rowLeave } from '#lib/task-transitions.js';
+	import { groupLeave, keepRowFocus, motionMs, panelReveal, rowLeave } from '#lib/task-transitions.js';
 	import TaskRow from '#lib/components/TaskRow.svelte';
 	import TaskPanel from '#lib/components/TaskPanel.svelte';
 	import TaskChips from '#lib/components/TaskChips.svelte';
@@ -46,18 +50,21 @@
 
 	const now = $derived(new Date(clock.ms));
 	const shown = $derived(shownTasks(tasks.list, completing.rows));
-	const groups = $derived(groupTasks(shown, now));
+	// The scope filters before grouping; Completed shows only under All.
+	const scope = $derived(SCOPES.find((s) => s.key === taskView.scope) ?? SCOPES[0]);
+	const groups = $derived(groupTasks(scopeTasks(shown, scope.key, now), now));
 	const done = $derived(completedTasks(shown, now));
-	// Totals follow the rows: a task mid-completion still counts until it slides out.
-	const open = $derived(shown.filter((t) => !t.done));
-	const overdue = $derived(overdueCount(shown, now));
-	const dueToday = $derived(dueTodayCount(shown, now));
+	const doneCount = $derived(done.thisWeek.length + done.older.length);
+	// Counts follow the rows: a task mid-completion still counts until it slides out.
+	const counts = $derived(scopeCounts(shown, now));
 
 	// Full class names for Tailwind's content scan.
 	const DOTS: Record<GroupKey, string> = {
 		overdue: 'task-dot-overdue',
 		today: 'task-dot-today',
-		upcoming: 'task-dot-upcoming',
+		tomorrow: 'task-dot-tomorrow',
+		week: 'task-dot-week',
+		later: 'task-dot-later',
 		none: 'task-dot-none'
 	};
 
@@ -68,6 +75,7 @@
 	const hasMoreDone = $derived(moreDone(tasks.list, tasks.doneLimit));
 	let actionError = $state('');
 	let listEl = $state<HTMLElement>();
+	let panelEl = $state<HTMLElement>();
 	let quickInput = $state<HTMLInputElement>();
 
 	// ── Quick add ──────────────────────────────────────────────────────────────
@@ -120,16 +128,47 @@
 
 	// ── Selection ──────────────────────────────────────────────────────────────
 
-	/** Selects a task and, when asked, scrolls it into view (unfolding Completed if it's there). */
+	/**
+	 * Selects a task and, when asked, scrolls it into view: a task outside the scope switches
+	 * to All, and Completed unfolds if it's there.
+	 */
 	function select(id: number, reveal = false): void {
 		selectedId = id;
 		if (!reveal) return;
 		const t = tasks.list.find((x) => x.id === id);
+		if (t && !inScope(t, taskView.scope, now)) taskView.scope = 'all';
 		if (t?.done) {
 			showDone = true;
 			if (!done.thisWeek.some((x) => x.id === id)) showOlderDone();
 		}
 		void tick().then(() => listEl?.querySelector(`[data-task-row="${id}"]`)?.scrollIntoView({ block: 'nearest', behavior: motionMs(1) ? 'smooth' : 'auto' }));
+	}
+
+	/** Closes the panel; focus that was in it goes back to the task's row. */
+	function closePanel(): void {
+		const id = selectedId;
+		const hadFocus = !!panelEl?.contains(document.activeElement);
+		selectedId = null;
+		if (hadFocus) void tick().then(() => listEl?.querySelector<HTMLElement>(`[data-task-row="${id}"] .task-row-button`)?.focus());
+	}
+
+	/** Clicking the selected row again closes the panel. */
+	function toggleSelect(id: number): void {
+		if (id === selectedId) closePanel();
+		else select(id);
+	}
+
+	/**
+	 * Esc closes the panel unless something nearer used it: an open menu, a panel field, the
+	 * quick-add draft (they prevent the default), or another text field.
+	 */
+	function onWindowKeydown(e: KeyboardEvent): void {
+		if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing || selectedId === null) return;
+		const t = e.target;
+		const field = t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement || (t instanceof HTMLElement && t.isContentEditable);
+		if (field && t !== quickInput) return;
+		e.preventDefault();
+		closePanel();
 	}
 
 	function showOlderDone(): void {
@@ -224,13 +263,23 @@
 		selected={t.id === selectedId}
 		ticking={completing.rows[t.id]?.phase === 'tick'}
 		syncOn={appleSync.on}
-		onselect={() => select(t.id)}
+		menus
+		onselect={() => toggleSelect(t.id)}
 		ontoggle={() => void toggle(t)}
+		ondetails={() => select(t.id)}
+		ondelete={() => {
+			if (selectedId === t.id) selectedId = null;
+		}}
+		onerror={(message) => (actionError = message)}
+		keepfocus={() => keepRowFocus(listEl, t.id, () => quickInput)}
 	/>
 {/snippet}
 
-<div class="lg:grid lg:min-h-[calc(100vh-4.25rem)] lg:grid-cols-[minmax(0,1fr)_minmax(22rem,27.5rem)]">
-	<main class="min-w-0 space-y-3.5 px-3 pt-4 sm:px-4 lg:px-6" style="padding-bottom: {Math.max(40, toastArea.height + 24)}px">
+<svelte:window onkeydown={onWindowKeydown} />
+
+<!-- The panel is a column only while a task is selected; otherwise the list spans the width. -->
+<div class="lg:flex lg:min-h-[calc(100vh-4.25rem)]">
+	<main class="min-w-0 space-y-3.5 px-3 pt-4 sm:px-4 lg:flex-1 lg:px-6" style="padding-bottom: {Math.max(40, toastArea.height + 24)}px">
 		<h1 class="sr-only">Tasks</h1>
 
 		<div class="space-y-2">
@@ -267,9 +316,25 @@
 		</div>
 
 		<div class="task-toolbar">
-			<span class="toolbar-stat text-sm"><span class="toolbar-stat-label">Open</span><span class="font-medium tabular-nums text-slate-700 dark:text-neutral-200">{open.length}</span></span>
-			<span class="toolbar-stat text-sm"><span class="toolbar-stat-label">Overdue</span><span class="font-medium tabular-nums text-red-700 dark:text-red-300">{overdue}</span></span>
-			<span class="toolbar-stat text-sm"><span class="toolbar-stat-label">Due today</span><span class="font-medium tabular-nums text-amber-700 dark:text-amber-300">{dueToday}</span></span>
+			<div class="task-scope" role="group" aria-label="Show">
+				{#each SCOPES as s (s.key)}
+					{@const on = taskView.scope === s.key}
+					{@const dot = s.key === 'today' && counts.attention > 0}
+					<button
+						type="button"
+						class="task-scope-option"
+						class:task-scope-option-active={on}
+						aria-pressed={on}
+						aria-label="{s.label}, {counts[s.key]}{dot ? `, ${counts.attention} overdue` : ''}"
+						onclick={() => (taskView.scope = s.key)}
+					>
+						{#if dot}
+							<span class="task-scope-dot" title="{counts.attention} overdue"></span>
+						{/if}
+						{s.label}<span class="task-scope-count">{counts[s.key]}</span>
+					</button>
+				{/each}
+			</div>
 			{#if sync}
 				<a href={resolve('/settings')} class="ml-auto inline-flex items-center gap-1.5 rounded-md text-xs text-slate-500 transition hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 dark:text-neutral-400 dark:hover:text-neutral-200">
 					<span class="h-2 w-2 rounded-full {sync.dot}"></span>{sync.text}
@@ -297,75 +362,89 @@
 			</div>
 		{/if}
 
-		<div bind:this={listEl} class="space-y-1">
-			{#if tasks.loaded && tasks.list.length > 0 && groups.length === 0}
-				<p class="empty-state" in:fade={{ delay: 250, duration: 150 }}>Nothing open. Nice.</p>
-			{/if}
-			{#each groups as g (g.key)}
-				<section class="flex flex-col gap-0.5" aria-labelledby="task-group-{g.key}" out:groupLeave>
-					<h2 id="task-group-{g.key}" class="task-group-header">
-						<span class="task-dot {DOTS[g.key]}"></span>{g.label}<span class="task-group-count">{g.items.length}</span>
-					</h2>
-					{#each g.items as t (t.id)}
-						<div out:rowLeave>
-							{@render row(t)}
-						</div>
-					{/each}
-				</section>
-			{/each}
-
-			{#if done.thisWeek.length || done.older.length}
-				<section class="flex flex-col gap-0.5">
-					<h2 class="m-0">
-						<button type="button" class="task-group-header" aria-expanded={showDone} onclick={() => (showDone = !showDone)}>
-							{#if showDone}<ChevronDown size={14} aria-hidden="true" />{:else}<ChevronRight size={14} aria-hidden="true" />{/if}
-							<span class="task-dot task-dot-done"></span>Completed this week
-							{#key completing.bump}
-								<span class="task-group-count" class:task-group-count-bump={bumping}>{done.thisWeek.length}</span>
-							{/key}
-						</button>
-					</h2>
-					{#if showDone}
-						<div transition:slide={{ duration: motionMs(200) }}>
-							{#each done.thisWeek as t (t.id)}
-								<div out:rowLeave>{@render row(t)}</div>
-							{:else}
-								<p class="task-help px-3 py-2">Nothing completed this week yet.</p>
-							{/each}
-							{#if done.older.length || hasMoreDone}
-								{#if showOlder}
-									<div transition:slide={{ duration: motionMs(200) }}>
-										{#each done.older as t (t.id)}
-											<div out:rowLeave>{@render row(t)}</div>
-										{/each}
-									</div>
-								{:else}
-									<button type="button" class="btn-secondary-sm ml-3 mt-2" onclick={showOlderDone}>Show older ({done.older.length}{hasMoreDone ? '+' : ''})</button>
-								{/if}
-							{/if}
-						</div>
+		<div bind:this={listEl}>
+			<!-- Switching scope swaps the list at once (keyed), so rows and groups don't slide. -->
+			{#key scope.key}
+				<div class="space-y-1" in:fade={{ duration: motionMs(120) }}>
+					{#if tasks.loaded && tasks.list.length > 0 && groups.length === 0}
+						{#if scope.key === 'all'}
+							<p class="empty-state" in:fade={{ delay: motionMs(250), duration: motionMs(150) }}>{scope.empty}</p>
+						{:else}
+							<div class="empty-state" in:fade={{ delay: motionMs(250), duration: motionMs(150) }}>
+								<p class="font-medium text-slate-700 dark:text-neutral-200">{scope.empty}</p>
+								<p class="mt-1">Quick-add phrases like “{scopePhrase(scope.key, now)}” land here.</p>
+							</div>
+						{/if}
 					{/if}
-				</section>
-			{/if}
+					{#each groups as g (g.key)}
+						<section class="flex flex-col gap-0.5" aria-labelledby="task-group-{g.key}" out:groupLeave>
+							<h2 id="task-group-{g.key}" class="task-group-header">
+								<span class="task-dot {DOTS[g.key]}"></span>{g.label}<span class="task-group-count">{g.items.length}</span>
+							</h2>
+							{#each g.items as t (t.id)}
+								<div class="task-row-item" out:rowLeave>
+									{@render row(t)}
+								</div>
+							{/each}
+						</section>
+					{/each}
+
+					{#if scope.key !== 'all'}
+						{#if doneCount && groups.length}
+							<p class="task-help px-3 pt-3">Completed tasks show under All.</p>
+						{/if}
+					{:else if doneCount}
+						<section class="flex flex-col gap-0.5">
+							<h2 class="m-0">
+								<button type="button" class="task-group-header" aria-expanded={showDone} onclick={() => (showDone = !showDone)}>
+									{#if showDone}<ChevronDown size={14} aria-hidden="true" />{:else}<ChevronRight size={14} aria-hidden="true" />{/if}
+									<span class="task-dot task-dot-done"></span>Completed this week
+									{#key completing.bump}
+										<span class="task-group-count" class:task-group-count-bump={bumping}>{done.thisWeek.length}</span>
+									{/key}
+								</button>
+							</h2>
+							{#if showDone}
+								<div class="flex flex-col gap-0.5" transition:slide={{ duration: motionMs(200) }}>
+									{#each done.thisWeek as t (t.id)}
+										<div class="task-row-item" out:rowLeave>{@render row(t)}</div>
+									{:else}
+										<p class="task-help px-3 py-2">Nothing completed this week yet.</p>
+									{/each}
+									{#if done.older.length || hasMoreDone}
+										{#if showOlder}
+											<div class="task-rows-more flex flex-col gap-0.5" transition:slide={{ duration: motionMs(200) }}>
+												{#each done.older as t (t.id)}
+													<div class="task-row-item" out:rowLeave>{@render row(t)}</div>
+												{/each}
+											</div>
+										{:else}
+											<button type="button" class="btn-secondary-sm ml-3 mt-2" onclick={showOlderDone}>Show older ({done.older.length}{hasMoreDone ? '+' : ''})</button>
+										{/if}
+									{/if}
+								</div>
+							{/if}
+						</section>
+					{/if}
+				</div>
+			{/key}
 		</div>
 	</main>
 
-	<aside class="task-panel" aria-label="Task details">
-		<!-- Bottom padding clears the reminder toasts (bottom right), so the panel's end stays reachable. -->
-		<div class="px-6 pt-5 lg:sticky lg:top-0 lg:max-h-screen lg:overflow-y-auto" style="padding-bottom: {toastArea.height + 32}px">
-			{#if selected}
-				{@const s = selected}
+	{#if selected}
+		{@const s = selected}
+		<aside bind:this={panelEl} class="task-panel lg:w-[27.5rem] lg:shrink-0" aria-label="Task details" transition:panelReveal>
+			<!-- Bottom padding clears the reminder toasts (bottom right), so the panel's end stays reachable. -->
+			<div class="px-6 pt-5 lg:sticky lg:top-0 lg:max-h-screen lg:w-[calc(27.5rem-1px)] lg:overflow-y-auto" style="padding-bottom: {toastArea.height + 32}px">
 				<TaskPanel
 					task={completing.rows[s.id]?.task ?? s}
 					{now}
 					notes={targets.notes}
 					ticking={completing.rows[s.id]?.phase === 'tick'}
 					ontoggle={() => void toggle(s)}
-					onclose={() => (selectedId = null)}
+					onclose={closePanel}
 				/>
-			{:else}
-				<div class="empty-state mt-10">Select a task to edit it</div>
-			{/if}
-		</div>
-	</aside>
+			</div>
+		</aside>
+	{/if}
 </div>

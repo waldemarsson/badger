@@ -12,6 +12,8 @@
 		disabled?: boolean;
 		/** A separator above this item. */
 		separator?: boolean;
+		/** Asks first: the item turns into this prompt with Cancel and a button named `label`. */
+		confirm?: string;
 		run: () => void;
 	}
 </script>
@@ -33,6 +35,7 @@
 		items,
 		label,
 		anchorHeight = 0,
+		align = 'start',
 		onclose
 	}: {
 		/** Where it opens: the pointer, or a row's bottom-left for keyboard opening. */
@@ -43,13 +46,22 @@
 		label: string;
 		/** Height of the row a keyboard-opened menu sits under (flipping up clears it). */
 		anchorHeight?: number;
+		/** `end`: the menu's right edge goes at `x` (a button at the right of a row). */
+		align?: 'start' | 'end';
 		/** `refocus`: put focus back on what the menu was opened for (Esc, Tab, an item). */
 		onclose: (refocus: boolean) => void;
 	} = $props();
 
 	let menuEl: HTMLElement;
 	let pos = $state<MenuPlacement | null>(null); // null until measured (rendered hidden)
+	/**
+	 * Measured once, hidden at the window's left edge (so the space right of `x` can't squeeze
+	 * it), and kept: a confirm prompt never widens it past where it was placed.
+	 */
+	let width = $state<number | null>(null);
 	let closed = false;
+	/** Index of the item showing its confirm prompt. */
+	let confirming = $state<number | null>(null);
 
 	/** Danger items get a separator above them (unless one already leads the list). */
 	const separated = $derived(items.map((item, i) => i > 0 && (!!item.separator || (!!item.danger && !items[i - 1].danger))));
@@ -71,10 +83,36 @@
 	}
 
 	/** Closes first (focus back on the row), so an action that moves focus keeps it. */
-	function run(item: MenuItem): void {
+	function run(item: MenuItem, confirmed = false): void {
 		if (item.disabled) return;
+		if (item.confirm && !confirmed) {
+			swap(items.indexOf(item), '[data-confirm]');
+			return;
+		}
 		close(true);
 		item.run();
+	}
+
+	/** Back from the prompt to the item it asked for. */
+	function cancelConfirm(): void {
+		swap(null, `[data-item="${confirming}"]`);
+	}
+
+	/**
+	 * Shows or hides an item's prompt, then focuses `selector`. Focus parks on the menu first:
+	 * the focused button is about to be removed, and losing it must not read as leaving.
+	 */
+	function swap(index: number | null, selector: string): void {
+		menuEl.focus({ preventScroll: true });
+		confirming = index;
+		void tick().then(() => {
+			if (!closed) menuEl.querySelector<HTMLElement>(selector)?.focus({ preventScroll: true });
+		});
+	}
+
+	function hoverFocus(e: PointerEvent): void {
+		const el = e.currentTarget as HTMLElement;
+		if (document.activeElement !== el) el.focus({ preventScroll: true });
 	}
 
 	function onkeydown(e: KeyboardEvent): void {
@@ -95,7 +133,7 @@
 				break;
 			case 'Enter':
 			case ' ':
-				if (items[index]) run(items[index]);
+				itemEls()[index]?.click();
 				break;
 			case 'Escape':
 			case 'Tab':
@@ -122,7 +160,9 @@
 	const onWindowScroll = () => close(true);
 
 	onMount(() => {
-		pos = placeMenu(x, y, menuEl.offsetWidth, menuEl.offsetHeight, window.innerWidth, window.innerHeight, MARGIN, anchorHeight);
+		const w = Math.ceil(parseFloat(getComputedStyle(menuEl).width)); // unscaled (the intro scales it)
+		width = w;
+		pos = placeMenu(align === 'end' ? x - w : x, y, w, menuEl.offsetHeight, window.innerWidth, window.innerHeight, MARGIN, anchorHeight);
 		void tick().then(() => {
 			if (!closed) focusItem(0);
 		});
@@ -145,8 +185,10 @@
 	aria-label={label}
 	aria-orientation="vertical"
 	class="ctx-menu"
-	style="left: {pos?.left ?? x}px; top: {pos?.top ?? y}px; transform-origin: {pos && pos.left < x ? 'right' : 'left'} {pos && pos.top < y ? 'bottom' : 'top'};"
+	class:ctx-menu-confirmable={items.some((item) => item.confirm)}
+	style="left: {pos?.left ?? 0}px; top: {pos?.top ?? y}px; transform-origin: {pos && pos.left < x ? 'right' : 'left'} {pos && pos.top < y ? 'bottom' : 'top'};"
 	style:visibility={pos ? null : 'hidden'}
+	style:width={width === null ? null : `${width}px`}
 	in:scale={{ start: 0.96, duration: 150, easing: cubicOut }}
 	{onkeydown}
 	{onfocusout}
@@ -157,26 +199,36 @@
 		{#if separated[i]}
 			<div role="separator" class="ctx-menu-separator"></div>
 		{/if}
-		<button
-			type="button"
-			role="menuitem"
-			tabindex="-1"
-			class="ctx-menu-item"
-			class:ctx-menu-item-danger={item.danger}
-			class:ctx-menu-item-disabled={item.disabled}
-			aria-disabled={item.disabled || undefined}
-			onclick={() => run(item)}
-			onpointermove={(e) => {
-				if (document.activeElement !== e.currentTarget) e.currentTarget.focus({ preventScroll: true });
-			}}
-		>
-			{#if item.icon}
-				<item.icon size={15} class="ctx-menu-icon" />
-			{/if}
-			<span class="min-w-0 flex-1 truncate">{item.label}</span>
-			{#if item.hint}
-				<kbd class="ctx-menu-hint">{item.hint}</kbd>
-			{/if}
-		</button>
+		{#if confirming === i}
+			<div class="ctx-menu-confirm" role="group" aria-label={item.confirm}>
+				{#if item.icon}
+					<item.icon size={15} class="shrink-0" />
+				{/if}
+				<span class="min-w-0 flex-1 truncate">{item.confirm}</span>
+				<button type="button" role="menuitem" tabindex="-1" class="ctx-menu-confirm-cancel" onclick={cancelConfirm} onpointermove={hoverFocus}>Cancel</button>
+				<button type="button" role="menuitem" tabindex="-1" class="ctx-menu-confirm-ok" data-confirm onclick={() => run(item, true)} onpointermove={hoverFocus}>{item.label}</button>
+			</div>
+		{:else}
+			<button
+				type="button"
+				role="menuitem"
+				tabindex="-1"
+				class="ctx-menu-item"
+				class:ctx-menu-item-danger={item.danger}
+				class:ctx-menu-item-disabled={item.disabled}
+				aria-disabled={item.disabled || undefined}
+				data-item={i}
+				onclick={() => run(item)}
+				onpointermove={hoverFocus}
+			>
+				{#if item.icon}
+					<item.icon size={15} class="ctx-menu-icon" />
+				{/if}
+				<span class="min-w-0 flex-1 truncate">{item.label}</span>
+				{#if item.hint}
+					<kbd class="ctx-menu-hint">{item.hint}</kbd>
+				{/if}
+			</button>
+		{/if}
 	{/each}
 </div>

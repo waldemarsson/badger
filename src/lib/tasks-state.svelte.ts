@@ -13,7 +13,8 @@ import {
 	TICK_MS,
 	undoActive,
 	undoEntry,
-	type PendingUndo
+	type PendingUndo,
+	type TaskScope
 } from '#lib/tasks.js';
 
 const CLOCK_MS = 30_000;
@@ -30,6 +31,9 @@ export const tasks = $state<{ list: Task[]; loaded: boolean; error: string; done
 
 /** Epoch ms, ticking every 30 s while watched: overdue counts, groups and labels follow it. */
 export const clock = $state({ ms: Date.now() });
+
+/** /tasks view state for the session (back to All on restart, never saved). */
+export const taskView = $state<{ scope: TaskScope }>({ scope: 'all' });
 
 /** Height (px) of the fixed reminder toast stack; 0 when none shows. Pages pad their bottom by it. */
 export const toastArea = $state({ height: 0 });

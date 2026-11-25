@@ -8,8 +8,9 @@
 	import Repeat from '@lucide/svelte/icons/repeat';
 	import FileText from '@lucide/svelte/icons/file-text';
 
-	// Row and quick-add preview chips (labels from `taskChips` / `planChips`).
-	let { chips }: { chips: Chip[] } = $props();
+	// Row and quick-add preview chips (labels from `taskChips` / `planChips`). Rows use the
+	// bare look (icon and colored text); the quick-add preview keeps pills.
+	let { chips, variant = 'pill' }: { chips: Chip[]; variant?: 'pill' | 'bare' } = $props();
 
 	// Full class names, so Tailwind's content scan keeps them.
 	const TONES: Record<ChipTone, string> = {
@@ -18,6 +19,13 @@
 		sky: 'task-chip-sky',
 		violet: 'task-chip-violet',
 		slate: 'task-chip-slate'
+	};
+	const BARE_TONES: Record<ChipTone, string> = {
+		red: 'task-chip-bare-red',
+		amber: 'task-chip-bare-amber',
+		sky: 'task-chip-bare-sky',
+		violet: 'task-chip-bare-violet',
+		slate: 'task-chip-bare-slate'
 	};
 	const ICONS: Record<ChipIcon, typeof Bell> = {
 		cal: CalendarDays,
@@ -32,7 +40,13 @@
 
 {#each chips as chip, i (i)}
 	{@const Icon = ICONS[chip.icon]}
-	<span class="task-chip {TONES[chip.tone]}" title={chip.title}>
-		<Icon size={12} class="shrink-0" aria-hidden="true" /><span class="truncate">{chip.label}</span>
-	</span>
+	{#if variant === 'bare'}
+		<span class="task-chip-bare {BARE_TONES[chip.tone]}" title={chip.title}>
+			<Icon size={13} class="shrink-0" aria-hidden="true" /><span class="truncate">{chip.label}</span>
+		</span>
+	{:else}
+		<span class="task-chip {TONES[chip.tone]}" title={chip.title}>
+			<Icon size={12} class="shrink-0" aria-hidden="true" /><span class="truncate">{chip.label}</span>
+		</span>
+	{/if}
 {/each}

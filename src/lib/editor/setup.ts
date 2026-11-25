@@ -1,13 +1,14 @@
 // The note editor's extensions: history, keys, theme and link data shared by every note,
 // plus one mode per note kind. Markdown mode: markdown (GFM), live preview, tags and
-// wikilinks, the `/`, `#` and `[[` menus, and Format/Minify for ```json blocks. JSON mode:
-// see json-mode.ts. No basicSetup: only what a notes editor needs.
+// wikilinks, the `/`, `#` and `[[` menus, Format/Minify for ```json blocks and results for
+// ```calc blocks. JSON mode: see json-mode.ts. No basicSetup: only what a notes editor needs.
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
-import { languages } from '@codemirror/language-data';
 import { EditorState, type Extension } from '@codemirror/state';
 import { drawSelection, EditorView, keymap, placeholder } from '@codemirror/view';
 import { blockPreview } from '#lib/editor/blocks.js';
+import { calcResultsPlugin } from '#lib/editor/calc.js';
+import { matchCodeLanguage } from '#lib/editor/calc-language.js';
 import { focusTracking } from '#lib/editor/focus.js';
 import { jsonBlocks } from '#lib/editor/json-blocks.js';
 import { formatReport, jsonMode } from '#lib/editor/json-mode.js';
@@ -46,16 +47,18 @@ export function noteExtensions(
 export function markdownMode(onFollow: (link: LinkFollow) => void): Extension {
 	return [
 		// markdown() also installs markdownKeymap: list continuation, empty item exits.
-		// Fenced code is parsed with its language, loaded on first use (one chunk each).
+		// Fenced code is parsed with its language, loaded on first use (one chunk each);
+		// ```calc is built in.
 		// No HTML tag completion: the `/`, `#` and `[[` menus are the only completion sources.
-		markdown({ base: markdownLanguage, codeLanguages: languages, completeHTMLTags: false }),
+		markdown({ base: markdownLanguage, codeLanguages: matchCodeLanguage, completeHTMLTags: false }),
 		EditorView.contentAttributes.of({ spellcheck: 'true', autocorrect: 'off', autocapitalize: 'off' }),
 		placeholder('Start writing…'),
 		livePreview,
 		noteLinks(onFollow),
 		blockPreview,
 		slashMenu,
-		jsonBlocks
+		jsonBlocks,
+		calcResultsPlugin
 	];
 }
 

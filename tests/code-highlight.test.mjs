@@ -1,3 +1,4 @@
+import './helpers/lib-resolve.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { markdownLanguage } from '@codemirror/lang-markdown';
@@ -19,4 +20,9 @@ test('a ```md block loading Markdown does not turn the note into code', async ()
 	const md = await load('Markdown');
 	assert.equal(isCodeLanguage(topType(md.language)), false);
 	assert.equal(isCodeLanguage(topType(markdownLanguage)), false);
+});
+
+test('calc blocks get code colors', async () => {
+	const { calcLanguage } = await import('../src/lib/editor/calc-language.ts');
+	assert.equal(isCodeLanguage(topType(calcLanguage)), true);
 });

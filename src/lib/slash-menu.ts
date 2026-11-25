@@ -13,7 +13,7 @@ export interface SlashTrigger {
 }
 
 export interface SlashItem {
-	id: 'table' | 'code' | 'task' | 'callout' | 'date';
+	id: 'table' | 'code' | 'calc' | 'task' | 'callout' | 'date';
 	label: string;
 	/** Short preview shown next to the label. */
 	detail: string;
@@ -97,6 +97,7 @@ const tableTemplate = [
 export const SLASH_ITEMS: SlashItem[] = [
 	{ id: 'table', label: 'Table', detail: '3 × 3', block: true, template: () => tableTemplate },
 	{ id: 'code', label: 'Code block', detail: '```', block: true, template: () => '```${}\n${}\n```' },
+	{ id: 'calc', label: 'Calculation', detail: '```calc', block: true, template: () => '```calc\n${}\n```' },
 	{ id: 'task', label: 'Task list', detail: '- [ ]', block: true, template: () => '- [ ] ${}' },
 	{ id: 'callout', label: 'Callout', detail: '> [!note]', block: true, template: () => '> [!note] ${}' },
 	{
@@ -128,7 +129,7 @@ export function slashInsertion(
 ): { deleteBefore: number; template: string } {
 	const template = item.template(now);
 	if (!item.block) return { deleteBefore: 0, template };
-	const multiline = item.id === 'table' || item.id === 'code';
+	const multiline = item.id === 'table' || item.id === 'code' || item.id === 'calc';
 	if (before.trim() && containerPrefix.test(before)) {
 		// Only list/quote markers before the `/`. A one-line item stays in that list item or
 		// quote; a table or code block can't, so it replaces the (empty) item.

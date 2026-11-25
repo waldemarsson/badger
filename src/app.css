@@ -1308,6 +1308,71 @@
     border-left: 1px solid var(--note-border);
   }
 
+  /* ```calc blocks (src/lib/calc-reader.ts): expression/result rows inside the kept <pre>. */
+  .note-prose pre.calc-block {
+    @apply px-4 py-2;
+    background-color: transparent;
+    box-shadow: inset 0 0 0 1px var(--note-border);
+  }
+
+  .note-prose table.calc-table {
+    @apply w-full min-w-0 max-w-none overflow-visible rounded-none border-0;
+    font-size: inherit;
+    line-height: 1.75;
+  }
+
+  .note-prose .calc-table td {
+    @apply border-0 p-0 align-top;
+  }
+
+  .note-prose .calc-table .calc-expr {
+    @apply whitespace-pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  /* A grouped number (`1 380,50`) never wraps at its spaces. */
+  .note-prose .calc-table .calc-num {
+    @apply whitespace-nowrap;
+  }
+
+  .note-prose .calc-table .calc-result {
+    @apply select-none whitespace-nowrap pl-6 text-right;
+    color: var(--note-fg);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .note-prose .calc-row-sum td {
+    @apply pt-0.5 font-semibold;
+    border-top: 1px solid var(--note-quote-border);
+  }
+
+  .note-prose .calc-row-sum .calc-result {
+    color: var(--note-heading);
+    font-weight: 700;
+  }
+
+  .note-prose .calc-row-error .calc-result {
+    color: var(--note-code-invalid);
+  }
+
+  .note-prose .calc-row-blank td {
+    height: 0.75em;
+  }
+
+  .note-prose .calc-copy {
+    @apply cursor-pointer rounded-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400;
+    font: inherit;
+    color: inherit;
+  }
+
+  .note-prose .calc-copy:hover {
+    color: var(--note-link);
+  }
+
+  .note-prose .calc-copy.calc-copied {
+    color: var(--note-check);
+  }
+
   body.is-dragging,
   body.is-dragging * {
     @apply select-none;

@@ -52,7 +52,7 @@ Optionally, turn on sync in Settings › Preferences › Apple Reminders: open t
 
 ### Notes — markdown with live preview
 
-Notes with a live-preview editor: headings, task lists, quotes, and syntax-highlighted code render as you type. Organise them in nested folders with drag and drop or a right-click menu, link notes with `[[wikilinks]]` and see what links back, and tag them with `#tags` — including your customers, projects, issues, and tasks, which show up as live chips. Pin the important ones, search (or filter by `#tag`) everything with ranked full-text search and highlighted matches, optionally adding meaning-based results from a downloaded on-device model (Settings › Preferences), switch to a clean read view, and copy a note as HTML for email or chat. Edits save automatically, including on quit.
+Notes with a live-preview editor: headings, task lists, quotes, and syntax-highlighted code render as you type. A ` ```calc ` block adds itself up: `name = expr` lines, `sum` for running totals and `20% of x`, with results shown beside each line and never saved into the note. Organise them in nested folders with drag and drop or a right-click menu, link notes with `[[wikilinks]]` and see what links back, and tag them with `#tags` — including your customers, projects, issues, and tasks, which show up as live chips. Pin the important ones, search (or filter by `#tag`) everything with ranked full-text search and highlighted matches, optionally adding meaning-based results from a downloaded on-device model (Settings › Preferences), switch to a clean read view, and copy a note as HTML for email or chat. Edits save automatically, including on quit.
 
 | Light | Dark |
 | --- | --- |

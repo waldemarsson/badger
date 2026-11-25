@@ -7,6 +7,7 @@ import type { Extension } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import type { NodeType } from '@lezer/common';
 import { tags, type Highlighter } from '@lezer/highlight';
+import { calcLanguage, calcTags } from '#lib/editor/calc-language.js';
 
 const mono = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
 
@@ -130,6 +131,30 @@ const editorTheme = EditorView.theme({
 		textTransform: 'uppercase',
 		color: 'var(--note-muted)'
 	},
+	// ```calc results (calc.ts): kept in the line's right padding, sized to the result, so
+	// a long line wraps before it. Calc lines are never a fence line, so no top padding.
+	'.cm-calc-line': { position: 'relative', paddingRight: 'calc(var(--cm-calc-width) + 2.25rem)' },
+	'.cm-calc-result': {
+		position: 'absolute',
+		top: '0',
+		right: '0.75rem',
+		margin: '0',
+		padding: '0',
+		border: 'none',
+		background: 'none',
+		font: 'inherit',
+		color: 'var(--note-muted)',
+		whiteSpace: 'nowrap',
+		fontVariantNumeric: 'tabular-nums',
+		userSelect: 'none',
+		cursor: 'default'
+	},
+	'button.cm-calc-result': { cursor: 'pointer', transition: 'color 150ms' },
+	'button.cm-calc-result:hover': { color: 'var(--note-fg)' },
+	'.cm-calc-result-sum': { fontWeight: '650', color: 'var(--note-code-comment)' },
+	'.cm-calc-result-error': { color: 'var(--note-code-invalid)' },
+	'button.cm-calc-result.cm-calc-copied': { color: 'var(--note-check)' },
+	'button.cm-calc-result.cm-calc-copy-failed': { color: 'var(--note-code-invalid)' },
 
 	// Table source (while the selection is in it)
 	'.cm-md-table-src': { fontFamily: mono, fontSize: '0.88em' },
@@ -308,12 +333,14 @@ export const codeHighlight = HighlightStyle.define([
 	{ tag: [tags.invalid, tags.deleted], color: 'var(--note-code-invalid)' },
 	{ tag: tags.inserted, color: 'var(--note-code-string)' },
 	{ tag: [tags.heading, tags.strong], fontWeight: '650' },
-	{ tag: tags.emphasis, fontStyle: 'italic' }
+	{ tag: tags.emphasis, fontStyle: 'italic' },
+	{ tag: calcTags.name, color: 'var(--note-code-function)' },
+	{ tag: [calcTags.operator, calcTags.label], color: 'var(--note-muted)' }
 ]);
 
 const codeTypes = new WeakSet<NodeType>();
 
-/** Is `type` the top node of a fenced-code language (loaded from language-data)? */
+/** Is `type` the top node of a fenced-code language (language-data's, or calc)? */
 export function isCodeLanguage(type: NodeType): boolean {
 	if (codeTypes.has(type)) return true;
 	const data = type.prop(languageDataProp);
@@ -321,7 +348,7 @@ export function isCodeLanguage(type: NodeType): boolean {
 	// markdown is never code here, or the note itself would get code colors.
 	if (!data || data === markdownLanguage.data) return false;
 	// Only positive answers are cached: a description may load later.
-	if (!languages.some((desc) => desc.support?.language.data === data)) return false;
+	if (data !== calcLanguage.data && !languages.some((desc) => desc.support?.language.data === data)) return false;
 	codeTypes.add(type);
 	return true;
 }

@@ -1,11 +1,13 @@
 <script lang="ts">
 	// Read view for the Notes page: HTML rendered (and locked down) by Rust's
-	// render_markdown, code blocks highlighted with the editor's colors, and links
+	// render_markdown, ```calc blocks shown as expression/result rows (a click on a result
+	// copies it), code blocks highlighted with the editor's colors, and links
 	// opened in the default browser instead of navigating the WebView. Tags, chips and
 	// wikilinks (data-tag / data-note, see markdown.rs) are followed in the app, and
 	// `#heading` links scroll to that heading.
 	import { openUrl } from '@tauri-apps/plugin-opener';
-	import { highlightCodeBlocks } from '#lib/editor/highlight-code.js';
+	import { renderCalcBlocks } from '#lib/calc-reader.js';
+	import { highlightCalc, highlightCodeBlocks } from '#lib/editor/highlight-code.js';
 	import { isOpenableUrl } from '#lib/links.js';
 	import type { LinkFollow } from '#lib/note-links.js';
 
@@ -27,8 +29,9 @@
 	let host: HTMLElement;
 
 	$effect(() => {
-		void html; // re-highlight after every render
+		void html; // re-render calc blocks and re-highlight after every render
 		let live = true;
+		renderCalcBlocks(host, { highlight: highlightCalc }); // before highlighting: it replaces their <code>
 		void highlightCodeBlocks(host, () => live);
 		return () => {
 			live = false;
@@ -36,6 +39,8 @@
 	});
 
 	function onclick(e: MouseEvent): void {
+		const copy = e.target instanceof Element ? e.target.closest<HTMLElement>('[data-calc-copy]') : null;
+		if (copy) return copyResult(copy);
 		const link = e.target instanceof Element ? e.target.closest('a') : null;
 		if (!link) return;
 		e.preventDefault(); // the WebView never navigates away from the app
@@ -50,6 +55,17 @@
 		if (href.startsWith('#')) return scrollToHeading(href.slice(1));
 		if (!isOpenableUrl(href)) return;
 		openUrl(href).catch(() => onerror(`Couldn't open ${href}`));
+	}
+
+	/** A calc result: copied as shown, without the ⚠. */
+	function copyResult(button: HTMLElement): void {
+		navigator.clipboard.writeText(button.dataset.calcCopy ?? '').then(
+			() => {
+				button.classList.add('calc-copied');
+				setTimeout(() => button.classList.remove('calc-copied'), 900);
+			},
+			() => onerror("Couldn't copy the result")
+		);
 	}
 
 	/** `[text](#heading)`: render_markdown gives headings matching ids (href percent-encoded). */
@@ -70,7 +86,7 @@
 	}
 </script>
 
-<!-- Clicks are only handled on links, which get keyboard activation (Enter) for free. -->
+<!-- Clicks are only handled on links and calc results, which get keyboard activation (Enter) for free. -->
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions, a11y_no_noninteractive_tabindex -->
 <article bind:this={host} class="note-reader {className}" tabindex="0" aria-label="Note" {onclick}>
 	{#if html}

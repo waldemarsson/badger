@@ -46,6 +46,10 @@ When a reminder goes off you get a native macOS notification, or an in-app toast
 
 Optionally, turn on sync in Settings › Preferences › Apple Reminders: open tasks (except repeating ones and any you mark *Keep off phone*) sync both ways with one Reminders list, "Badger", so iCloud carries them and their alerts to your iPhone.
 
+| Light | Dark |
+| --- | --- |
+| ![Tasks](docs/screenshots/tasks.png) | ![Tasks, dark](docs/screenshots/tasks-dark.png) |
+
 ### Notes — markdown with live preview
 
 Notes with a live-preview editor: headings, task lists, quotes, and syntax-highlighted code render as you type. Organise them in nested folders with drag and drop or a right-click menu, link notes with `[[wikilinks]]` and see what links back, and tag them with `#tags` — including your customers, projects, issues, and tasks, which show up as live chips. Pin the important ones, search (or filter by `#tag`) everything with ranked full-text search and highlighted matches, optionally adding meaning-based results from a downloaded on-device model (Settings › Preferences), switch to a clean read view, and copy a note as HTML for email or chat. Edits save automatically, including on quit.

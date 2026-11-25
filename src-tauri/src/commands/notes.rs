@@ -15,9 +15,10 @@ const FORBIDDEN_TITLE_CHARS: [char; 5] = ['[', ']', '|', '#', '`'];
 const UNTITLED: &str = "Untitled";
 /// Version of the link extraction rules. Bump it when they change: the next start
 /// rebuilds `note_refs` and `notes_fts` (see `db::backfill_note_refs`). 2: JSON notes are
-/// title-only. Older builds reset it to 1 when they rebuild, so after a downgrade (which
-/// indexes JSON bodies as markdown) the next start of this build rebuilds again.
-pub const NOTE_REFS_VERSION: &str = "2";
+/// title-only. 3: `#task/<id>` chips replace `#todo/<id>` (the tasks migration). Older builds
+/// reset it to their own value when they rebuild, so after a downgrade (which indexes JSON
+/// bodies as markdown) the next start of this build rebuilds again.
+pub const NOTE_REFS_VERSION: &str = "3";
 pub const NOTE_REFS_VERSION_KEY: &str = "note_refs_version";
 /// Note (and scratchpad) kinds: the editor mode stored in `Kind`.
 pub const KIND_MARKDOWN: &str = "markdown";
@@ -1191,15 +1192,15 @@ pub async fn inner_rebuild_search_index(pool: &Pool<Sqlite>) -> Result<SearchInd
 /// A `#` autocomplete entry. `tag` is what follows the `#` when inserted.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TagSuggestion {
-    /// `tag` (in use in some note), `customer`, `project`, `issue` or `todo`.
+    /// `tag` (in use in some note), `customer`, `project`, `issue` or `task`.
     pub kind: String,
     pub tag: String,
     /// Display text: the tag, the customer or project name, the issue as
-    /// "title — customer / project", or the todo title.
+    /// "title — customer / project", or the task title.
     pub label: String,
     /// Projects: the customer name.
     pub detail: Option<String>,
-    /// Todos: `not_started` or `in_progress`.
+    /// Tasks: `open` (only open tasks are suggested).
     pub status: Option<String>,
 }
 
@@ -1226,18 +1227,19 @@ pub struct IssueTarget {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, FromRow)]
-pub struct TodoTarget {
+pub struct TaskTarget {
     pub id: i64,
     pub title: String,
+    /// `open` or `done`.
     pub status: String,
 }
 
-/// What wikilinks and `#issue/<id>` / `#todo/<id>` chips resolve to (editor live preview).
+/// What wikilinks and `#issue/<id>` / `#task/<id>` chips resolve to (editor live preview).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LinkTargets {
     pub notes: Vec<NoteTarget>,
     pub issues: Vec<IssueTarget>,
-    pub todos: Vec<TodoTarget>,
+    pub tasks: Vec<TaskTarget>,
 }
 
 /// Customer and project tags by slug path. A clashing slug belongs to the lowest id;
@@ -1285,7 +1287,7 @@ pub(crate) async fn load_entity_tags(
 }
 
 /// Everything `#` autocomplete offers: tags in use (not already an entity's tag),
-/// customers, projects, all issues and the todos that aren't done.
+/// customers, projects, all issues and the open tasks (in list order).
 pub async fn inner_list_tag_suggestions(
     pool: &Pool<Sqlite>,
 ) -> Result<Vec<TagSuggestion>, AppError> {
@@ -1335,14 +1337,15 @@ pub async fn inner_list_tag_suggestions(
             format!("{title} — {customer} / {project}"),
         )
     });
-    let todos: Vec<(i64, String, String)> = sqlx::query_as(
-        "SELECT id, Title, Status FROM todos WHERE Status != 'done' ORDER BY Status DESC, Position, id",
+    let tasks: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT id, Title FROM tasks WHERE Done = 0 \
+         ORDER BY DueDate IS NULL, DueDate, DueTime IS NULL, DueTime, CreatedAt, id",
     )
     .fetch_all(&mut *conn)
     .await?;
-    let todos = todos.into_iter().map(|(id, title, status)| TagSuggestion {
-        status: Some(status),
-        ..suggestion("todo", format!("todo/{id}"), title)
+    let tasks = tasks.into_iter().map(|(id, title)| TagSuggestion {
+        status: Some("open".to_string()),
+        ..suggestion("task", format!("task/{id}"), title)
     });
 
     let in_use: Vec<String> = sqlx::query_scalar(
@@ -1363,11 +1366,11 @@ pub async fn inner_list_tag_suggestions(
         .chain(customers)
         .chain(projects)
         .chain(issues)
-        .chain(todos)
+        .chain(tasks)
         .collect())
 }
 
-/// Note titles, issues and todos for resolving wikilinks and chips in the editor.
+/// Note titles, issues and tasks for resolving wikilinks and chips in the editor.
 pub async fn inner_get_link_targets(pool: &Pool<Sqlite>) -> Result<LinkTargets, AppError> {
     let notes = sqlx::query_as::<_, NoteTarget>("SELECT id, Title AS title FROM notes ORDER BY id")
         .fetch_all(pool)
@@ -1380,15 +1383,16 @@ pub async fn inner_get_link_targets(pool: &Pool<Sqlite>) -> Result<LinkTargets, 
     )
     .fetch_all(pool)
     .await?;
-    let todos = sqlx::query_as::<_, TodoTarget>(
-        "SELECT id, Title AS title, Status AS status FROM todos ORDER BY id",
+    let tasks = sqlx::query_as::<_, TaskTarget>(
+        "SELECT id, Title AS title, CASE WHEN Done = 1 THEN 'done' ELSE 'open' END AS status \
+         FROM tasks ORDER BY id",
     )
     .fetch_all(pool)
     .await?;
     Ok(LinkTargets {
         notes,
         issues,
-        todos,
+        tasks,
     })
 }
 
@@ -1585,8 +1589,8 @@ pub async fn rename_note(
     semantic: State<'_, SemanticState>,
 ) -> Result<RenamedNote, AppError> {
     let renamed = rename_note_and_queue(id, &title, pool.inner(), semantic.inner()).await?;
-    // Linked reminders show the note's title.
-    crate::reminders_scheduler::reminders_changed(&app, pool.inner()).await;
+    // Linked tasks show the note's title.
+    crate::task_scheduler::tasks_changed(&app, pool.inner()).await;
     Ok(renamed)
 }
 
@@ -1629,8 +1633,8 @@ pub async fn delete_note(
     semantic: State<'_, SemanticState>,
 ) -> Result<(), AppError> {
     delete_note_and_evict(id, pool.inner(), semantic.inner()).await?;
-    // Its reminders cascade away.
-    crate::reminders_scheduler::reminders_changed(&app, pool.inner()).await;
+    // Linked tasks are unlinked (never deleted).
+    crate::task_scheduler::tasks_changed(&app, pool.inner()).await;
     Ok(())
 }
 
@@ -2287,15 +2291,15 @@ mod tests {
 
     /// Customers 1 Acme, 2 "ACME!" (slug clash: 1 owns `acme`), 3 "123" (no slug);
     /// projects 1 Acme/Web App, 2 Acme/web-app (clash), 3 ACME!/Other (customer has no
-    /// tag); issue 7 in project 1; todos 4 (in progress), 5 (done).
+    /// tag); issue 7 in project 1; tasks 4 (open), 5 (done).
     async fn seed_entities(pool: &Pool<Sqlite>) {
         sqlx::raw_sql(
             "INSERT INTO customers (id, Name) VALUES (1, 'Acme'), (2, 'ACME!'), (3, '123');
              INSERT INTO projects (id, CustomerId, Name) VALUES
                  (1, 1, 'Web App'), (2, 1, 'web-app'), (3, 2, 'Other');
              INSERT INTO issues (id, ProjectId, Title) VALUES (7, 1, 'Login bug');
-             INSERT INTO todos (id, Title, Status, CreatedAt) VALUES
-                 (4, 'Call Åsa', 'in_progress', 'x'), (5, 'Finished', 'done', 'x');",
+             INSERT INTO tasks (id, Title, Done, CreatedAt, UpdatedAt) VALUES
+                 (4, 'Call Åsa', 0, 'x', 'x'), (5, 'Finished', 1, 'x', 'x');",
         )
         .execute(pool)
         .await
@@ -2308,7 +2312,7 @@ mod tests {
         seed_entities(&pool).await;
         note_with(
             "Tagged",
-            "#Meeting #acme #acme/web-app #issue/7 #todo/5 #issue/999",
+            "#Meeting #acme #acme/web-app #issue/7 #task/5 #issue/999",
             &pool,
         )
         .await;
@@ -2331,12 +2335,12 @@ mod tests {
         assert_eq!(
             got,
             vec![
-                // in use, minus entity tags and `issue/<id>`/`todo/<id>` shapes
+                // in use, minus entity tags and `issue/<id>`/`task/<id>` shapes
                 row("tag", "meeting", "meeting", None, None),
                 row("customer", "acme", "Acme", None, None),
                 row("project", "acme/web-app", "Web App", Some("Acme"), None),
                 row("issue", "issue/7", "Login bug — Acme / Web App", None, None),
-                row("todo", "todo/4", "Call Åsa", None, Some("in_progress")),
+                row("task", "task/4", "Call Åsa", None, Some("open")),
             ]
         );
     }
@@ -2345,7 +2349,7 @@ mod tests {
     async fn tag_suggestions_skip_reserved_customer_slugs() {
         let pool = crate::test_db().await;
         sqlx::raw_sql(
-            "INSERT INTO customers (id, Name) VALUES (1, 'Issue'), (2, 'todo'), (3, 'Acme');
+            "INSERT INTO customers (id, Name) VALUES (1, 'Issue'), (2, 'task'), (3, 'Acme');
              INSERT INTO projects (id, CustomerId, Name) VALUES (1, 1, 'Web'), (2, 2, 'API');",
         )
         .execute(&pool)
@@ -2361,7 +2365,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn link_targets_list_notes_issues_and_all_todos() {
+    async fn link_targets_list_notes_issues_and_all_tasks() {
         let pool = crate::test_db().await;
         seed_entities(&pool).await;
         let n = note_titled("Plan", &pool).await;
@@ -2381,8 +2385,8 @@ mod tests {
                 context: "Acme / Web App".into()
             }]
         );
-        let todos: Vec<(i64, &str)> = t.todos.iter().map(|t| (t.id, t.status.as_str())).collect();
-        assert_eq!(todos, vec![(4, "in_progress"), (5, "done")]);
+        let tasks: Vec<(i64, &str)> = t.tasks.iter().map(|t| (t.id, t.status.as_str())).collect();
+        assert_eq!(tasks, vec![(4, "open"), (5, "done")]);
     }
 
     #[tokio::test]
@@ -3212,7 +3216,7 @@ mod tests {
     fn perf_section(i: usize) -> String {
         format!(
             "## Section {i}\n\nNotes for sprint {i} with #planning and #team/backend, see [[Roadmap]] and [[Meeting {i}]].\n\
-             Follow-up on #issue/{} and #todo/{}; **bold**, *italic*, `code` and a [link](https://example.com/{i}).\n\n\
+             Follow-up on #issue/{} and #task/{}; **bold**, *italic*, `code` and a [link](https://example.com/{i}).\n\n\
              Setext heading {i}\n==================\n\n- first bullet with #tag{i}\n- second bullet [[Design doc|the design]]\n\
              \x20 - nested bullet\n- [ ] open task\n- [x] done task\n\n1. one\n2. two\n3. three\n\n\
              | Name | Owner | Status |\n| :--- | :---: | ---: |\n| Item {i}a | Alice | **open** |\n| Item {i}b | Bob | `done` |\n\n\

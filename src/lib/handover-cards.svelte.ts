@@ -87,7 +87,7 @@ export class HandoverCards {
 	}
 
 	/**
-	 * The page calls this once its first load (todos, time entries) settled, whether it
+	 * The page calls this once its first load (time entries) settled, whether it
 	 * worked or not: until then the sections above the cards can still grow and push them.
 	 */
 	pageSettled(): void {
@@ -291,7 +291,7 @@ export class HandoverCards {
 	/**
 	 * ⌘-click in either card. A resolved [[wikilink]] opens its note on /notes through the
 	 * same `?id=` deep link the palette uses, once pending edits are saved (if that fails the
-	 * card shows why and stays). Tags, #todo/#issue chips and unresolved wikilinks aren't
+	 * card shows why and stays). Tags, #task/#issue chips and unresolved wikilinks aren't
 	 * followable here (the editors use followScope 'notes'): /notes only follows them in place.
 	 */
 	async follow(link: LinkFollow, which: 'today' | 'past'): Promise<void> {

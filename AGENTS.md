@@ -27,7 +27,7 @@ CI runs only on `v*` tags: `release.yml` runs these gates, then publishes a macO
 
 ## Backend (Rust / Tauri)
 
-Pattern for every command module in `src-tauri/src/commands/` (see `todos.rs` as the reference):
+Pattern for every command module in `src-tauri/src/commands/` (see `tasks.rs` as the reference):
 
 1. `pub async fn inner_<name>(…, pool: &Pool<Sqlite>) -> Result<T, AppError>` holds the logic and validation.
 2. A thin `#[tauri::command] pub async fn <name>(…, pool: State<'_, Pool<Sqlite>>)` wrapper calls it.
@@ -42,8 +42,9 @@ Gotchas:
 - **Errors** are `AppError` and reach the user as their display string, so write messages for the user (`"Title is required"`). Return `AppError::Custom` for validation and not-found errors; never panic in commands.
 - **Multi-step writes** go in a transaction (`pool.begin()`).
 - **Note write paths must also feed the semantic index.** Call the `*_and_queue` / `delete_note_and_evict` helpers in `commands/notes.rs` (not bare `inner_*`) from wrappers so the note is re-embedded; see `docs/architecture.md` (Semantic search).
-- **Reminder-affecting write paths must call `reminders_scheduler::reminders_changed(&app, pool)`** after committing (reminder commands, and todo/note wrappers that cascade-delete, complete or retitle linked reminders; restore). It emits `reminders-changed` and recomputes the dock badge; without it the UI and badge go stale until the next 30 s tick. Todo-done completion of reminders belongs inside `inner_move_todo`'s transaction. See `docs/architecture.md` (Reminders).
-- **Todo write paths must nudge Apple Reminders sync, and sync's own writes must not.** Todo wrappers call `crate::apple_sync::runner::nudge(&app)` after committing (`reminders_changed` already does for reminders); code inside a sync pass uses `reminders_refreshed`, not `reminders_changed`, or it loops. Sync changes todos behind the UI's back, so it emits `todos-changed`; pages that list todos re-read on it. EventKit code is `cfg(target_os = "macos")` and can't run here: put logic in the engine behind `ReminderStore` and test it with the fake. See `docs/architecture.md` (Apple Reminders sync).
+- **Task write paths must call `task_scheduler::tasks_changed(&app, pool)`** after committing (task and reminder commands, note wrappers that unlink or retitle linked tasks, restore). It emits `tasks-changed` and `reminders-changed`, recomputes the dock badge and nudges Apple Reminders sync; without it the UI and badge go stale until the next 30 s tick. Completion uses `tasks_changed_later` (the sync nudge waits out the Undo window; sync also skips completions younger than `UNDO_WINDOW_SECS`, so an undone completion never reaches the phone). See `docs/architecture.md` (Tasks).
+- **Sync's own writes must not nudge.** Code inside a sync pass uses `tasks_refreshed`, not `tasks_changed`, or it loops. Sync changes tasks behind the UI's back, so the runner emits the same events. EventKit code is `cfg(target_os = "macos")` and can't run here: put logic in the engine behind `ReminderStore` and test it with the fake. See `docs/architecture.md` (Apple Reminders sync).
+- **A write that moves a reminder's fire time (due date or time, offset, custom time) must call `reconcile_reminders` in the same transaction.** It re-arms a reminder whose new time is in the future and dismisses one in the past silently; skipping it either fires a stale time or notifies on a due-date edit.
 - **Semantic tests never download or load the model.** Use `FakeEmbedder` and `semantic::index::tests::ready_state`. Real-model tests are `#[ignore]`d; run them with `BADGER_MODEL_DIR=<dir> cargo test -p badger real_model -- --ignored --test-threads=1`.
 - **`ort` downloads ONNX Runtime from `cdn.pyke.io` at build time**, so the first build (and any clean `target/`) needs network. Never add `unwrap`/`expect` on tokenizer, inference or download paths: release is `panic = "abort"`.
 - **`js_runner` runs untrusted JS and release is `panic = "abort"`:** no `unwrap`/`expect`/panics on the run path, and host callbacks return `Result`. Never add a host function that reaches the DB or IPC beyond read-only `note()`: isolation is the point (see `docs/architecture.md`, Playground). Tests that use `Handle::block_on` need `#[tokio::test(flavor = "multi_thread")]`.
@@ -52,7 +53,8 @@ Gotchas:
 ### Schema changes
 
 - Tables are created by `SCHEMA_SQL` in `src-tauri/src/db.rs` with `CREATE TABLE IF NOT EXISTS`. That does **not** alter existing tables.
-- Changing an existing table needs an idempotent migration function in `db.rs`, called from `init_db` after `SCHEMA_SQL`, with a test that builds the old shape and migrates it (see `migrate_todos_status`).
+- Changing an existing table needs an idempotent migration function in `db.rs`, called from `init_db` after `SCHEMA_SQL`, with a test that builds the old shape and migrates it (see `migrate_notes_position`). A destructive one-time migration is guarded by an `app_settings` marker, not by "the old table exists", so a downgrade and re-upgrade never repeats it (see `migrate_to_tasks`).
+- `SCHEMA_SQL` runs against old table shapes first, so a standalone `CREATE INDEX` on a column that older databases lack fails at startup: put constraints inline in the table DDL, or create the index in the migration.
 - Foreign keys are on. Choose `ON DELETE CASCADE` vs `SET NULL` on purpose and test it.
 - **Every new table must be included in backup/restore** (`commands/backup.rs`), except derived indexes (`notes_fts`, `note_refs`, `note_embeddings`), which restore rebuilds: export, restore (overwrite-only: add an explicit `DELETE`, since cascades won't reach a new table), and `#[serde(default)]` on the new `BackupData` field so older backups still restore. Add a round-trip test.
 
@@ -64,16 +66,16 @@ Gotchas:
 - **Config:** SvelteKit config lives in the `sveltekit({...})` plugin in `vite.config.ts`; `svelte.config.js` is no longer supported.
 - **Pure helpers** go in `src/lib/*.ts`; test them with `node:test` under `tests/`.
 - **Styles:** use Tailwind utilities in markup. Shared or `@apply` classes go in `src/app.css` under `@layer components`, not in component `<style>` blocks, because svelte-check warns about `@apply` there.
-- **Dynamic classes:** Tailwind only emits `app.css` component classes whose full name appears literally in `src/**` (`content` scan). Write out `cm-link-kind-todo-in_progress` in full; never build it as `` `cm-link-kind-${x}` ``.
+- **Dynamic classes:** Tailwind only emits `app.css` component classes whose full name appears literally in `src/**` (`content` scan). Write out `cm-link-kind-task` in full; never build it as `` `cm-link-kind-${x}` ``.
 - **Icons:** `@lucide/svelte`, imported per icon (`import X from '@lucide/svelte/icons/x'`).
 - **Routes:** add new pages to `navLinks` in `src/routes/+layout.svelte` (it feeds ⌘K; `as const` keeps `resolve()` type-checked), and to a group in `navGroups` if the page gets a nav tab. The two reports share one "Reports" tab and switch with `ReportSwitch.svelte`; Settings is the gear.
 - **Pickers:** reuse `src/lib/components/Combobox.svelte` for customer, project, and issue selection.
 - **Menus:** reuse `src/lib/components/ContextMenu.svelte` (items `{label, icon, hint, danger, run}`) for popup action menus; position with `placeMenu` in `src/lib/context-menu.ts`.
-- `svelte-ignore state_referenced_locally` is acceptable only for intentionally snapshotting a prop at mount (see `TodoModal.svelte`).
+- `svelte-ignore state_referenced_locally` is acceptable only for intentionally snapshotting a prop at mount (see `TaskRemindDialog.svelte`).
 
 ## UI / UX
 
-The user cares about polish. A plain CRUD table was rejected for todos and replaced by a kanban board, so design the interaction for the workflow, not the data shape.
+The user cares about polish. A plain CRUD table was rejected for todos (replaced by a kanban board, since merged into the date-grouped Tasks list with quick-add, a details panel and a completion animation), so design the interaction for the workflow, not the data shape.
 
 Design language (follow existing pages before inventing):
 
@@ -85,7 +87,7 @@ Design language (follow existing pages before inventing):
 - States: show an empty state ("No cards"), show inline errors near the action, and confirm destructive actions inline rather than with `confirm()`.
 - Motion: short (150–200 ms) `fade`/`scale`/`flip` from Svelte. No animation libraries.
 - Keyboard: Enter submits, Esc cancels or closes, and clickable cards are focusable (`role="button"`, `tabindex="0"`).
-- Drag and drop: use pointer events, not HTML5 DnD (Tauri's file-drop handling can block it). See `src/routes/todos/+page.svelte`.
+- Drag and drop: use pointer events, not HTML5 DnD (Tauri's file-drop handling can block it). See `src/lib/components/NoteTree.svelte`.
 
 **Check UI work visually before handing off.** The app can't run headless, but the built SPA can:
 

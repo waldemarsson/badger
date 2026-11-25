@@ -14,9 +14,6 @@
 	import NotebookPen from '@lucide/svelte/icons/notebook-pen';
 	import FileText from '@lucide/svelte/icons/file-text';
 	import Sparkles from '@lucide/svelte/icons/sparkles';
-	import Bell from '@lucide/svelte/icons/bell';
-	import Repeat from '@lucide/svelte/icons/repeat';
-	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 	import StickyNote from '@lucide/svelte/icons/sticky-note';
 	import Sunset from '@lucide/svelte/icons/sunset';
 	import { today } from '#lib/date-ranges.js';
@@ -36,12 +33,14 @@
 	import { splitSearchQuery, tagTerm } from '#lib/note-links.js';
 	import { HYBRID_DEBOUNCE_MS, keepActiveIndex, qualifiesForSemantic, semanticReady, shouldApply, type SearchResponse } from '#lib/semantic.js';
 	import { semantic } from '#lib/semantic-state.svelte.js';
-	import { formatRemindAt, formatRepeat, isPast, parseReminder, type ParseResult } from '#lib/reminders.js';
-	import { saveReminder } from '#lib/reminders-state.svelte.js';
+	import { parseReminder } from '#lib/time-phrases.js';
+	import { formatDay, planChips, planError, planInput, planQuickAdd, type IssueTarget } from '#lib/tasks.js';
+	import { createTask } from '#lib/tasks-state.svelte.js';
+	import TaskChips from '#lib/components/TaskChips.svelte';
 	import { openScratchpad } from '#lib/scratchpad-state.svelte.js';
 	import { requestHandoverFocus } from '#lib/handover-state.svelte.js';
 	import { page } from '$app/state';
-	import type { Customer, Issue, NoteHit, PaletteSettings, Project, TimeEntryRow } from '#lib/types.js';
+	import type { Customer, Issue, LinkTargets, NoteHit, PaletteSettings, Project, TimeEntryRow } from '#lib/types.js';
 
 	let {
 		pages,
@@ -51,8 +50,9 @@
 		navigate: (href: Href) => void;
 	} = $props();
 
-	type Step = 'root' | 'todo' | 'project' | 'issue' | 'hours' | 'notes';
-	type Command = { id: string; label: string; group: 'Actions' | 'Go to'; run: () => void };
+	type Step = 'root' | 'task' | 'project' | 'issue' | 'hours' | 'notes';
+	/** `aliases`: extra words it matches (old names), never shown. */
+	type Command = { id: string; label: string; aliases?: string; group: 'Actions' | 'Go to'; run: () => void };
 	type ProjectOption = { id: number; label: string; isDefault: boolean };
 	type IssueOption = { id: number | null; title: string };
 
@@ -84,17 +84,16 @@
 	});
 
 	function emptyTexts(): Record<Step, string> {
-		return { root: '', todo: '', project: '', issue: '', hours: '', notes: '' };
+		return { root: '', task: '', project: '', issue: '', hours: '', notes: '' };
 	}
 
 	// ── Items per step ─────────────────────────────────────────────────────────────
 
 	const commands: Command[] = $derived([
-		{ id: 'new-todo', label: 'New todo', group: 'Actions', run: () => goTo('todo') },
+		{ id: 'new-task', label: 'New task', aliases: 'new todo new reminder remind påminn', group: 'Actions', run: () => goTo('task') },
 		{ id: 'log-time', label: 'Log time', group: 'Actions', run: () => void startLogTime() },
 		{ id: 'new-note', label: 'New note', group: 'Actions', run: createNote },
 		{ id: 'new-script', label: 'New script', group: 'Actions', run: createScript },
-		{ id: 'new-reminder', label: 'New reminder', group: 'Actions', run: startRemind },
 		{ id: 'scratchpad', label: 'Scratchpad', group: 'Actions', run: showScratchpad },
 		{ id: 'write-handover', label: 'Write handover', group: 'Actions', run: writeHandover },
 		...pages.map((p): Command => ({
@@ -108,24 +107,21 @@
 		}))
 	]);
 
-	const filteredCommands = $derived(filterItems(commands, texts.root, (c) => c.label));
+	const filteredCommands = $derived(filterItems(commands, texts.root, (c) => `${c.label} ${c.aliases ?? ''}`));
 
-	// `remind …` / `påminn …` in the root step: a live parsed preview replaces the list.
+	// `remind …` / `påminn …` in the root step is "New task" too: a live preview replaces the list.
 	const remindMode = $derived(step === 'root' && /^(remind|påminn)\s/i.test(texts.root));
-	type RemindPreview =
-		| { kind: 'ok' | 'past'; result: Extract<ParseResult, { remindAt: string }>; now: Date }
-		| { kind: 'hint'; text: string }
-		| { kind: 'no_time'; text: string }
-		| { kind: 'no_text'; text: string };
-	const remindPreview: RemindPreview | null = $derived.by(() => {
-		if (!remindMode) return null;
-		const now = new Date();
-		const result = parseReminder(texts.root, now);
-		if ('error' in result) {
-			const empty = !texts.root.replace(/^\S+\s*/, '').trim();
-			return empty ? { kind: 'hint', text: '' } : { kind: result.error, text: result.text };
-		}
-		return { kind: isPast(result.remindAt, now) ? 'past' : 'ok', result, now };
+	// New task: the same mapping as /tasks quick add (date → due, typed time → due time + an
+	// "At due time" reminder, `#tag` → issue).
+	let issueTargets = $state<IssueTarget[] | null>(null);
+	const taskText = $derived(step === 'task' ? texts.task : remindMode ? texts.root : '');
+	const taskPlan = $derived(taskText.trim() ? planQuickAdd(taskText, new Date(), issueTargets ?? [], parseReminder) : null);
+	$effect(() => {
+		if ((step !== 'task' && !remindMode) || issueTargets !== null) return;
+		issueTargets = [];
+		invoke<LinkTargets>('get_link_targets')
+			.then((t) => (issueTargets = t.issues))
+			.catch(() => {}); // #tags just don't match
 	});
 
 	// Notes matching the root query, from the search index; listed after the commands.
@@ -195,7 +191,7 @@
 	const placeholder = $derived(
 		{
 			root: 'Type a command…',
-			todo: 'Todo title…',
+			task: 'New task — e.g. “Call Anna fri 14:00 #Contoso”',
 			project: 'Search projects…',
 			issue: 'Search or create an issue…',
 			hours: 'Hours, e.g. 1.5',
@@ -203,7 +199,7 @@
 		}[step]
 	);
 
-	const StepIcon = $derived(remindMode ? Bell : step === 'todo' ? ListTodo : step === 'hours' || step === 'notes' ? Clock : Search);
+	const StepIcon = $derived(remindMode || step === 'task' ? ListTodo : step === 'hours' || step === 'notes' ? Clock : Search);
 
 	const dateLabel = $derived(
 		date === today() ? 'Today' : date === shiftDate(today(), -1) ? 'Yesterday' : date
@@ -244,7 +240,7 @@
 	function back(): void {
 		const previous: Record<Step, Step | null> = {
 			root: null,
-			todo: 'root',
+			task: 'root',
 			project: 'root',
 			issue: 'project',
 			hours: 'issue',
@@ -253,7 +249,7 @@
 		const target = previous[step];
 		if (!target) return;
 		const index =
-			target === 'root' ? Math.max(0, filteredCommands.findIndex((c) => c.id === (step === 'todo' ? 'new-todo' : 'log-time')))
+			target === 'root' ? Math.max(0, filteredCommands.findIndex((c) => c.id === (step === 'task' ? 'new-task' : 'log-time')))
 			: target === 'project' ? Math.max(0, filteredProjects.findIndex((p) => p.id === project?.id))
 			: target === 'issue' ? Math.max(0, issueOptions.findIndex((i) => i.title === issue?.title))
 			: 0;
@@ -371,17 +367,18 @@
 		error = '';
 	}
 
-	// ── New todo ───────────────────────────────────────────────────────────────────
+	// ── New task (also `remind …`) ─────────────────────────────────────────────────
 
-	async function submitTodo(): Promise<void> {
-		const title = texts.todo.trim();
-		if (busy || !title) return;
+	async function submitTask(): Promise<void> {
+		if (busy || !taskText.trim()) return;
+		const plan = planQuickAdd(taskText, new Date(), issueTargets ?? [], parseReminder);
+		error = planError(plan);
+		if (error) return;
 		busy = true;
-		error = '';
 		try {
-			await invoke('create_todo', { title, notes: null, dueDate: null, status: 'not_started', issueId: null });
-			changes.todos += 1;
-			showToast('Todo added');
+			const { input, reminders } = planInput(plan);
+			const t = await createTask(input, reminders);
+			showToast(t.due_date ? `Task added · due ${formatDay(t.due_date, new Date())}${t.due_time ? ` ${t.due_time}` : ''}` : 'Task added');
 			close();
 		} catch (e) {
 			error = String(e);
@@ -425,52 +422,10 @@
 		void goto(`${resolve('/notes')}?id=${id}`);
 	}
 
-	// ── New reminder (`remind …`) ──────────────────────────────────────────────────
-
-	async function startRemind(): Promise<void> {
-		texts.root = 'remind ';
-		highlight = 0;
-		error = '';
-		await tick();
-		input?.focus();
-	}
-
-	/** Creates the previewed reminder; without a recognised time, opens the form with the text. */
-	async function submitReminder(): Promise<void> {
-		const preview = remindPreview;
-		if (busy || !preview) return;
-		if (preview.kind === 'no_time') {
-			close();
-			// eslint-disable-next-line svelte/no-navigation-without-resolve -- resolved path plus a query string
-			void goto(`${resolve('/reminders')}?new=1&text=${encodeURIComponent(preview.text)}`);
-			return;
-		}
-		if (preview.kind === 'hint' || preview.kind === 'no_text') {
-			error = 'Type what to be reminded about, and when';
-			return;
-		}
-		if (preview.kind === 'past' || isPast(preview.result.remindAt, new Date())) {
-			error = 'Time is in the past';
-			return;
-		}
-		busy = true;
-		error = '';
-		try {
-			const { text, remindAt, repeat, weekdays, monthDay } = preview.result;
-			const saved = await saveReminder(null, { text, remindAt, repeat, weekdays, monthDay, todoId: null, noteId: null });
-			showToast(`Reminder set for ${formatRemindAt(saved.remind_at, new Date())}`);
-			close();
-		} catch (e) {
-			error = String(e);
-		} finally {
-			busy = false;
-		}
-	}
-
 	// ── Keyboard ───────────────────────────────────────────────────────────────────
 
 	function pick(index: number): void {
-		if (remindMode) void submitReminder();
+		if (remindMode) void submitTask();
 		else if (step === 'root') {
 			if (index < filteredCommands.length) filteredCommands[index].run();
 			else if (noteHits[index - filteredCommands.length]) openNote(noteHits[index - filteredCommands.length].id);
@@ -498,7 +453,7 @@
 			highlight = Math.min(listLength - 1, Math.max(0, highlight + delta));
 		} else if (e.key === 'Enter') {
 			e.preventDefault();
-			if (step === 'todo') void submitTodo();
+			if (step === 'task') void submitTask();
 			else if (step === 'hours') hoursToNotes();
 			else if (step === 'notes') void submitTimeEntry();
 			else pick(highlight);
@@ -617,46 +572,32 @@
 	</button>
 {/snippet}
 
-{#snippet remindRow(p: RemindPreview)}
-	<p class="px-3 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400 dark:text-neutral-500">New reminder</p>
+{#snippet taskPreview(active: boolean)}
+	{#if active}
+		<p class="px-3 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400 dark:text-neutral-500">New task</p>
+	{/if}
 	<button
 		type="button"
 		tabindex="-1"
 		data-active="true"
-		class="flex w-full min-w-0 items-start gap-3 rounded-lg px-3 py-2.5 text-left text-sm transition-colors {p.kind === 'ok'
+		class="flex w-full min-w-0 items-start gap-3 rounded-lg px-3 py-2.5 text-left text-sm transition-colors {taskPlan?.title
 			? 'bg-sky-50 text-sky-900 dark:bg-sky-500/10 dark:text-sky-300'
 			: 'bg-slate-50 text-slate-700 dark:bg-neutral-800/60 dark:text-neutral-300'}"
-		onclick={() => void submitReminder()}
+		onclick={() => void submitTask()}
 	>
-		<Bell size={16} class="mt-0.5 shrink-0 {p.kind === 'ok' ? 'text-sky-500 dark:text-sky-400' : 'text-slate-400 dark:text-neutral-500'}" />
+		<ListTodo size={16} class="mt-0.5 shrink-0 {taskPlan?.title ? 'text-sky-500 dark:text-sky-400' : 'text-slate-400 dark:text-neutral-500'}" />
 		<span class="min-w-0 flex-1">
-			{#if p.kind === 'ok' || p.kind === 'past'}
-				<span class="block truncate font-medium">{p.result.text}</span>
-				<span class="mt-1 flex flex-wrap items-center gap-1.5 text-xs">
-					<span class="kanban-badge {p.kind === 'past'
-						? 'bg-red-50 text-red-700 ring-red-200 dark:bg-red-500/10 dark:text-red-300 dark:ring-red-500/30'
-						: 'bg-white text-slate-700 ring-slate-200 dark:bg-neutral-900 dark:text-neutral-200 dark:ring-neutral-700'}">
-						<Clock size={12} class="shrink-0" />{formatRemindAt(p.result.remindAt, p.now)}
-					</span>
-					{#if p.result.repeat !== 'none'}
-						<span class="kanban-badge bg-white text-slate-700 ring-slate-200 dark:bg-neutral-900 dark:text-neutral-200 dark:ring-neutral-700">
-							<Repeat size={12} class="shrink-0" />{formatRepeat(p.result)}
-						</span>
-					{/if}
-					{#if p.kind === 'past'}
-						<span class="inline-flex items-center gap-1 font-medium text-red-600 dark:text-red-400"><TriangleAlert size={12} />Time is in the past</span>
-					{/if}
-				</span>
-			{:else if p.kind === 'hint'}
-				<span class="block text-slate-500 dark:text-neutral-400">Type what and when</span>
-				<span class="mt-0.5 block truncate font-mono text-xs text-slate-400 dark:text-neutral-500">call Anna in 20 min · standup every weekday 9:00 · pay rent every 25th</span>
-			{:else if p.kind === 'no_time'}
-				<span class="block truncate font-medium">{p.text}</span>
-				<span class="mt-1 inline-flex items-center gap-1 text-xs font-medium text-amber-700 dark:text-amber-400">
-					<TriangleAlert size={12} />No time recognised — <kbd class="palette-kbd">↩</kbd> opens the form
-				</span>
+			{#if taskPlan?.title}
+				{@const chips = planChips(taskPlan, new Date())}
+				<span class="block truncate font-medium">{taskPlan.title}</span>
+				{#if chips.length}
+					<span class="mt-1 flex flex-wrap items-center gap-1.5"><TaskChips {chips} /></span>
+				{/if}
+			{:else if taskPlan}
+				<span class="block text-slate-500 dark:text-neutral-400">What is the task? (not only when)</span>
 			{:else}
-				<span class="block text-slate-500 dark:text-neutral-400">What should I remind you about?</span>
+				<span class="block text-slate-500 dark:text-neutral-400">Type what, and optionally when</span>
+				<span class="mt-0.5 block truncate font-mono text-xs text-slate-400 dark:text-neutral-500">call Anna fri 14:00 · standup every weekday 9:00 · pay rent every 25th</span>
 			{/if}
 		</span>
 	</button>
@@ -683,7 +624,7 @@
 		>
 			{#if step !== 'root'}
 				<div class="flex flex-wrap items-center gap-1 border-b border-slate-100 px-4 pb-2 pt-3 text-xs dark:border-neutral-800">
-					<span class="palette-chip">{step === 'todo' ? 'New todo' : 'Log time'}</span>
+					<span class="palette-chip">{step === 'task' ? 'New task' : 'Log time'}</span>
 					{#if project && step !== 'project'}
 						<ChevronRight size={12} class="text-slate-300 dark:text-neutral-600" />
 						<span class="palette-chip max-w-[14rem] truncate">{project.label}</span>
@@ -736,10 +677,14 @@
 				<p class="form-error px-4 pb-2" role="alert">{error}</p>
 			{/if}
 
-			{#if step === 'root' || step === 'project' || step === 'issue'}
+			{#if step === 'task'}
+				<div class="border-t border-slate-100 p-2 dark:border-neutral-800">
+					{@render taskPreview(false)}
+				</div>
+			{:else if step === 'root' || step === 'project' || step === 'issue'}
 				<div bind:this={list} class="max-h-96 overflow-y-auto border-t border-slate-100 p-2 dark:border-neutral-800">
-					{#if remindPreview}
-						{@render remindRow(remindPreview)}
+					{#if remindMode}
+						{@render taskPreview(true)}
 					{:else if step === 'root'}
 						{#if filteredCommands.length === 0 && noteHits.length === 0 && !notesPending}
 							{@render empty('No matching commands or notes')}
@@ -752,10 +697,9 @@
 									{@render row(
 										filteredCommands.indexOf(c),
 										c.label,
-										c.id === 'new-todo' ? ListTodo
+										c.id === 'new-task' ? ListTodo
 										: c.id === 'log-time' ? Clock
 										: c.id === 'new-note' ? NotebookPen
-										: c.id === 'new-reminder' ? Bell
 										: c.id === 'scratchpad' ? StickyNote
 										: c.id === 'write-handover' ? Sunset
 										: ArrowRight,
@@ -802,12 +746,10 @@
 				{#if step === 'hours'}
 					<span><kbd class="palette-kbd">⇥</kbd> date</span>
 					<span><kbd class="palette-kbd">↩</kbd> next</span>
-				{:else if step === 'todo' || step === 'notes'}
+				{:else if step === 'notes'}
 					<span><kbd class="palette-kbd">↩</kbd> save</span>
-				{:else if remindPreview}
-					{#if remindPreview.kind === 'ok' || remindPreview.kind === 'no_time'}
-						<span><kbd class="palette-kbd">↩</kbd> {remindPreview.kind === 'no_time' ? 'open form' : 'set reminder'}</span>
-					{/if}
+				{:else if step === 'task' || remindMode}
+					<span><kbd class="palette-kbd">↩</kbd> add task</span>
 				{:else}
 					<span><kbd class="palette-kbd">↑</kbd><kbd class="palette-kbd">↓</kbd> navigate</span>
 					<span><kbd class="palette-kbd">↩</kbd> select</span>

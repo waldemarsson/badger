@@ -1,10 +1,9 @@
-// Pure reminder helpers: the `remind …` phrase parser (English + Swedish), snooze
-// targets, list grouping and short labels. No runtime `#lib/…` imports: node:test
-// loads this file directly. Times are naive local wall-clock strings
-// (`YYYY-MM-DDTHH:MM:SS.mmm`), matching the Rust side.
+// Pure date/time phrase helpers: the `remind …` / quick-add parser (English + Swedish),
+// snooze targets and short labels. Tasks (quick add, ⌘K "New task") read due dates and
+// repeats from it. No runtime `#lib/…` imports: node:test loads this file directly. Times
+// are naive local wall-clock strings (`YYYY-MM-DDTHH:MM:SS.mmm`), matching the Rust side.
 
 export type Repeat = 'none' | 'daily' | 'weekdays' | 'weekly' | 'monthly';
-export type ReminderState = 'pending' | 'fired' | 'done';
 
 export interface ParsedReminder {
 	text: string;
@@ -14,6 +13,8 @@ export interface ParsedReminder {
 	weekdays: number[];
 	/** 1–31; only set for `monthly`. */
 	monthDay: number | null;
+	/** A time was typed (`at 9`, `14:00`, `in 20 min`); false when it defaulted (09:00, or now for `in 2 days`). */
+	hasTime: boolean;
 }
 
 export interface ParseError {
@@ -22,14 +23,6 @@ export interface ParseError {
 }
 
 export type ParseResult = ParsedReminder | ParseError;
-
-/** The fields of a `Reminder` row these helpers read. */
-export interface ReminderLike {
-	id: number;
-	remind_at: string;
-	state: ReminderState;
-	updated_at: string;
-}
 
 export type SnoozeChoice = '20m' | '1h' | '3h' | 'tomorrow';
 
@@ -518,6 +511,7 @@ export function parseReminder(input: string, now: Date): ParseResult {
 
 	let date: Ymd | null;
 	let time: Hm | null;
+	let hasTime: boolean;
 	let weekday: { wd: number; next: boolean } | null = null;
 	// `today` / `idag` names a day but keeps the next-occurrence rule for bare hours.
 	let todayWord = false;
@@ -528,6 +522,7 @@ export function parseReminder(input: string, now: Date): ParseResult {
 		const target = floorMinute(new Date(now.getTime() + minutes * 60_000));
 		date = ymdOf(target);
 		time = { h: target.getHours(), m: target.getMinutes() };
+		hasTime = true;
 	} else {
 		if (relative) date = addDays(today, relative.n);
 		else {
@@ -546,6 +541,7 @@ export function parseReminder(input: string, now: Date): ParseResult {
 			const rule: BareRule = repeat ? 'asTyped' : relative || (date && !todayWord) || weekday ? 'dayPm' : 'next';
 			time = { h: bareHour(time.h, rule, now), m: time.m };
 		}
+		hasTime = time !== null;
 		// `in N days` keeps the current time of day.
 		if (!time && relative) time = { h: now.getHours(), m: now.getMinutes() };
 	}
@@ -576,14 +572,15 @@ export function parseReminder(input: string, now: Date): ParseResult {
 			remindAt: toLocalTimestamp(at(day, tod.h, tod.m)),
 			repeat: spec.repeat,
 			weekdays: spec.repeat === 'weekly' ? [...new Set(spec.weekdays)].sort((a, b) => a - b) : [],
-			monthDay: spec.monthDay
+			monthDay: spec.monthDay,
+			hasTime
 		};
 	}
 
 	// A time without a date: today, or tomorrow once it has passed.
 	if (!date) date = at(today, tod.h, tod.m) > now ? today : addDays(today, 1);
 
-	return { text, remindAt: toLocalTimestamp(at(date, tod.h, tod.m)), repeat: 'none', weekdays: [], monthDay: null };
+	return { text, remindAt: toLocalTimestamp(at(date, tod.h, tod.m)), repeat: 'none', weekdays: [], monthDay: null, hasTime };
 }
 
 // ---------------------------------------------------------------------------
@@ -597,44 +594,7 @@ export function snoozeUntil(choice: SnoozeChoice, now: Date): string {
 }
 
 // ---------------------------------------------------------------------------
-// Grouping and labels
-
-export interface ReminderGroups<T> {
-	/** Fired, not yet done or snoozed. */
-	overdue: T[];
-	today: T[];
-	tomorrow: T[];
-	later: T[];
-	done: T[];
-}
-
-/**
- * Buckets reminders for the list. Pending rows are bucketed by the day of
- * `remind_at`; a pending row already past (the scheduler hasn't ticked yet) stays in
- * `today`. Active buckets sort by time, done by `updated_at` (latest first).
- */
-export function groupReminders<T extends ReminderLike>(list: readonly T[], now: Date): ReminderGroups<T> {
-	const groups: ReminderGroups<T> = { overdue: [], today: [], tomorrow: [], later: [], done: [] };
-	const todayKey = toLocalTimestamp(at(ymdOf(now), 0, 0)).slice(0, 10);
-	const tomorrowKey = toLocalTimestamp(at(addDays(ymdOf(now), 1), 0, 0)).slice(0, 10);
-	for (const r of list) {
-		if (r.state === 'done') groups.done.push(r);
-		else if (r.state === 'fired') groups.overdue.push(r);
-		else {
-			const day = r.remind_at.slice(0, 10);
-			if (day <= todayKey) groups.today.push(r);
-			else if (day === tomorrowKey) groups.tomorrow.push(r);
-			else groups.later.push(r);
-		}
-	}
-	const byTime = (a: T, b: T) => a.remind_at.localeCompare(b.remind_at) || a.id - b.id;
-	groups.overdue.sort(byTime);
-	groups.today.sort(byTime);
-	groups.tomorrow.sort(byTime);
-	groups.later.sort(byTime);
-	groups.done.sort((a, b) => b.updated_at.localeCompare(a.updated_at) || b.id - a.id);
-	return groups;
-}
+// Labels
 
 const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -693,84 +653,10 @@ export function formatRepeat(r: {
 }
 
 // ---------------------------------------------------------------------------
-// Form and UI helpers
-
-export type QuickChoice = '20m' | '1h' | 'tomorrow' | 'monday';
-
-/** Quick-pick chips in the reminder form. */
-export const QUICK_TIMES: { choice: QuickChoice; label: string }[] = [
-	{ choice: '20m', label: '20 min' },
-	{ choice: '1h', label: '1 h' },
-	{ choice: 'tomorrow', label: 'Tomorrow 09:00' },
-	{ choice: 'monday', label: 'Mon 09:00' }
-];
-
-/** Local timestamp for a quick-pick chip; `monday` is the coming Monday (never today) at 09:00. */
-export function quickTime(choice: QuickChoice, now: Date): string {
-	if (choice !== 'monday') return snoozeUntil(choice, now);
-	const today = ymdOf(now);
-	return toLocalTimestamp(at(addDays(today, 8 - isoWeekday(today)), 9, 0));
-}
-
-/** `{date: 'YYYY-MM-DD', time: 'HH:MM'}` of a local timestamp (for date/time inputs). */
-export function splitTimestamp(ts: string): { date: string; time: string } {
-	return { date: ts.slice(0, 10), time: ts.slice(11, 16) };
-}
-
-/**
- * Date/time the edit form starts from. One-off rows show `remind_at`; recurring rows show
- * their `time_of_day` anchor (not a snoozed occurrence's time) on the next matching day whose
- * anchor time is still ahead, so a rule-only change doesn't adopt the snoozed time.
- */
-export function formStart(
-	r: { remind_at: string; time_of_day: string; repeat: Repeat; weekdays: readonly number[]; month_day: number | null },
-	now: Date
-): { date: string; time: string } {
-	const m = /^(\d{2}):(\d{2})/.exec(r.time_of_day);
-	if (r.repeat === 'none' || !m || +m[1] > 23 || +m[2] > 59 || (r.repeat === 'weekly' && !r.weekdays.length)) return splitTimestamp(r.remind_at);
-	const spec: RepeatSpec = { repeat: r.repeat, weekdays: [...r.weekdays], monthDay: r.month_day };
-	let day = ymdOf(now);
-	for (let k = 0; k < 800 && !(matchesRule(day, spec) && at(day, +m[1], +m[2]) > now); k++) day = addDays(day, 1);
-	return splitTimestamp(toLocalTimestamp(at(day, +m[1], +m[2])));
-}
+// UI helpers
 
 /** True when the local timestamp is not after `now`. */
 export function isPast(remindAt: string, now: Date): boolean {
 	const d = parseLocalTimestamp(remindAt);
 	return !Number.isNaN(d.getTime()) && d <= now;
-}
-
-/** Fired and pending reminders linked to a todo, fired first, then by time. */
-export function activeForTodo<T extends ReminderLike & { todo_id: number | null }>(list: readonly T[], todoId: number): T[] {
-	return list
-		.filter((r) => r.todo_id === todoId && r.state !== 'done')
-		.sort((a, b) => Number(b.state === 'fired') - Number(a.state === 'fired') || a.remind_at.localeCompare(b.remind_at) || a.id - b.id);
-}
-
-/** Per todo, the reminder its card bell shows: a fired one, else the next pending one. */
-export function todoBells<T extends ReminderLike & { todo_id: number | null }>(list: readonly T[]): Map<number, T> {
-	const bells = new Map<number, T>();
-	for (const r of list) {
-		if (r.todo_id === null || r.state === 'done') continue;
-		const cur = bells.get(r.todo_id);
-		const better =
-			!cur ||
-			(r.state === 'fired' && cur.state !== 'fired') ||
-			(r.state === cur.state && r.remind_at.localeCompare(cur.remind_at) < 0);
-		if (better) bells.set(r.todo_id, r);
-	}
-	return bells;
-}
-
-/** Identity of a toast: one per fired occurrence, so a re-fired recurring reminder shows again. */
-export function toastKey(r: { id: number; remind_at: string }): string {
-	return `${r.id}@${r.remind_at}`;
-}
-
-/** Fired reminders not dismissed this session, oldest first: the first `max` show, the rest count as "+N more". */
-export function toastStack<T extends ReminderLike>(list: readonly T[], dismissed: ReadonlySet<string>, max = 3): { shown: T[]; more: number } {
-	const fired = list
-		.filter((r) => r.state === 'fired' && !dismissed.has(toastKey(r)))
-		.sort((a, b) => a.remind_at.localeCompare(b.remind_at) || a.id - b.id);
-	return { shown: fired.slice(0, max), more: Math.max(0, fired.length - max) };
 }

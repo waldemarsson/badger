@@ -1,30 +1,27 @@
-//! The sync's database side: loading the rows in scope, conditional Badger writes, imports
+//! The sync's database side: loading the tasks in scope, conditional Badger writes, imports
 //! and the pairing table.
 //!
 //! Writes are limited to the synced columns and conditional on the value the pass read
 //! (`WHERE Title IS ?`), never whole-row rewrites, so a concurrent user edit and the
-//! non-synced fields (IssueId, Position, links) are never clobbered. A lost race returns
-//! `Ok(false)` and rolls back; the item is left for the next pass.
+//! non-synced fields (links, repeat, reminders' states) are never clobbered. A lost race
+//! returns `Ok(false)` and rolls back; the item is left for the next pass.
 
-use chrono::{NaiveDateTime, Timelike};
+use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Pool, Sqlite, SqliteConnection};
 
-use crate::commands::reminders::{
-    anchor_of, format_time_of_day, format_timestamp, local_exists, local_now, parse_timestamp,
-    resolve_gap, MAX_TEXT_CHARS,
+use crate::commands::tasks::{
+    base_fire_time, clean_due, clean_notes, clean_title, complete_in, due_anchor,
+    reconcile_reminders, reopen_in, MAX_REMINDERS, MAX_TITLE_CHARS, UNDO_WINDOW_SECS,
 };
-use crate::commands::todos::{clean_due_date, clean_notes, clean_title, move_todo_in};
+use crate::recurrence::{format_timestamp, local_exists, local_now, parse_timestamp};
 use crate::AppError;
 
-use super::ListKind;
+use super::{alarm_key, PhoneDue};
 
-/// A huge index: "end of the column" for `move_todo_in` (it clamps).
-const END_OF_COLUMN: i64 = i64::MAX;
-
-/// The synced fields of one side, in Badger terms, as JSON in the pairing table.
-/// Todo `due` is `YYYY-MM-DD`; reminder `due` is a stored timestamp. A reminder's `notes`
-/// is the Badger-owned link line ("Todo: …") and only tracked on the Badger side.
+/// The synced fields of one side, in Badger terms, as JSON in the pairing table. `due` is
+/// `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM` (see [`due_key`]). Alarms aren't merged: Badger owns
+/// them.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Snap {
     #[serde(default)]
@@ -48,125 +45,177 @@ impl Snap {
     }
 }
 
+// ── Due ───────────────────────────────────────────────────────────────────────
+
+/// A task's due in snapshot form: the date, plus `THH:MM` when it has a time.
+pub fn due_key(due_date: Option<&str>, due_time: Option<&str>) -> Option<String> {
+    due_date.map(|d| match due_time {
+        Some(t) => format!("{d}T{t}"),
+        None => d.to_string(),
+    })
+}
+
+/// A phone due in snapshot form (seconds dropped).
+pub fn phone_due_key(due: Option<PhoneDue>) -> Option<String> {
+    due.map(|d| match d {
+        PhoneDue::Date(d) => d.format("%Y-%m-%d").to_string(),
+        PhoneDue::DateTime(t) => t.format("%Y-%m-%dT%H:%M").to_string(),
+    })
+}
+
+/// A snapshot due back as (date, time) columns.
+pub fn split_due(key: Option<&str>) -> (Option<String>, Option<String>) {
+    match key.map(|k| k.split_once('T')) {
+        None => (None, None),
+        Some(Some((d, t))) => (Some(d.to_string()), Some(t.to_string())),
+        Some(None) => (key.map(str::to_string), None),
+    }
+}
+
+/// A snapshot due as the phone's due: a floating date, or a date-time.
+pub fn to_phone_due(key: Option<&str>) -> Option<PhoneDue> {
+    let (date, time) = split_due(key);
+    let date = NaiveDate::parse_from_str(date.as_deref()?, "%Y-%m-%d").ok()?;
+    Some(
+        match time.and_then(|t| NaiveTime::parse_from_str(&t, "%H:%M").ok()) {
+            Some(t) => PhoneDue::DateTime(date.and_time(t)),
+            None => PhoneDue::Date(date),
+        },
+    )
+}
+
+/// Task title from a phone title: trimmed and cut to 500 characters; `None` when empty.
+pub fn cut_title(title: &str) -> Option<String> {
+    let cut: String = title.trim().chars().take(MAX_TITLE_CHARS).collect();
+    let cut = cut.trim_end().to_string();
+    (!cut.is_empty()).then_some(cut)
+}
+
 // ── Loading ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, FromRow)]
-pub struct BTodo {
+pub struct BTask {
     pub id: i64,
     pub title: String,
     pub notes: Option<String>,
-    pub status: String,
+    pub done: bool,
+    pub completed_at: Option<String>,
     pub due_date: Option<String>,
+    pub due_time: Option<String>,
+    pub repeat: String,
     /// "Keep off phone": out of the sync.
     pub mac_only: bool,
+    /// The reminders' own fire times (snoozes are Badger-only), filled in after loading.
+    #[sqlx(skip)]
+    pub alarm_times: Vec<NaiveDateTime>,
 }
 
-impl BTodo {
+impl BTask {
+    /// Out of the sync, so never pushed or deleted because of the phone: repeating (D6) or
+    /// kept off the phone.
+    pub fn off_phone(&self) -> bool {
+        self.mac_only || self.repeat != "none"
+    }
+
+    /// Open and synced: pushed when unpaired.
     pub fn in_scope(&self) -> bool {
-        self.status != "done" && !self.mac_only
+        !self.done && !self.off_phone()
     }
 
     pub fn snap(&self) -> Snap {
         Snap {
             title: self.title.clone(),
             notes: self.notes.clone(),
-            due: self.due_date.clone(),
-            done: self.status == "done",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, FromRow)]
-pub struct BReminder {
-    pub id: i64,
-    pub text: String,
-    pub remind_at: String,
-    pub repeat: String,
-    pub state: String,
-    pub todo_title: Option<String>,
-    pub note_title: Option<String>,
-    /// Effective "Keep off phone": set on the reminder or on its linked todo.
-    pub mac_only: bool,
-}
-
-impl BReminder {
-    /// One-off, not done and not Mac-only: pushed when unpaired.
-    pub fn in_scope(&self) -> bool {
-        self.repeat == "none" && self.state != "done" && !self.mac_only
-    }
-
-    /// The line Badger writes into the phone item's notes; `None` when unlinked.
-    pub fn link_note(&self) -> Option<String> {
-        if let Some(t) = &self.todo_title {
-            Some(format!("Todo: {t}"))
-        } else {
-            self.note_title.as_ref().map(|t| format!("Note: {t}"))
+            due: due_key(self.due_date.as_deref(), self.due_time.as_deref()),
+            done: self.done,
         }
     }
 
-    pub fn snap(&self) -> Snap {
-        Snap {
-            title: self.text.clone(),
-            notes: self.link_note(),
-            due: Some(normalize_timestamp(&self.remind_at)),
-            done: self.state == "done",
-        }
+    /// Completed less than the Undo window ago: sync leaves it for a later pass, so an
+    /// undone completion never reaches the phone (D21).
+    pub fn in_undo_window(&self, now: NaiveDateTime) -> bool {
+        self.done
+            && self
+                .completed_at
+                .as_deref()
+                .and_then(|c| parse_timestamp(c).ok())
+                .is_some_and(|c| now < c + chrono::Duration::seconds(UNDO_WINDOW_SECS))
+    }
+
+    /// The absolute alarms the phone item should have: one per reminder whose time is still
+    /// ahead, plus past ones the item already has (kept, so they aren't churned or cancelled
+    /// as they pass, and never newly pushed).
+    pub fn wanted_alarms(
+        &self,
+        on_phone: &[NaiveDateTime],
+        now: NaiveDateTime,
+    ) -> Vec<NaiveDateTime> {
+        let phone: Vec<String> = on_phone.iter().map(|t| alarm_key(*t)).collect();
+        let mut want: Vec<NaiveDateTime> = self
+            .alarm_times
+            .iter()
+            .map(|t| t.with_nanosecond(0).unwrap_or(*t))
+            .filter(|t| *t > now || phone.contains(&alarm_key(*t)))
+            .collect();
+        want.sort();
+        want.dedup();
+        want
     }
 }
 
-/// A stored timestamp in the canonical storage format, whole seconds (unparseable: as is).
-pub fn normalize_timestamp(s: &str) -> String {
-    parse_timestamp(s)
-        .ok()
-        .and_then(|t| t.with_nanosecond(0))
-        .map(format_timestamp)
-        .unwrap_or_else(|| s.to_string())
-}
+const TASK_COLUMNS: &str = "SELECT id, Title AS title, Notes AS notes, Done AS done, \
+     CompletedAt AS completed_at, DueDate AS due_date, DueTime AS due_time, Repeat AS repeat, \
+     MacOnly AS mac_only FROM tasks";
 
-const TODO_COLUMNS: &str = "SELECT id, Title AS title, Notes AS notes, Status AS status, \
-     DueDate AS due_date, MacOnly AS mac_only FROM todos";
-
-const REMINDER_COLUMNS: &str = "SELECT r.id, r.Text AS text, r.RemindAt AS remind_at, \
-     r.Repeat AS repeat, r.State AS state, t.Title AS todo_title, n.Title AS note_title, \
-     (r.MacOnly OR COALESCE(t.MacOnly, 0)) AS mac_only \
-     FROM reminders r LEFT JOIN todos t ON t.id = r.TodoId LEFT JOIN notes n ON n.id = r.NoteId";
-
-/// Open todos plus every paired todo (done ones included, so they aren't taken for deleted).
-pub async fn load_todos(pool: &Pool<Sqlite>) -> Result<Vec<BTodo>, AppError> {
-    let sql = format!(
-        "{TODO_COLUMNS} WHERE Status IN ('not_started', 'in_progress') \
-         OR id IN (SELECT BadgerId FROM apple_sync_items WHERE Kind = 'todo') ORDER BY id"
+async fn with_alarms(mut task: BTask, conn: &mut SqliteConnection) -> Result<BTask, AppError> {
+    let reminders: Vec<(Option<i64>, Option<String>)> =
+        sqlx::query_as("SELECT OffsetMinutes, At FROM task_reminders WHERE TaskId = ? ORDER BY id")
+            .bind(task.id)
+            .fetch_all(conn)
+            .await?;
+    let anchor = due_anchor(
+        task.due_date.as_deref(),
+        task.due_time.as_deref(),
+        local_exists,
     );
-    Ok(sqlx::query_as::<_, BTodo>(sqlx::AssertSqlSafe(sql))
-        .fetch_all(pool)
-        .await?)
+    task.alarm_times = reminders
+        .into_iter()
+        .filter_map(|(offset, at)| base_fire_time(anchor, offset, at.as_deref(), local_exists))
+        .collect();
+    Ok(task)
 }
 
-pub async fn load_todo(id: i64, pool: &Pool<Sqlite>) -> Result<Option<BTodo>, AppError> {
-    let sql = format!("{TODO_COLUMNS} WHERE id = ?");
-    Ok(sqlx::query_as::<_, BTodo>(sqlx::AssertSqlSafe(sql))
-        .bind(id)
-        .fetch_optional(pool)
-        .await?)
-}
-
-/// Pending/fired one-offs plus every paired reminder.
-pub async fn load_reminders(pool: &Pool<Sqlite>) -> Result<Vec<BReminder>, AppError> {
+/// Open tasks plus every paired task (done ones included, so they aren't taken for deleted).
+pub async fn load_tasks(pool: &Pool<Sqlite>) -> Result<Vec<BTask>, AppError> {
     let sql = format!(
-        "{REMINDER_COLUMNS} WHERE (r.Repeat = 'none' AND r.State IN ('pending', 'fired')) \
-         OR r.id IN (SELECT BadgerId FROM apple_sync_items WHERE Kind = 'reminder') ORDER BY r.id"
+        "{TASK_COLUMNS} WHERE Done = 0 OR id IN (SELECT BadgerId FROM apple_sync_items) ORDER BY id"
     );
-    Ok(sqlx::query_as::<_, BReminder>(sqlx::AssertSqlSafe(sql))
-        .fetch_all(pool)
-        .await?)
+    let mut conn = pool.acquire().await?;
+    let rows = sqlx::query_as::<_, BTask>(sqlx::AssertSqlSafe(sql))
+        .fetch_all(&mut *conn)
+        .await?;
+    let mut tasks = Vec::with_capacity(rows.len());
+    for t in rows {
+        tasks.push(with_alarms(t, &mut conn).await?);
+    }
+    Ok(tasks)
 }
 
-pub async fn load_reminder(id: i64, pool: &Pool<Sqlite>) -> Result<Option<BReminder>, AppError> {
-    let sql = format!("{REMINDER_COLUMNS} WHERE r.id = ?");
-    Ok(sqlx::query_as::<_, BReminder>(sqlx::AssertSqlSafe(sql))
+pub async fn load_task(id: i64, pool: &Pool<Sqlite>) -> Result<Option<BTask>, AppError> {
+    let mut conn = pool.acquire().await?;
+    load_task_in(id, &mut conn).await
+}
+
+async fn load_task_in(id: i64, conn: &mut SqliteConnection) -> Result<Option<BTask>, AppError> {
+    let sql = format!("{TASK_COLUMNS} WHERE id = ?");
+    let row = sqlx::query_as::<_, BTask>(sqlx::AssertSqlSafe(sql))
         .bind(id)
-        .fetch_optional(pool)
-        .await?)
+        .fetch_optional(&mut *conn)
+        .await?;
+    match row {
+        Some(t) => Ok(Some(with_alarms(t, conn).await?)),
+        None => Ok(None),
+    }
 }
 
 // ── Pairings ──────────────────────────────────────────────────────────────────
@@ -174,13 +223,13 @@ pub async fn load_reminder(id: i64, pool: &Pool<Sqlite>) -> Result<Option<BRemin
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pairing {
     pub id: i64,
-    pub kind: ListKind,
     pub badger_id: i64,
     pub ek_id: String,
     pub external_id: Option<String>,
     pub badger_snap: Snap,
     pub phone_snap: Snap,
-    pub phone_due: Option<String>,
+    /// The item's absolute alarms after the last sync (storage format).
+    pub phone_alarms: Vec<String>,
     /// Consecutive passes the phone item was missing from its list.
     pub missed: i64,
 }
@@ -188,21 +237,20 @@ pub struct Pairing {
 #[derive(FromRow)]
 struct PairingRow {
     id: i64,
-    kind: String,
     badger_id: i64,
     ek_id: String,
     external_id: Option<String>,
     badger_snap: String,
     phone_snap: String,
-    phone_due: Option<String>,
+    phone_alarms: String,
     missed: i64,
 }
 
 pub async fn load_pairings(pool: &Pool<Sqlite>) -> Result<Vec<Pairing>, AppError> {
     let rows = sqlx::query_as::<_, PairingRow>(
-        "SELECT id, Kind AS kind, BadgerId AS badger_id, EkId AS ek_id, \
-             ExternalId AS external_id, BadgerSnap AS badger_snap, PhoneSnap AS phone_snap, \
-             PhoneDue AS phone_due, MissedPasses AS missed \
+        "SELECT id, BadgerId AS badger_id, EkId AS ek_id, ExternalId AS external_id, \
+             BadgerSnap AS badger_snap, PhoneSnap AS phone_snap, PhoneAlarms AS phone_alarms, \
+             MissedPasses AS missed \
          FROM apple_sync_items ORDER BY id",
     )
     .fetch_all(pool)
@@ -211,17 +259,12 @@ pub async fn load_pairings(pool: &Pool<Sqlite>) -> Result<Vec<Pairing>, AppError
         .into_iter()
         .map(|r| Pairing {
             id: r.id,
-            kind: if r.kind == "reminder" {
-                ListKind::Reminders
-            } else {
-                ListKind::Todos
-            },
             badger_id: r.badger_id,
             ek_id: r.ek_id,
             external_id: r.external_id,
             badger_snap: Snap::from_json(&r.badger_snap),
             phone_snap: Snap::from_json(&r.phone_snap),
-            phone_due: r.phone_due,
+            phone_alarms: serde_json::from_str(&r.phone_alarms).unwrap_or_default(),
             missed: r.missed,
         })
         .collect())
@@ -235,28 +278,30 @@ pub struct PairingState {
     pub external_id: Option<String>,
     pub badger_snap: Snap,
     pub phone_snap: Snap,
-    pub phone_due: Option<String>,
+    pub phone_alarms: Vec<String>,
+}
+
+fn alarms_json(alarms: &[String]) -> String {
+    serde_json::to_string(alarms).unwrap_or_else(|_| "[]".to_string())
 }
 
 /// Returns the new pairing's id.
 pub async fn insert_pairing(
-    kind: ListKind,
     badger_id: i64,
     state: &PairingState,
     conn: &mut SqliteConnection,
 ) -> Result<i64, AppError> {
     let result = sqlx::query(
         "INSERT INTO apple_sync_items \
-             (Kind, BadgerId, EkId, ExternalId, BadgerSnap, PhoneSnap, PhoneDue, SyncedAt) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             (BadgerId, EkId, ExternalId, BadgerSnap, PhoneSnap, PhoneAlarms, SyncedAt) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind(kind.kind())
     .bind(badger_id)
     .bind(&state.ek_id)
     .bind(&state.external_id)
     .bind(state.badger_snap.to_json())
     .bind(state.phone_snap.to_json())
-    .bind(&state.phone_due)
+    .bind(alarms_json(&state.phone_alarms))
     .bind(format_timestamp(local_now()))
     .execute(conn)
     .await?;
@@ -270,14 +315,14 @@ pub async fn update_pairing(
 ) -> Result<(), AppError> {
     sqlx::query(
         "UPDATE apple_sync_items SET EkId = ?, ExternalId = ?, BadgerSnap = ?, PhoneSnap = ?, \
-             PhoneDue = ?, SyncedAt = ?, MissedPasses = 0 \
+             PhoneAlarms = ?, SyncedAt = ?, MissedPasses = 0 \
          WHERE id = ?",
     )
     .bind(&state.ek_id)
     .bind(&state.external_id)
     .bind(state.badger_snap.to_json())
     .bind(state.phone_snap.to_json())
-    .bind(&state.phone_due)
+    .bind(alarms_json(&state.phone_alarms))
     .bind(format_timestamp(local_now()))
     .bind(pairing_id)
     .execute(pool)
@@ -332,10 +377,9 @@ pub async fn delete_pairing(
     Ok(())
 }
 
-/// Drops every pairing of one kind ("Recreate lists").
-pub async fn delete_pairings_of(kind: ListKind, pool: &Pool<Sqlite>) -> Result<(), AppError> {
-    sqlx::query("DELETE FROM apple_sync_items WHERE Kind = ?")
-        .bind(kind.kind())
+/// Drops every pairing ("Recreate list").
+pub async fn delete_all_pairings(pool: &Pool<Sqlite>) -> Result<(), AppError> {
+    sqlx::query("DELETE FROM apple_sync_items")
         .execute(pool)
         .await?;
     Ok(())
@@ -343,305 +387,186 @@ pub async fn delete_pairings_of(kind: ListKind, pool: &Pool<Sqlite>) -> Result<(
 
 // ── Conditional writes ────────────────────────────────────────────────────────
 
-/// Writes `target`'s todo fields that differ from `loaded`, each conditional on the loaded
-/// value. Done ↔ open moves to the end of `done` / `not_started` (done completes the todo's
-/// reminders, as on the board). `Ok(false)`: the row changed meanwhile, nothing written.
-pub async fn apply_todo(
-    loaded: &BTodo,
+/// Writes `target`'s fields that differ from `loaded`, each conditional on the loaded value.
+/// A new due moves the task's reminders with it (re-armed or dismissed silently, D20); done
+/// suppresses them; reopening dismisses past ones (D8). `Ok(false)`: the task changed
+/// meanwhile, nothing written.
+pub async fn apply_task(
+    loaded: &BTask,
     target: &Snap,
+    now: NaiveDateTime,
     pool: &Pool<Sqlite>,
 ) -> Result<bool, AppError> {
     let mut tx = pool.begin().await?;
     let current = loaded.snap();
+    let stamp = format_timestamp(local_now());
     if target.title != current.title {
         let title = clean_title(&target.title)?;
-        if !update_if(&mut tx, "todos", "Title", &title, &loaded.title, loaded.id).await? {
+        let done = sqlx::query(
+            "UPDATE tasks SET Title = ?, UpdatedAt = ? WHERE id = ? AND Title IS ? AND Repeat = 'none'",
+        )
+        .bind(&title)
+        .bind(&stamp)
+        .bind(loaded.id)
+        .bind(&loaded.title)
+        .execute(&mut *tx)
+        .await?;
+        if done.rows_affected() == 0 {
             return Ok(false);
         }
     }
     if target.notes != current.notes {
-        let notes = clean_notes(target.notes.as_deref());
-        if !update_opt_if(&mut tx, "todos", "Notes", &notes, &loaded.notes, loaded.id).await? {
+        let done = sqlx::query(
+            "UPDATE tasks SET Notes = ?, UpdatedAt = ? WHERE id = ? AND Notes IS ? AND Repeat = 'none'",
+        )
+        .bind(clean_notes(target.notes.as_deref()))
+        .bind(&stamp)
+        .bind(loaded.id)
+        .bind(&loaded.notes)
+        .execute(&mut *tx)
+        .await?;
+        if done.rows_affected() == 0 {
             return Ok(false);
         }
     }
     if target.due != current.due {
-        let due = clean_due_date(target.due.as_deref())?;
-        if !update_opt_if(
-            &mut tx,
-            "todos",
-            "DueDate",
-            &due,
-            &loaded.due_date,
-            loaded.id,
+        let (date, time) = split_due(target.due.as_deref());
+        let (date, time) = clean_due(date.as_deref(), time.as_deref())?;
+        let done = sqlx::query(
+            "UPDATE tasks SET DueDate = ?, DueTime = ?, UpdatedAt = ? \
+             WHERE id = ? AND DueDate IS ? AND DueTime IS ? AND Repeat = 'none'",
         )
-        .await?
-        {
+        .bind(&date)
+        .bind(&time)
+        .bind(&stamp)
+        .bind(loaded.id)
+        .bind(&loaded.due_date)
+        .bind(&loaded.due_time)
+        .execute(&mut *tx)
+        .await?;
+        if done.rows_affected() == 0 {
             return Ok(false);
         }
+        reconcile_reminders(loaded.id, now, &mut tx).await?;
     }
     if target.done != current.done {
-        let (status,): (String,) = match sqlx::query_as("SELECT Status FROM todos WHERE id = ?")
-            .bind(loaded.id)
-            .fetch_optional(&mut *tx)
-            .await?
-        {
-            Some(row) => row,
-            None => return Ok(false),
-        };
-        if status != loaded.status {
+        let still: Option<bool> =
+            sqlx::query_scalar("SELECT Done FROM tasks WHERE id = ? AND Repeat = 'none'")
+                .bind(loaded.id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        if still != Some(loaded.done) {
             return Ok(false);
         }
-        let to = if target.done { "done" } else { "not_started" };
-        move_todo_in(loaded.id, to, END_OF_COLUMN, &mut tx).await?;
-    }
-    tx.commit().await?;
-    Ok(true)
-}
-
-/// Writes `target`'s reminder fields (title, time, done) that differ from `loaded`. A new
-/// time is a reschedule: pending, or fired when it has already passed (like the
-/// scheduler's catch-up). Only open one-offs are written.
-pub async fn apply_reminder(
-    loaded: &BReminder,
-    target: &Snap,
-    now: NaiveDateTime,
-    pool: &Pool<Sqlite>,
-) -> Result<bool, AppError> {
-    let current = loaded.snap();
-    let stamp = format_timestamp(local_now());
-    let mut tx = pool.begin().await?;
-    if target.title != current.title {
-        let text = clean_reminder_text(&target.title)
-            .ok_or_else(|| AppError::Custom("Text is required".to_string()))?;
-        let done = sqlx::query(
-            "UPDATE reminders SET Text = ?, UpdatedAt = ? \
-             WHERE id = ? AND Text = ? AND State != 'done' AND Repeat = 'none'",
-        )
-        .bind(&text)
-        .bind(&stamp)
-        .bind(loaded.id)
-        .bind(&loaded.text)
-        .execute(&mut *tx)
-        .await?;
-        if done.rows_affected() == 0 {
-            return Ok(false);
-        }
-    }
-    if target.due != current.due {
-        let Some(due) = target.due.as_deref() else {
-            return Ok(false);
-        };
-        let at = resolve_gap(parse_timestamp(due)?, local_exists);
-        let state = if at <= now { "fired" } else { "pending" };
-        let done = sqlx::query(
-            "UPDATE reminders SET RemindAt = ?, TimeOfDay = ?, State = ?, UpdatedAt = ? \
-             WHERE id = ? AND RemindAt = ? AND State != 'done' AND Repeat = 'none'",
-        )
-        .bind(format_timestamp(at))
-        .bind(format_time_of_day(anchor_of(at)))
-        .bind(state)
-        .bind(&stamp)
-        .bind(loaded.id)
-        .bind(&loaded.remind_at)
-        .execute(&mut *tx)
-        .await?;
-        if done.rows_affected() == 0 {
-            return Ok(false);
-        }
-    }
-    if target.done && !current.done {
-        let done = sqlx::query(
-            "UPDATE reminders SET State = 'done', UpdatedAt = ? \
-             WHERE id = ? AND State IN ('pending', 'fired') AND Repeat = 'none'",
-        )
-        .bind(&stamp)
-        .bind(loaded.id)
-        .execute(&mut *tx)
-        .await?;
-        if done.rows_affected() == 0 {
-            return Ok(false);
+        if target.done {
+            complete_in(loaded.id, now, &mut tx).await?;
+        } else {
+            reopen_in(loaded.id, now, &mut tx).await?;
         }
     }
     tx.commit().await?;
     Ok(true)
-}
-
-async fn update_if(
-    tx: &mut SqliteConnection,
-    table: &str,
-    column: &str,
-    value: &str,
-    expected: &str,
-    id: i64,
-) -> Result<bool, AppError> {
-    let sql = format!("UPDATE {table} SET {column} = ? WHERE id = ? AND {column} IS ?");
-    let result = sqlx::query(sqlx::AssertSqlSafe(sql))
-        .bind(value)
-        .bind(id)
-        .bind(expected)
-        .execute(tx)
-        .await?;
-    Ok(result.rows_affected() > 0)
-}
-
-async fn update_opt_if(
-    tx: &mut SqliteConnection,
-    table: &str,
-    column: &str,
-    value: &Option<String>,
-    expected: &Option<String>,
-    id: i64,
-) -> Result<bool, AppError> {
-    let sql = format!("UPDATE {table} SET {column} = ? WHERE id = ? AND {column} IS ?");
-    let result = sqlx::query(sqlx::AssertSqlSafe(sql))
-        .bind(value)
-        .bind(id)
-        .bind(expected)
-        .execute(tx)
-        .await?;
-    Ok(result.rows_affected() > 0)
-}
-
-/// Reminder text from a phone title: trimmed and cut to 500 characters; `None` when empty.
-pub fn clean_reminder_text(title: &str) -> Option<String> {
-    let cut: String = title.trim().chars().take(MAX_TEXT_CHARS).collect();
-    let cut = cut.trim_end().to_string();
-    (!cut.is_empty()).then_some(cut)
 }
 
 // ── Imports and deletes ───────────────────────────────────────────────────────
 
-/// A phone-created todo: `not_started`, at the end of that column, paired in the same
-/// transaction. Returns its id and the pairing's.
-pub async fn import_todo(
-    title: &str,
-    notes: Option<&str>,
-    due_date: Option<&str>,
+/// A phone-created task, open, paired in the same transaction. Its absolute alarms become
+/// reminders (D22): one at the due time is "At due time", others are custom; the earliest
+/// ten are kept, and those already past are stored dismissed. Returns the task id and the
+/// pairing's.
+pub async fn import_task(
+    snap: &Snap,
+    alarms: &[NaiveDateTime],
     pairing: &PairingState,
-    pool: &Pool<Sqlite>,
-) -> Result<(i64, i64), AppError> {
-    let title = clean_title(title)?;
-    let due_date = clean_due_date(due_date)?;
-    let created_at = format_timestamp(local_now());
-    let mut tx = pool.begin().await?;
-    let (id,): (i64,) = sqlx::query_as(
-        "INSERT INTO todos (Title, Notes, Status, Position, DueDate, CreatedAt) \
-         VALUES (?, ?, 'not_started', \
-             (SELECT COALESCE(MAX(Position), -1) + 1 FROM todos WHERE Status = 'not_started'), ?, ?) \
-         RETURNING id",
-    )
-    .bind(&title)
-    .bind(clean_notes(notes))
-    .bind(&due_date)
-    .bind(&created_at)
-    .fetch_one(&mut *tx)
-    .await?;
-    let mut state = pairing.clone();
-    state.badger_snap = Snap {
-        title,
-        notes: clean_notes(notes),
-        due: due_date,
-        done: false,
-    };
-    let pairing_id = insert_pairing(ListKind::Todos, id, &state, &mut tx).await?;
-    tx.commit().await?;
-    Ok((id, pairing_id))
-}
-
-/// A phone-created reminder: a one-off at `at` (already resolved out of a DST gap), fired
-/// when it has passed, paired in the same transaction. Returns its id and the pairing's.
-pub async fn import_reminder(
-    text: &str,
-    at: NaiveDateTime,
     now: NaiveDateTime,
-    pairing: &PairingState,
     pool: &Pool<Sqlite>,
 ) -> Result<(i64, i64), AppError> {
-    let text = clean_reminder_text(text)
-        .ok_or_else(|| AppError::Custom("Text is required".to_string()))?;
-    let state = if at <= now { "fired" } else { "pending" };
+    let title = clean_title(&snap.title)?;
+    let (date, time) = split_due(snap.due.as_deref());
+    let (due_date, due_time) = clean_due(date.as_deref(), time.as_deref())?;
+    let notes = clean_notes(snap.notes.as_deref());
     let stamp = format_timestamp(local_now());
     let mut tx = pool.begin().await?;
     let (id,): (i64,) = sqlx::query_as(
-        "INSERT INTO reminders (Text, RemindAt, TimeOfDay, Repeat, Weekdays, MonthDay, State, \
-             TodoId, NoteId, CreatedAt, UpdatedAt) \
-         VALUES (?, ?, ?, 'none', '', NULL, ?, NULL, NULL, ?, ?) RETURNING id",
+        "INSERT INTO tasks (Title, Notes, Done, DueDate, DueTime, CreatedAt, UpdatedAt) \
+         VALUES (?, ?, 0, ?, ?, ?, ?) RETURNING id",
     )
-    .bind(&text)
-    .bind(format_timestamp(at))
-    .bind(format_time_of_day(anchor_of(at)))
-    .bind(state)
+    .bind(&title)
+    .bind(&notes)
+    .bind(&due_date)
+    .bind(&due_time)
     .bind(&stamp)
     .bind(&stamp)
     .fetch_one(&mut *tx)
     .await?;
-    let mut pairing = pairing.clone();
-    pairing.badger_snap = Snap {
-        title: text,
-        notes: None,
-        due: Some(format_timestamp(at)),
+
+    let at_due = match to_phone_due(snap.due.as_deref()) {
+        Some(PhoneDue::DateTime(t)) => Some(t),
+        _ => None,
+    };
+    let mut alarms: Vec<NaiveDateTime> = alarms
+        .iter()
+        .map(|t| t.with_nanosecond(0).unwrap_or(*t))
+        .collect();
+    alarms.sort();
+    alarms.dedup();
+    for t in alarms.into_iter().take(MAX_REMINDERS) {
+        let (offset, at) = if at_due.is_some_and(|d| d.with_second(0) == t.with_second(0)) {
+            (Some(0_i64), None)
+        } else {
+            (None, Some(format_timestamp(t)))
+        };
+        sqlx::query(
+            "INSERT INTO task_reminders (TaskId, OffsetMinutes, At, State, CreatedAt) \
+             VALUES (?, ?, ?, 'pending', ?)",
+        )
+        .bind(id)
+        .bind(offset)
+        .bind(at)
+        .bind(&stamp)
+        .execute(&mut *tx)
+        .await?;
+    }
+    // Arms each for its time: past ones become dismissed, without a notification.
+    reconcile_reminders(id, now, &mut tx).await?;
+
+    let mut state = pairing.clone();
+    state.badger_snap = Snap {
+        title,
+        notes,
+        due: due_key(due_date.as_deref(), due_time.as_deref()),
         done: false,
     };
-    let pairing_id = insert_pairing(ListKind::Reminders, id, &pairing, &mut tx).await?;
+    let pairing_id = insert_pairing(id, &state, &mut tx).await?;
     tx.commit().await?;
     Ok((id, pairing_id))
 }
 
-/// Whether Badger's side differs from the last-synced snapshot in a field the user edits.
-/// A reminder's notes are the derived link line (its todo's or note's title), not an edit
-/// of the reminder.
-pub fn badger_edited(kind: ListKind, now: &Snap, synced: &Snap) -> bool {
-    match kind {
-        ListKind::Todos => now != synced,
-        ListKind::Reminders => {
-            now.title != synced.title || now.due != synced.due || now.done != synced.done
-        }
-    }
+/// Whether Badger's side differs from the last-synced snapshot.
+pub fn badger_edited(now: &Snap, synced: &Snap) -> bool {
+    now != synced
 }
 
-/// Deletes a Badger row the phone deleted, and its pairing, in one transaction. A todo's
-/// reminders cascade away, as when it's deleted on the board. Conditional on the row still
-/// matching the last-synced snapshot `synced` and still being synced: when it was edited
-/// in Badger meanwhile, or made Mac-only or recurring, nothing is deleted and `Ok(false)`
-/// comes back (Badger wins; the caller re-pushes or unpairs).
+/// Deletes a task the phone deleted (its reminders cascade away) and its pairing, in one
+/// transaction. Conditional on the task still matching the last-synced snapshot `synced`
+/// and still being synced: when it was edited in Badger meanwhile, or made Mac-only or
+/// repeating, nothing is deleted and `Ok(false)` comes back (Badger wins; the caller
+/// re-pushes or unpairs).
 pub async fn delete_and_unpair(
-    kind: ListKind,
     badger_id: i64,
     pairing_id: i64,
     synced: &Snap,
     pool: &Pool<Sqlite>,
 ) -> Result<bool, AppError> {
     let mut tx = pool.begin().await?;
-    let now = match kind {
-        ListKind::Todos => {
-            let sql = format!("{TODO_COLUMNS} WHERE id = ?");
-            sqlx::query_as::<_, BTodo>(sqlx::AssertSqlSafe(sql))
-                .bind(badger_id)
-                .fetch_optional(&mut *tx)
-                .await?
-                .map(|t| (t.snap(), t.mac_only))
-        }
-        ListKind::Reminders => {
-            let sql = format!("{REMINDER_COLUMNS} WHERE r.id = ?");
-            sqlx::query_as::<_, BReminder>(sqlx::AssertSqlSafe(sql))
-                .bind(badger_id)
-                .fetch_optional(&mut *tx)
-                .await?
-                .map(|r| {
-                    let off_phone = r.mac_only || r.repeat != "none";
-                    (r.snap(), off_phone)
-                })
-        }
-    };
-    if now.is_some_and(|(now, off_phone)| off_phone || badger_edited(kind, &now, synced)) {
+    let now = load_task_in(badger_id, &mut tx).await?;
+    if now.is_some_and(|t| t.off_phone() || badger_edited(&t.snap(), synced)) {
         return Ok(false);
     }
-    let sql = match kind {
-        ListKind::Todos => "DELETE FROM todos WHERE id = ?",
-        ListKind::Reminders => "DELETE FROM reminders WHERE id = ?",
-    };
-    sqlx::query(sql).bind(badger_id).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM tasks WHERE id = ?")
+        .bind(badger_id)
+        .execute(&mut *tx)
+        .await?;
     delete_pairing(pairing_id, &mut *tx).await?;
     tx.commit().await?;
     Ok(true)
@@ -653,176 +578,185 @@ mod tests {
     use crate::commands::customers::inner_create_customer;
     use crate::commands::issues::inner_resolve_issue;
     use crate::commands::projects::inner_create_project;
-    use crate::commands::todos::{inner_create_todo, inner_get_todo, inner_update_todo};
+    use crate::commands::tasks::{inner_create_task, inner_get_task, inner_update_task, TaskInput};
+
+    fn now() -> NaiveDateTime {
+        parse_timestamp("2026-11-19T12:00").unwrap()
+    }
+
+    fn input(title: &str) -> TaskInput {
+        TaskInput {
+            title: title.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn due_keys_round_trip_between_columns_snapshots_and_the_phone() {
+        assert_eq!(
+            due_key(Some("2026-11-20"), None).as_deref(),
+            Some("2026-11-20")
+        );
+        assert_eq!(
+            due_key(Some("2026-11-20"), Some("09:30")).as_deref(),
+            Some("2026-11-20T09:30")
+        );
+        assert_eq!(due_key(None, None), None);
+        assert_eq!(
+            split_due(Some("2026-11-20T09:30")),
+            (Some("2026-11-20".into()), Some("09:30".into()))
+        );
+        assert_eq!(
+            split_due(Some("2026-11-20")),
+            (Some("2026-11-20".into()), None)
+        );
+        let d = NaiveDate::from_ymd_opt(2026, 11, 20).unwrap();
+        let t = d.and_hms_opt(9, 30, 45).unwrap();
+        assert_eq!(
+            phone_due_key(Some(PhoneDue::Date(d))).as_deref(),
+            Some("2026-11-20")
+        );
+        assert_eq!(
+            phone_due_key(Some(PhoneDue::DateTime(t))).as_deref(),
+            Some("2026-11-20T09:30"),
+            "seconds dropped"
+        );
+        assert_eq!(to_phone_due(Some("2026-11-20")), Some(PhoneDue::Date(d)));
+        assert_eq!(
+            to_phone_due(Some("2026-11-20T09:30")),
+            Some(PhoneDue::DateTime(d.and_hms_opt(9, 30, 0).unwrap()))
+        );
+    }
 
     #[tokio::test]
-    async fn conditional_todo_write_loses_to_a_concurrent_user_edit() {
+    async fn a_conditional_write_loses_to_a_concurrent_user_edit() {
         let pool = crate::test_db().await;
         let c = inner_create_customer("Acme", &pool).await.unwrap();
         let p = inner_create_project(c.id, "Web", &pool).await.unwrap();
         let issue = inner_resolve_issue(p.id, "Bug", &pool).await.unwrap();
-        inner_create_todo("Other", None, None, "not_started", None, &pool)
-            .await
-            .unwrap();
-        let t = inner_create_todo("Call", None, None, "not_started", Some(issue), &pool)
-            .await
-            .unwrap();
-        let loaded = load_todo(t.id, &pool).await.unwrap().unwrap();
+        let i = TaskInput {
+            issue_id: Some(issue),
+            ..input("Call")
+        };
+        let t = inner_create_task(&i, &[], now(), &pool).await.unwrap();
+        let loaded = load_task(t.id, &pool).await.unwrap().unwrap();
 
         // The user renames it after the pass read it.
-        inner_update_todo(t.id, "Call Anna", None, None, Some(issue), &pool)
+        let renamed = TaskInput {
+            title: "Call Anna".into(),
+            ..i.clone()
+        };
+        inner_update_task(t.id, &renamed, now(), &pool)
             .await
             .unwrap();
 
         let mut target = loaded.snap();
         target.title = "Call Bob".to_string();
         target.notes = Some("from phone".to_string());
-        assert!(!apply_todo(&loaded, &target, &pool).await.unwrap());
-
-        let now = inner_get_todo(t.id, &pool).await.unwrap();
-        assert_eq!(now.title, "Call Anna", "the user's edit stays");
-        assert_eq!(now.notes, None, "the whole item rolled back");
-        assert_eq!(now.issue_id, Some(issue));
-        assert_eq!(now.position, 1);
+        assert!(!apply_task(&loaded, &target, now(), &pool).await.unwrap());
+        let now_t = inner_get_task(t.id, &pool).await.unwrap();
+        assert_eq!(now_t.title, "Call Anna", "the user's edit stays");
+        assert_eq!(now_t.notes, None, "the whole item rolled back");
+        assert_eq!(now_t.issue_id, Some(issue));
     }
 
     #[tokio::test]
-    async fn todo_write_touches_only_the_synced_columns() {
+    async fn a_phone_delete_loses_to_a_badger_edit_or_mac_only_made_meanwhile() {
         let pool = crate::test_db().await;
-        let c = inner_create_customer("Acme", &pool).await.unwrap();
-        let p = inner_create_project(c.id, "Web", &pool).await.unwrap();
-        let issue = inner_resolve_issue(p.id, "Bug", &pool).await.unwrap();
-        inner_create_todo("First", None, None, "in_progress", None, &pool)
+        let t = inner_create_task(&input("Call"), &[], now(), &pool)
             .await
             .unwrap();
-        let t = inner_create_todo("Call", None, None, "in_progress", Some(issue), &pool)
-            .await
-            .unwrap();
-        let loaded = load_todo(t.id, &pool).await.unwrap().unwrap();
-        let mut target = loaded.snap();
-        target.title = "  Call Bob ".to_string();
-        target.due = Some("2026-11-20".to_string());
-        assert!(apply_todo(&loaded, &target, &pool).await.unwrap());
-
-        let now = inner_get_todo(t.id, &pool).await.unwrap();
-        assert_eq!(now.title, "Call Bob");
-        assert_eq!(now.due_date.as_deref(), Some("2026-11-20"));
-        assert_eq!(now.status, "in_progress");
-        assert_eq!((now.issue_id, now.position), (Some(issue), 1));
-    }
-
-    #[tokio::test]
-    async fn a_phone_delete_loses_to_a_badger_edit_made_meanwhile() {
-        let pool = crate::test_db().await;
-        let t = inner_create_todo("Call", None, None, "not_started", None, &pool)
-            .await
-            .unwrap();
-        let synced = load_todo(t.id, &pool).await.unwrap().unwrap().snap();
+        let synced = load_task(t.id, &pool).await.unwrap().unwrap().snap();
         let state = PairingState {
             ek_id: "ek-1".to_string(),
             external_id: None,
             badger_snap: synced.clone(),
             phone_snap: synced.clone(),
-            phone_due: None,
+            phone_alarms: vec![],
         };
         let mut conn = pool.acquire().await.unwrap();
-        let pairing = insert_pairing(ListKind::Todos, t.id, &state, &mut conn)
-            .await
-            .unwrap();
+        let pairing = insert_pairing(t.id, &state, &mut conn).await.unwrap();
         drop(conn);
 
-        // The user edits it after the pass decided to delete it.
-        inner_update_todo(t.id, "Call Anna", None, None, None, &pool)
+        inner_update_task(t.id, &input("Call Anna"), now(), &pool)
             .await
             .unwrap();
-        let deleted = delete_and_unpair(ListKind::Todos, t.id, pairing, &synced, &pool)
+        assert!(!delete_and_unpair(t.id, pairing, &synced, &pool)
             .await
-            .unwrap();
-        assert!(!deleted);
+            .unwrap());
         assert_eq!(
-            inner_get_todo(t.id, &pool).await.unwrap().title,
+            inner_get_task(t.id, &pool).await.unwrap().title,
             "Call Anna"
         );
         assert_eq!(load_pairings(&pool).await.unwrap().len(), 1, "still paired");
 
-        // Unchanged since the snapshot: deleted with its pairing.
-        let synced = load_todo(t.id, &pool).await.unwrap().unwrap().snap();
-        assert!(
-            delete_and_unpair(ListKind::Todos, t.id, pairing, &synced, &pool)
-                .await
-                .unwrap()
-        );
-        assert!(inner_get_todo(t.id, &pool).await.is_err());
+        let synced = load_task(t.id, &pool).await.unwrap().unwrap().snap();
+        let mac_only = TaskInput {
+            mac_only: Some(true),
+            ..input("Call Anna")
+        };
+        inner_update_task(t.id, &mac_only, now(), &pool)
+            .await
+            .unwrap();
+        assert!(!delete_and_unpair(t.id, pairing, &synced, &pool)
+            .await
+            .unwrap());
+
+        inner_update_task(
+            t.id,
+            &TaskInput {
+                mac_only: Some(false),
+                ..input("Call Anna")
+            },
+            now(),
+            &pool,
+        )
+        .await
+        .unwrap();
+        assert!(delete_and_unpair(t.id, pairing, &synced, &pool)
+            .await
+            .unwrap());
+        assert!(inner_get_task(t.id, &pool).await.is_err());
         assert!(load_pairings(&pool).await.unwrap().is_empty());
     }
 
-    #[tokio::test]
-    async fn a_phone_delete_never_deletes_a_row_made_mac_only_meanwhile() {
-        let pool = crate::test_db().await;
-        let t = inner_create_todo("Call", None, None, "not_started", None, &pool)
-            .await
-            .unwrap();
-        let synced = load_todo(t.id, &pool).await.unwrap().unwrap().snap();
-        let state = PairingState {
-            ek_id: "ek-1".to_string(),
-            external_id: None,
-            badger_snap: synced.clone(),
-            phone_snap: synced.clone(),
-            phone_due: None,
-        };
-        let mut conn = pool.acquire().await.unwrap();
-        let pairing = insert_pairing(ListKind::Todos, t.id, &state, &mut conn)
-            .await
-            .unwrap();
-        drop(conn);
-
-        crate::commands::todos::inner_set_todo_mac_only(t.id, true, &pool)
-            .await
-            .unwrap();
-        assert!(
-            !delete_and_unpair(ListKind::Todos, t.id, pairing, &synced, &pool)
-                .await
-                .unwrap()
-        );
-        assert!(inner_get_todo(t.id, &pool).await.unwrap().mac_only);
-    }
-
-    #[tokio::test]
-    async fn a_reminder_of_a_mac_only_todo_loads_as_mac_only() {
-        let pool = crate::test_db().await;
-        let t = inner_create_todo("Call", None, None, "not_started", None, &pool)
-            .await
-            .unwrap();
-        let input = crate::commands::reminders::ReminderInput {
-            text: "Ring".to_string(),
-            remind_at: "2026-11-20T09:00".to_string(),
-            repeat: "none".to_string(),
-            todo_id: Some(t.id),
-            ..Default::default()
-        };
-        let now = parse_timestamp("2026-11-19T12:00").unwrap();
-        let r = crate::commands::reminders::inner_create_reminder(&input, now, &pool)
-            .await
-            .unwrap();
-        let loaded = load_reminder(r.id, &pool).await.unwrap().unwrap();
-        assert!(loaded.in_scope());
-
-        crate::commands::todos::inner_set_todo_mac_only(t.id, true, &pool)
-            .await
-            .unwrap();
-        let loaded = load_reminder(r.id, &pool).await.unwrap().unwrap();
-        assert!(loaded.mac_only && !loaded.in_scope());
-        assert!(!load_todo(t.id, &pool).await.unwrap().unwrap().in_scope());
+    #[test]
+    fn titles_are_trimmed_and_cut_to_500_chars() {
+        assert_eq!(cut_title("  "), None);
+        assert_eq!(cut_title(" Ring 📞 "), Some("Ring 📞".to_string()));
+        let long = "é".repeat(600);
+        assert_eq!(cut_title(&long).unwrap().chars().count(), 500);
     }
 
     #[test]
-    fn reminder_text_is_trimmed_and_cut_to_500_chars() {
-        assert_eq!(clean_reminder_text("  "), None);
+    fn wanted_alarms_keep_future_times_and_only_past_ones_already_on_the_phone() {
+        let at = |s: &str| parse_timestamp(s).unwrap();
+        let task = BTask {
+            id: 1,
+            title: "x".into(),
+            notes: None,
+            done: false,
+            completed_at: None,
+            due_date: None,
+            due_time: None,
+            repeat: "none".into(),
+            mac_only: false,
+            alarm_times: vec![
+                at("2026-11-19T13:00"),
+                at("2026-11-19T08:00"),
+                at("2026-11-19T09:00"),
+                at("2026-11-19T13:00"),
+            ],
+        };
         assert_eq!(
-            clean_reminder_text(" Ring 📞 "),
-            Some("Ring 📞".to_string())
+            task.wanted_alarms(&[], now()),
+            vec![at("2026-11-19T13:00")],
+            "a past time is never newly pushed"
         );
-        let long = "é".repeat(600);
-        assert_eq!(clean_reminder_text(&long).unwrap().chars().count(), 500);
+        assert_eq!(
+            task.wanted_alarms(&[at("2026-11-19T09:00"), at("2026-11-18T07:00")], now()),
+            vec![at("2026-11-19T09:00"), at("2026-11-19T13:00")],
+            "a past one the phone has stays; one Badger doesn't have goes"
+        );
     }
 }

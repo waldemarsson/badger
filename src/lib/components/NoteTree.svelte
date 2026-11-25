@@ -36,8 +36,8 @@
 
 	// The notes folder tree: one flat keyed list of visible rows (so `animate:flip` works
 	// across levels), ARIA tree keyboard navigation (⌥↑/⌥↓ reorder), inline folder
-	// rename/delete, a right-click menu per row, and pointer-event drag and drop (todos-page
-	// pattern) with an insertion line between rows, auto-expand and auto-scroll.
+	// rename/delete, a right-click menu per row, and pointer-event drag and drop (not HTML5
+	// DnD, which Tauri's file drop can block) with an insertion line between rows, auto-expand and auto-scroll.
 
 	const DRAG_THRESHOLD = 5; // px of movement before a press becomes a drag
 	const AUTO_EXPAND_MS = 600;

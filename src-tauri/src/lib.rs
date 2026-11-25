@@ -9,10 +9,11 @@ pub mod flush_guard;
 pub mod js_runner;
 pub mod logger;
 pub mod note_links;
-pub mod reminders_scheduler;
+pub mod recurrence;
 pub mod runtime_paths;
 pub mod semantic;
 pub mod startup_backup;
+pub mod task_scheduler;
 
 #[cfg(debug_assertions)]
 pub mod dev_seed;
@@ -112,7 +113,7 @@ pub fn run() {
             // ── Daily Backup ─────────────────────────────────────────────────
             // Background task writes the daily backup (if retention > 0) at launch and
             // again on each new day while the app stays open. Logs any errors.
-            let pool_for_reminders = pool.clone();
+            let pool_for_tasks = pool.clone();
             let pool_for_sync = pool.clone();
             app.manage(startup_backup::BackupState::default());
             tauri::async_runtime::spawn(run_daily_backups(
@@ -150,15 +151,12 @@ pub fn run() {
                 }
             });
 
-            // ── Reminders ────────────────────────────────────────────────────
+            // ── Task reminders ───────────────────────────────────────────────
             // The click handler must exist before the first notification is shown. The
             // scheduler ticks every 30 s; its first tick catches up on reminders that came
             // due while the app was closed.
-            reminders_scheduler::install_click_handler(app.handle());
-            tauri::async_runtime::spawn(reminders_scheduler::run(
-                app.handle().clone(),
-                pool_for_reminders,
-            ));
+            task_scheduler::install_click_handler(app.handle());
+            tauri::async_runtime::spawn(task_scheduler::run(app.handle().clone(), pool_for_tasks));
 
             // ── Apple Reminders sync ─────────────────────────────────────────
             // Off until switched on in Settings. One pass at launch, then on nudges and
@@ -212,20 +210,21 @@ pub fn run() {
                     commands::reports::monthly_report,
                     // Time Entries helper (Phase 4 delete guard)
                     commands::time_entries::count_project_time_entries,
-                    // Todos
-                    commands::todos::list_todos,
-                    commands::todos::create_todo,
-                    commands::todos::update_todo,
-                    commands::todos::move_todo,
-                    commands::todos::delete_todo,
-                    commands::todos::create_issue_for_todo,
-                    // Reminders
-                    commands::reminders::list_reminders,
-                    commands::reminders::create_reminder,
-                    commands::reminders::update_reminder,
-                    commands::reminders::delete_reminder,
-                    commands::reminders::snooze_reminder,
-                    commands::reminders::complete_reminder,
+                    // Tasks
+                    commands::tasks::list_tasks,
+                    commands::tasks::get_task,
+                    commands::tasks::create_task,
+                    commands::tasks::update_task,
+                    commands::tasks::complete_task,
+                    commands::tasks::reopen_task,
+                    commands::tasks::undo_complete_task,
+                    commands::tasks::delete_task,
+                    commands::tasks::create_issue_for_task,
+                    commands::tasks::add_task_reminder,
+                    commands::tasks::update_task_reminder,
+                    commands::tasks::delete_task_reminder,
+                    commands::tasks::snooze_task_reminder,
+                    commands::tasks::dismiss_task_reminder,
                     // Travel
                     commands::travel::list_travel,
                     commands::travel::create_travel,
@@ -315,6 +314,7 @@ pub fn run() {
                     commands::apple_sync::sync_apple_reminders_now,
                     commands::apple_sync::recreate_apple_sync_lists,
                     commands::apple_sync::apple_sync_delete_anyway,
+                    commands::apple_sync::dismiss_apple_sync_old_lists_note,
                     // Updater
                     commands::updater::check_for_update,
                     commands::updater::install_update,
@@ -352,20 +352,21 @@ pub fn run() {
                     commands::reports::monthly_report,
                     // Time Entries helper (Phase 4 delete guard)
                     commands::time_entries::count_project_time_entries,
-                    // Todos
-                    commands::todos::list_todos,
-                    commands::todos::create_todo,
-                    commands::todos::update_todo,
-                    commands::todos::move_todo,
-                    commands::todos::delete_todo,
-                    commands::todos::create_issue_for_todo,
-                    // Reminders
-                    commands::reminders::list_reminders,
-                    commands::reminders::create_reminder,
-                    commands::reminders::update_reminder,
-                    commands::reminders::delete_reminder,
-                    commands::reminders::snooze_reminder,
-                    commands::reminders::complete_reminder,
+                    // Tasks
+                    commands::tasks::list_tasks,
+                    commands::tasks::get_task,
+                    commands::tasks::create_task,
+                    commands::tasks::update_task,
+                    commands::tasks::complete_task,
+                    commands::tasks::reopen_task,
+                    commands::tasks::undo_complete_task,
+                    commands::tasks::delete_task,
+                    commands::tasks::create_issue_for_task,
+                    commands::tasks::add_task_reminder,
+                    commands::tasks::update_task_reminder,
+                    commands::tasks::delete_task_reminder,
+                    commands::tasks::snooze_task_reminder,
+                    commands::tasks::dismiss_task_reminder,
                     // Travel
                     commands::travel::list_travel,
                     commands::travel::create_travel,
@@ -455,6 +456,7 @@ pub fn run() {
                     commands::apple_sync::sync_apple_reminders_now,
                     commands::apple_sync::recreate_apple_sync_lists,
                     commands::apple_sync::apple_sync_delete_anyway,
+                    commands::apple_sync::dismiss_apple_sync_old_lists_note,
                     // Updater
                     commands::updater::check_for_update,
                     commands::updater::install_update,

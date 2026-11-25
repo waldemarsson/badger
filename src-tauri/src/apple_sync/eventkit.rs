@@ -457,19 +457,22 @@ fn apply_draft(reminder: &EKReminder, d: &PhoneDraft) {
         if let Some(due) = d.due {
             reminder.setDueDateComponents(due.map(components).as_deref());
         }
-        if let Some(at) = d.alarm {
-            if let Some(date) = nsdate_from_local(at) {
-                // Our one absolute alarm replaces other absolute ones; relative alarms stay.
-                let mut alarms: Vec<Retained<EKAlarm>> = reminder
-                    .alarms()
-                    .map(|list| list.to_vec())
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|a| a.absoluteDate().is_none())
-                    .collect();
-                alarms.push(EKAlarm::alarmWithAbsoluteDate(&date));
-                reminder.setAlarms(Some(&NSArray::from_retained_slice(&alarms)));
+        if let Some(times) = &d.alarms {
+            // Our absolute alarms (one per Badger reminder) replace the item's absolute ones;
+            // relative alarms stay.
+            let mut alarms: Vec<Retained<EKAlarm>> = reminder
+                .alarms()
+                .map(|list| list.to_vec())
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|a| a.absoluteDate().is_none())
+                .collect();
+            for at in times {
+                if let Some(date) = nsdate_from_local(*at) {
+                    alarms.push(EKAlarm::alarmWithAbsoluteDate(&date));
+                }
             }
+            reminder.setAlarms(Some(&NSArray::from_retained_slice(&alarms)));
         }
         if d.strip_recurrence && reminder.hasRecurrenceRules() {
             reminder.setRecurrenceRules(None);

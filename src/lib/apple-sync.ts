@@ -1,11 +1,10 @@
-// Pure helpers for Apple Reminders sync: event names, the Settings status pill and
-// skipped-items summary, and the "Keep off phone" (Mac-only) rules for todos and reminders.
-import type { AppleSyncSkipped, AppleSyncStatus, Reminder, ReminderRepeat } from '#lib/types.js';
+// Pure helpers for Apple Reminders sync: the event name, the Settings status pill and
+// skipped-items summary, and the "Keep off phone" (Mac-only) rules for tasks. Sync's own
+// task changes arrive as `tasks-changed` (see tasks.ts).
+import type { AppleSyncSkipped, AppleSyncStatus, TaskRepeat } from '#lib/types.js';
 
 /** Tauri event sent whenever the sync status changes (no payload). */
 export const APPLE_SYNC_STATUS_EVENT = 'apple-sync-status';
-/** Tauri event sent when sync changed todos (no payload); todo views re-read. */
-export const TODOS_CHANGED_EVENT = 'todos-changed';
 
 export type AppleSyncTone = 'off' | 'ok' | 'warn' | 'error';
 
@@ -47,16 +46,11 @@ export function syncShowsMacOnly(status: Pick<AppleSyncStatus, 'available' | 'en
 	return !!status && status.available && status.enabled;
 }
 
-/** A reminder stays on the Mac when it or its linked todo is kept off the phone. */
-export function reminderMacOnly(r: Pick<Reminder, 'mac_only' | 'todo_mac_only'>): boolean {
-	return r.mac_only || r.todo_mac_only;
-}
+/** How the details panel offers "Keep off phone": hidden while sync is off, explained for
+ *  repeating tasks (they never sync), else a switch. */
+export type MacOnlyControl = 'hidden' | 'repeating' | 'toggle';
 
-/** How the reminder form offers "Keep off phone": hidden when sync is off or the reminder
- *  repeats (recurring ones never sync), locked on when its todo is Mac-only, else a toggle. */
-export type MacOnlyControl = 'hidden' | 'follows-todo' | 'toggle';
-
-export function reminderMacOnlyControl(syncOn: boolean, repeat: ReminderRepeat, todoMacOnly: boolean): MacOnlyControl {
-	if (!syncOn || repeat !== 'none') return 'hidden';
-	return todoMacOnly ? 'follows-todo' : 'toggle';
+export function taskMacOnlyControl(syncOn: boolean, repeat: TaskRepeat): MacOnlyControl {
+	if (!syncOn) return 'hidden';
+	return repeat === 'none' ? 'toggle' : 'repeating';
 }

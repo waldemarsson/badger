@@ -17,7 +17,7 @@
   import { DEFAULT_SHORTCUT, formatShortcut, recorderProblem, shortcutFromEvent } from '#lib/palette.js';
   import { scratchpadRestored } from '#lib/scratchpad-state.svelte.js';
   import { playgroundRestored } from '#lib/playground-state.svelte.js';
-  import { parseBackupPreview, type RestorePreview } from '#lib/backup.js';
+  import { parseBackupPreview, restoreNotice, type RestorePreview } from '#lib/backup.js';
   import { runFlushHandlers } from '#lib/flush-guard.js';
   import { palette } from '#lib/palette-state.svelte.js';
   import { formatHours, parseDailyTarget } from '#lib/today.js';
@@ -31,9 +31,9 @@
   import { checkForUpdate, updater } from '#lib/updater-state.svelte.js';
   import { listen } from '@tauri-apps/api/event';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
-  import type { AppleSyncStatus } from '#lib/types.js';
+  import type { AppleSyncStatus, RestoreReport } from '#lib/types.js';
   import { APPLE_SYNC_STATUS_EVENT, appleSyncPill, formatLastSync, skippedSummary } from '#lib/apple-sync.js';
-  import { clock } from '#lib/reminders-state.svelte.js';
+  import { clock } from '#lib/tasks-state.svelte.js';
 
   type Tab = 'customers' | 'preferences' | 'backup' | 'dev';
   let activeTab = $state<Tab>('customers');
@@ -138,7 +138,7 @@
 
   // ── Apple Reminders sync ──────────────────────────────────────────────────────
   // Status from get_apple_sync_status, re-read on Rust's status events; actions reply with a fresh one.
-  type AppleSyncAction = 'toggle' | 'access' | 'sync' | 'recreate' | 'delete';
+  type AppleSyncAction = 'toggle' | 'access' | 'sync' | 'recreate' | 'delete' | 'dismiss';
   let appleSync = $state<AppleSyncStatus | null>(null);
   let appleSyncBusy = $state<'' | AppleSyncAction>('');
   let appleSyncError = $state('');
@@ -309,6 +309,7 @@
   let restorePreview    = $state<RestorePreview | null>(null);
   let restoreParseError = $state('');
   let restoreState      = $state<'idle' | 'key' | 'preview' | 'restoring' | 'success' | 'error'>('idle');
+  let restoreReport     = $state<RestoreReport | null>(null);
   // Encrypted backup: the picked file waits here for its secret key (used once, never stored).
   let restoreKeyPath    = $state('');
   let restoreKey        = $state('');
@@ -424,10 +425,11 @@
   async function executeRestore() {
     restoreState = 'restoring';
     restoreError = '';
+    restoreReport = null;
     try {
       // Pending autosaves (the scratchpad's) land first, so none can overwrite restored data.
       await runFlushHandlers();
-      await invoke<void>('restore_data', { json: restoreJsonText });
+      restoreReport = await invoke<RestoreReport>('restore_data', { json: restoreJsonText });
       restoreState = 'success';
       scratchpadRestored(); // the drawer reloads the restored pad
       playgroundRestored(); // run output belongs to the replaced scripts
@@ -722,7 +724,7 @@
         <div class="flex items-start justify-between gap-3">
           <div>
             <h2 id="apple-sync-title" class="panel-title">Apple Reminders</h2>
-            <p class="panel-copy">Syncs one-off reminders and open todos with two lists in Apple Reminders, so iCloud brings them to your iPhone with its notifications. Changes made there come back here. Recurring reminders stay on this Mac.</p>
+            <p class="panel-copy">Syncs your tasks with one list in Apple Reminders, so iCloud brings them to your iPhone, their reminders as alerts. Changes made there come back here. Repeating tasks, and tasks you keep off the phone, stay on this Mac.</p>
           </div>
           {#if appleSync && appleSyncState}
             <span
@@ -768,7 +770,7 @@
             <div class="space-y-4" in:fade={{ duration: 150 }}>
               <dl class="semantic-facts">
                 <div><dt>Access</dt><dd>{accessLabels[appleSync.access]}</dd></div>
-                <div><dt>Lists</dt><dd>{appleSync.reminders_list} · {appleSync.todos_list}</dd></div>
+                <div><dt>List</dt><dd>{appleSync.list}</dd></div>
                 <div><dt>Last sync</dt><dd>{formatLastSync(appleSync.last_sync_at, new Date(clock.ms))}</dd></div>
                 {#if appleSync.skipped.length > 0}
                   <div>
@@ -794,7 +796,7 @@
                     <p class="alert-warning-title">Badger can't reach Reminders</p>
                     <p class="alert-warning-copy">
                       {appleSync.access === 'not_determined'
-                        ? 'Grant access so Badger can create its two lists. Nothing syncs until then.'
+                        ? 'Grant access so Badger can create its list. Nothing syncs until then.'
                         : 'Access was turned off. Sync is paused and nothing is deleted; allow Badger under Privacy & Security → Reminders.'}
                     </p>
                   </div>
@@ -805,11 +807,11 @@
               {:else if appleSync.paused === 'list_missing'}
                 <div class="alert-panel alert-warning space-y-3" role="alert">
                   <div>
-                    <p class="alert-warning-title">A Badger list is missing</p>
+                    <p class="alert-warning-title">The {appleSync.list} list is missing</p>
                     <p class="alert-warning-copy">{appleSync.last_error}</p>
                   </div>
                   <button type="button" class="btn-primary" onclick={() => appleSyncAction('recreate', 'recreate_apple_sync_lists')} disabled={appleSyncBusy !== ''}>
-                    {appleSyncBusy === 'recreate' ? 'Recreating…' : 'Recreate lists'}
+                    {appleSyncBusy === 'recreate' ? 'Recreating…' : 'Recreate list'}
                   </button>
                 </div>
               {:else if appleSync.paused === 'empty_fetch'}
@@ -849,6 +851,18 @@
               {/if}
             </div>
           {/if}
+        {/if}
+
+        {#if appleSync?.available && appleSync.old_lists_note}
+          <div class="alert-panel alert-warning flex flex-wrap items-start justify-between gap-3" out:fade={{ duration: 150 }}>
+            <div class="min-w-0">
+              <p class="alert-warning-title">Your old lists are no longer synced</p>
+              <p class="alert-warning-copy">
+                Todos and reminders became tasks, which sync with “{appleSync.list}”. {appleSync.old_lists.length ? `“${appleSync.old_lists.join('” and “')}”` : 'The old Badger lists'} on your phone {appleSync.old_lists.length === 1 ? 'is' : 'are'} left as they were; delete {appleSync.old_lists.length === 1 ? 'it' : 'them'} in Reminders when you no longer need {appleSync.old_lists.length === 1 ? 'it' : 'them'}.
+              </p>
+            </div>
+            <button type="button" class="btn-secondary-sm shrink-0" onclick={() => appleSyncAction('dismiss', 'dismiss_apple_sync_old_lists_note')} disabled={appleSyncBusy !== ''}>Dismiss</button>
+          </div>
         {/if}
 
         {#if appleSyncError}
@@ -944,6 +958,9 @@
             <div class="alert-panel alert-success">
               <p class="alert-success-title">Data restored</p>
               <p class="alert-success-copy">Your backup has been applied. All data is now live.</p>
+              {#if restoreNotice(restoreReport)}
+                <p class="alert-success-copy mt-2">{restoreNotice(restoreReport)}</p>
+              {/if}
             </div>
             <button
               class="text-sm text-slate-500 dark:text-neutral-400 underline hover:text-slate-900 dark:hover:text-neutral-100"
@@ -1007,7 +1024,7 @@
               {#if restorePreview}
                 <div class="panel-muted">
                   <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-neutral-400 mb-3">Backup Contents</p>
-                  <div class="grid grid-cols-6 gap-2 py-6 text-center">
+                  <div class="grid {restorePreview.tasks === null ? 'grid-cols-6' : 'grid-cols-7'} gap-2 py-6 text-center">
                     <div class="restore-stat">
                       <span class="restore-stat-number">{restorePreview.customers}</span>
                       <span class="restore-stat-label">Customers</span>
@@ -1032,13 +1049,22 @@
                       <span class="restore-stat-number">{restorePreview.scripts}</span>
                       <span class="restore-stat-label">Scripts</span>
                     </div>
+                    {#if restorePreview.tasks !== null}
+                      <div class="restore-stat">
+                        <span class="restore-stat-number">{restorePreview.tasks}</span>
+                        <span class="restore-stat-label">Tasks</span>
+                      </div>
+                    {/if}
                   </div>
+                  {#if restorePreview.tasks === null}
+                    <p class="text-center text-sm text-slate-600 dark:text-neutral-400">Current tasks are kept: this backup is from before Tasks.</p>
+                  {/if}
                 </div>
               {/if}
 
               {#if restoreState !== 'key'}
               <div class="alert-panel alert-warning">
-                <p class="alert-warning-copy">⚠ This will permanently delete all current data — customers, projects, issues, time entries, todos, travel, notes, and scripts — and replace it with the backup.</p>
+                <p class="alert-warning-copy">⚠ This will permanently delete all current data — customers, projects, issues, time entries, tasks, travel, notes, and scripts — and replace it with the backup. A backup from before Tasks keeps your current tasks.</p>
               </div>
 
               {#if restorePreview && restorePreview.notes === 0 && currentNoteCount > 0}

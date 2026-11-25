@@ -87,13 +87,13 @@ test('semanticReady and the Settings hint', () => {
 });
 
 test('keepActiveIndex keeps the active item by id when the list is replaced', () => {
-	const before = ['new-todo', 'note:1', 'note:2'];
+	const before = ['new-task', 'note:1', 'note:2'];
 	// note:2 moved down when a related hit was fused in above it
-	assert.equal(keepActiveIndex(before, ['new-todo', 'note:1', 'note:9', 'note:2'], 2), 3);
+	assert.equal(keepActiveIndex(before, ['new-task', 'note:1', 'note:9', 'note:2'], 2), 3);
 	// still at the same place
-	assert.equal(keepActiveIndex(before, ['new-todo', 'note:1', 'note:2'], 1), 1);
+	assert.equal(keepActiveIndex(before, ['new-task', 'note:1', 'note:2'], 1), 1);
 	// gone → first row
-	assert.equal(keepActiveIndex(before, ['new-todo', 'note:9'], 2), 0);
+	assert.equal(keepActiveIndex(before, ['new-task', 'note:9'], 2), 0);
 	// out-of-range active index or empty lists → first row
 	assert.equal(keepActiveIndex(before, before, 7), 0);
 	assert.equal(keepActiveIndex([], ['note:1'], 0), 0);

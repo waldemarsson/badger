@@ -5,11 +5,9 @@ const {
 	appleSyncPill,
 	formatLastSync,
 	skippedSummary,
-	TODOS_CHANGED_EVENT,
 	APPLE_SYNC_STATUS_EVENT,
 	syncShowsMacOnly,
-	reminderMacOnly,
-	reminderMacOnlyControl
+	taskMacOnlyControl
 } = await import('../src/lib/apple-sync.ts');
 
 const base = {
@@ -20,12 +18,12 @@ const base = {
 	last_error: null,
 	paused: null,
 	skipped: [],
-	reminders_list: 'Badger Reminders',
-	todos_list: 'Badger Todos'
+	list: 'Badger',
+	old_lists_note: false,
+	old_lists: []
 };
 
 test('event names match Rust', () => {
-	assert.equal(TODOS_CHANGED_EVENT, 'todos-changed');
 	assert.equal(APPLE_SYNC_STATUS_EVENT, 'apple-sync-status');
 });
 
@@ -51,7 +49,7 @@ test('last sync reads relative, then as a time', () => {
 
 test('skipped summary counts per reason', () => {
 	assert.equal(skippedSummary([]), '');
-	const s = (reason) => ({ title: 't', list: 'Badger Reminders', reason });
+	const s = (reason) => ({ title: 't', list: 'Badger', reason });
 	assert.equal(skippedSummary([s('needs a date')]), '1 needs a date');
 	assert.equal(
 		skippedSummary([s('needs a date'), s('needs a title'), s('needs a date')]),
@@ -66,16 +64,9 @@ test('Mac-only controls show only while sync is on', () => {
 	assert.equal(syncShowsMacOnly({ available: true, enabled: true }), true);
 });
 
-test('a reminder is Mac-only by its own flag or its todo', () => {
-	assert.equal(reminderMacOnly({ mac_only: false, todo_mac_only: false }), false);
-	assert.equal(reminderMacOnly({ mac_only: true, todo_mac_only: false }), true);
-	assert.equal(reminderMacOnly({ mac_only: false, todo_mac_only: true }), true);
-});
-
-test('reminder form: toggle, locked to its todo, or hidden', () => {
-	assert.equal(reminderMacOnlyControl(true, 'none', false), 'toggle');
-	assert.equal(reminderMacOnlyControl(true, 'none', true), 'follows-todo');
-	assert.equal(reminderMacOnlyControl(true, 'daily', false), 'hidden', 'recurring never syncs');
-	assert.equal(reminderMacOnlyControl(true, 'weekly', true), 'hidden');
-	assert.equal(reminderMacOnlyControl(false, 'none', false), 'hidden', 'sync off');
+test('details panel: switch, explained for repeating tasks, or hidden', () => {
+	assert.equal(taskMacOnlyControl(true, 'none'), 'toggle');
+	assert.equal(taskMacOnlyControl(true, 'daily'), 'repeating', 'repeating tasks never sync');
+	assert.equal(taskMacOnlyControl(false, 'none'), 'hidden', 'sync off');
+	assert.equal(taskMacOnlyControl(false, 'weekly'), 'hidden');
 });

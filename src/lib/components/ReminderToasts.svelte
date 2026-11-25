@@ -1,59 +1,72 @@
 <script lang="ts">
+	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { onMount } from 'svelte';
 	import { flip } from 'svelte/animate';
 	import { fade, fly } from 'svelte/transition';
-	import type { Reminder } from '#lib/types.js';
-	import { SNOOZE_CHOICES, snoozeUntil, formatRemindAt, toastStack } from '#lib/reminders.js';
+	import { SNOOZE_CHOICES, snoozeUntil } from '#lib/time-phrases.js';
+	import { chipWhen, toastStack, type ReminderToast } from '#lib/tasks.js';
 	import {
 		clock,
-		completeReminder,
-		dismissToast,
-		dismissedToasts,
-		reminders,
-		snoozeReminder,
+		completeTask,
+		dismissTaskReminder,
+		snoozeTaskReminder,
+		tasks,
 		toastArea
-	} from '#lib/reminders-state.svelte.js';
+	} from '#lib/tasks-state.svelte.js';
+	import { motionMs } from '#lib/task-transitions.js';
 	import { toast } from '#lib/palette-state.svelte.js';
 	import ContextMenu, { type MenuItem } from '#lib/components/ContextMenu.svelte';
 	import AlarmClock from '@lucide/svelte/icons/alarm-clock';
 	import BellRing from '@lucide/svelte/icons/bell-ring';
 	import Check from '@lucide/svelte/icons/check';
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
-	import FileText from '@lucide/svelte/icons/file-text';
-	import ListTodo from '@lucide/svelte/icons/list-todo';
 	import X from '@lucide/svelte/icons/x';
 
-	// Actionable toasts for fired reminders: up to three, then "+N more" → /reminders.
-	// Derived from the shared list (so they survive reloads and launch catch-up); Done and
-	// Snooze clear them through the next list refresh, × hides one for this session.
-	// Shown on every page, /reminders included: the native notification is skipped while the
-	// window is focused, so the toast is what announces a firing.
+	// Actionable toasts for sent reminders: up to three, then "+N more" → /tasks. Derived from
+	// the shared tasks list (so they survive reloads and launch catch-up). Done completes the
+	// task, Snooze moves only that reminder, × dismisses it (it stops counting as overdue).
+	// Clicking the text opens the task. Shown on every page: the native notification is
+	// skipped while the window is focused, so the toast is what announces a reminder.
 
 	const now = $derived(new Date(clock.ms));
-	const stack = $derived(toastStack(reminders.list, dismissedToasts));
+	const stack = $derived(toastStack(tasks.list));
 
 	let busy = $state<number | null>(null);
 	let errors = $state<Record<number, string>>({});
-	let menu = $state<{ r: Reminder; x: number; y: number; h: number; button: HTMLElement } | null>(null);
+	let menu = $state<{ t: ReminderToast; x: number; y: number; h: number; button: HTMLElement } | null>(null);
 	let container = $state<HTMLElement>();
 
-	async function act(r: Reminder, action: () => Promise<string>): Promise<void> {
+	async function act(t: ReminderToast, action: () => Promise<unknown>): Promise<void> {
 		if (busy !== null) return;
-		busy = r.id;
-		const error = await action();
-		errors = { ...errors, [r.id]: error };
+		busy = t.reminder.id;
+		let error = '';
+		try {
+			const result = await action();
+			if (typeof result === 'string') error = result;
+		} catch (e) {
+			error = String(e);
+		}
+		errors = { ...errors, [t.reminder.id]: error };
 		busy = null;
 	}
 
-	function openSnooze(r: Reminder, button: HTMLElement): void {
+	function openTask(t: ReminderToast): void {
+		// eslint-disable-next-line svelte/no-navigation-without-resolve -- resolved path plus a query string
+		void goto(`${resolve('/tasks')}?id=${t.task.id}`);
+	}
+
+	function openSnooze(t: ReminderToast, button: HTMLElement): void {
 		const rect = button.getBoundingClientRect();
-		menu = { r, x: rect.left, y: rect.bottom + 4, h: rect.height + 4, button };
+		menu = { t, x: rect.left, y: rect.bottom + 4, h: rect.height + 4, button };
 	}
 
 	// ContextMenu calls onclose before an item's run, so neither may read `menu` (null by then).
-	function snoozeItems(r: Reminder): MenuItem[] {
-		return SNOOZE_CHOICES.map((c) => ({ label: c.label, run: () => void act(r, () => snoozeReminder(r.id, snoozeUntil(c.choice, new Date()))) }));
+	function snoozeItems(t: ReminderToast): MenuItem[] {
+		return SNOOZE_CHOICES.map((c) => ({
+			label: c.label,
+			run: () => void act(t, () => snoozeTaskReminder(t.reminder.id, snoozeUntil(c.choice, new Date())))
+		}));
 	}
 
 	function closeSnooze(refocus: boolean): void {
@@ -62,27 +75,27 @@
 		if (refocus && button?.isConnected) button.focus();
 	}
 
-	/** × or Esc: hides the toast; keyboard focus moves to the next one. */
-	function dismiss(r: Reminder, el: HTMLElement | null): void {
+	/** × or Esc: dismisses the reminder; keyboard focus moves to the next toast. */
+	function dismiss(t: ReminderToast, el: HTMLElement | null): void {
 		const toasts = container ? [...container.querySelectorAll<HTMLElement>('[data-toast]')] : [];
 		const hadFocus = el?.contains(document.activeElement) ?? false;
 		const next = toasts[toasts.indexOf(el as HTMLElement) + 1] ?? toasts[toasts.indexOf(el as HTMLElement) - 1];
-		dismissToast(r);
+		void act(t, () => dismissTaskReminder(t.reminder.id));
 		if (hadFocus) next?.focus();
 	}
 
 	/**
-	 * Esc with focus in a toast hides it. Capture phase, so a page or modal behind the toast
+	 * Esc with focus in a toast dismisses it. Capture phase, so a page or modal behind the toast
 	 * doesn't also close; an open snooze menu (not inside a toast) handles its own Esc first.
 	 */
 	function onWindowKeydown(e: KeyboardEvent): void {
 		if (e.key !== 'Escape' || e.isComposing) return;
 		const el = document.activeElement instanceof HTMLElement ? document.activeElement.closest<HTMLElement>('[data-toast]') : null;
-		const r = el && stack.shown.find((x) => String(x.id) === el.dataset.toast);
-		if (!el || !r) return;
+		const t = el && stack.shown.find((x) => String(x.reminder.id) === el.dataset.toast);
+		if (!el || !t) return;
 		e.preventDefault();
 		e.stopPropagation();
-		dismiss(r, el);
+		dismiss(t, el);
 	}
 
 	onMount(() => {
@@ -100,66 +113,61 @@
 	role="region"
 	data-above-scratchpad
 >
-	{#each stack.shown as r (r.id)}
+	{#each stack.shown as t (t.reminder.id)}
 		<div
-			data-toast={r.id}
+			data-toast={t.reminder.id}
 			class="reminder-toast"
 			role="group"
 			tabindex="-1"
-			aria-label="Reminder: {r.text}"
-			animate:flip={{ duration: 200 }}
-			in:fly={{ y: 12, duration: 180 }}
-			out:fade={{ duration: 150 }}
+			aria-label="Reminder: {t.task.title}"
+			animate:flip={{ duration: motionMs(200) }}
+			in:fly={{ y: 12, duration: motionMs(180) }}
+			out:fade={{ duration: motionMs(150) }}
 		>
 			<div class="flex items-start gap-2.5">
 				<BellRing size={16} class="mt-0.5 shrink-0 text-red-500 dark:text-red-400" />
-				<div class="min-w-0 flex-1">
-					<p class="text-[11px] font-semibold uppercase tracking-wide text-red-600 dark:text-red-400">
-						Reminder · {formatRemindAt(r.remind_at, now)}
-					</p>
-					<p class="mt-0.5 line-clamp-3 break-words text-sm font-medium text-slate-900 dark:text-neutral-100">{r.text}</p>
-					{#if r.todo_id !== null}
-						<a href={resolve('/todos')} class="reminder-link mt-1.5 max-w-full">
-							<ListTodo size={12} class="shrink-0" /><span class="truncate">{r.todo_title}</span>
-						</a>
-					{:else if r.note_id !== null}
-						<a href="{resolve('/notes')}?id={r.note_id}" class="reminder-link mt-1.5 max-w-full">
-							<FileText size={12} class="shrink-0" /><span class="truncate">{r.note_title}</span>
-						</a>
+				<button type="button" class="min-w-0 flex-1 rounded-md text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400" title="Open task" onclick={() => openTask(t)}>
+					<span class="block text-[11px] font-semibold uppercase tracking-wide text-red-600 dark:text-red-400">
+						Reminder · {t.reminder.fire_at ? chipWhen(t.reminder.fire_at, now) : ''}
+					</span>
+					<span class="mt-0.5 line-clamp-3 block break-words text-sm font-medium text-slate-900 dark:text-neutral-100">{t.task.title}</span>
+					{#if t.task.notes}
+						<span class="mt-0.5 block truncate text-xs text-slate-500 dark:text-neutral-400">{t.task.notes}</span>
 					{/if}
-				</div>
+				</button>
 				<button
 					type="button"
 					class="btn-icon-ghost -mr-1 -mt-1 p-1"
-					title="Hide (Esc)"
-					aria-label="Hide reminder “{r.text}”"
-					onclick={(e) => dismiss(r, (e.currentTarget as HTMLElement).closest('[data-toast]'))}
+					title="Dismiss (Esc)"
+					aria-label="Dismiss reminder “{t.task.title}”"
+					disabled={busy === t.reminder.id}
+					onclick={(e) => dismiss(t, (e.currentTarget as HTMLElement).closest('[data-toast]'))}
 				>
 					<X size={14} />
 				</button>
 			</div>
 			<div class="mt-2.5 flex items-center gap-2 pl-[1.625rem]">
-				<button type="button" class="btn-secondary-sm gap-1" disabled={busy === r.id} onclick={() => void act(r, () => completeReminder(r.id))}>
+				<button type="button" class="btn-secondary-sm gap-1" disabled={busy === t.reminder.id} onclick={() => void act(t, () => completeTask(t.task))}>
 					<Check size={13} /> Done
 				</button>
 				<button
 					type="button"
 					class="btn-secondary-sm gap-1"
 					aria-haspopup="menu"
-					aria-expanded={menu?.r.id === r.id}
-					disabled={busy === r.id}
-					onclick={(e) => openSnooze(r, e.currentTarget)}
+					aria-expanded={menu?.t.reminder.id === t.reminder.id}
+					disabled={busy === t.reminder.id}
+					onclick={(e) => openSnooze(t, e.currentTarget)}
 				>
 					<AlarmClock size={13} /> Snooze <ChevronDown size={12} class="-mr-0.5 text-slate-400 dark:text-neutral-500" />
 				</button>
 			</div>
-			{#if errors[r.id]}
-				<p class="form-error mt-1.5 pl-[1.625rem] text-xs" role="alert">{errors[r.id]}</p>
+			{#if errors[t.reminder.id]}
+				<p class="form-error mt-1.5 pl-[1.625rem] text-xs" role="alert">{errors[t.reminder.id]}</p>
 			{/if}
 		</div>
 	{/each}
 	{#if stack.more > 0}
-		<a href={resolve('/reminders')} class="reminder-toast-more" in:fade={{ duration: 150 }}>+{stack.more} more</a>
+		<a href={resolve('/tasks')} class="reminder-toast-more" in:fade={{ duration: motionMs(150) }}>+{stack.more} more</a>
 	{/if}
 
 	{#if menu}
@@ -168,8 +176,8 @@
 				x={menu.x}
 				y={menu.y}
 				anchorHeight={menu.h}
-				label="Snooze “{menu.r.text}”"
-				items={snoozeItems(menu.r)}
+				label="Snooze “{menu.t.task.title}”"
+				items={snoozeItems(menu.t)}
 				onclose={closeSnooze}
 			/>
 		</div>

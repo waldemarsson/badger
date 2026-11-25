@@ -4,21 +4,13 @@ import test from 'node:test';
 const {
 	parseReminder,
 	snoozeUntil,
-	groupReminders,
 	formatRemindAt,
 	formatRepeat,
 	ordinal,
 	toLocalTimestamp,
 	parseLocalTimestamp,
-	quickTime,
-	splitTimestamp,
-	formStart,
-	isPast,
-	activeForTodo,
-	todoBells,
-	toastKey,
-	toastStack
-} = await import('../src/lib/reminders.ts');
+	isPast
+} = await import('../src/lib/time-phrases.ts');
 
 // Sunday 2026-11-08 14:30:15 local time.
 const SUN = new Date(2026, 10, 8, 14, 30, 15);
@@ -28,7 +20,12 @@ const MON = new Date(2026, 10, 9, 8, 0, 0);
 const SAT = new Date(2026, 10, 14, 10, 0, 0);
 
 const once = (text, remindAt) => ({ text, remindAt, repeat: 'none', weekdays: [], monthDay: null });
-const parse = (input, now = SUN) => parseReminder(input, now);
+// `hasTime` has its own test below; the phrase tests compare the rest.
+const parse = (input, now = SUN) => {
+	const rest = { ...parseReminder(input, now) };
+	delete rest.hasTime;
+	return rest;
+};
 
 test('timestamps round-trip in local time', () => {
 	const d = new Date(2026, 0, 5, 7, 3, 9, 42);
@@ -296,31 +293,6 @@ test('snoozeUntil', () => {
 	assert.equal(snoozeUntil('3h', new Date(2026, 11, 31, 22, 0)), '2027-01-01T01:00:00.000');
 });
 
-const row = (id, remind_at, state = 'pending', updated_at = '2026-11-01T00:00:00.000') => ({ id, remind_at, state, updated_at });
-
-test('groupReminders buckets and sorts', () => {
-	const list = [
-		row(1, '2026-11-20T09:00:00.000'),
-		row(2, '2026-11-09T09:00:00.000'),
-		row(3, '2026-11-08T16:00:00.000'),
-		row(4, '2026-11-08T10:00:00.000', 'fired'),
-		row(5, '2026-11-07T10:00:00.000', 'fired'),
-		row(6, '2026-11-08T15:00:00.000'),
-		row(7, '2026-11-05T09:00:00.000', 'done', '2026-11-05T09:01:00.000'),
-		row(8, '2026-11-06T09:00:00.000', 'done', '2026-11-07T09:01:00.000'),
-		row(9, '2026-11-08T14:00:00.000'), // past but not yet fired
-		row(10, '2026-11-12T09:00:00.000')
-	];
-	const g = groupReminders(list, SUN);
-	const ids = (xs) => xs.map((r) => r.id);
-	assert.deepEqual(ids(g.overdue), [5, 4]);
-	assert.deepEqual(ids(g.today), [9, 6, 3]);
-	assert.deepEqual(ids(g.tomorrow), [2]);
-	assert.deepEqual(ids(g.later), [10, 1]);
-	assert.deepEqual(ids(g.done), [8, 7]);
-	assert.deepEqual(groupReminders([], SUN), { overdue: [], today: [], tomorrow: [], later: [], done: [] });
-});
-
 test('formatRemindAt', () => {
 	assert.equal(formatRemindAt('2026-11-08T14:52:00.000', SUN), '14:52');
 	assert.equal(formatRemindAt('2026-11-09T09:00:00.000', SUN), 'Tomorrow 09:00');
@@ -347,80 +319,21 @@ test('formatRepeat and ordinal', () => {
 	);
 });
 
-// ── Form and UI helpers ──────────────────────────────────────────────────────
-
-test('quickTime: 20 min, 1 h, tomorrow 09:00 and the coming Monday 09:00', () => {
-	assert.equal(quickTime('20m', SUN), '2026-11-08T14:50:00.000');
-	assert.equal(quickTime('1h', SUN), '2026-11-08T15:30:00.000');
-	assert.equal(quickTime('tomorrow', SUN), '2026-11-09T09:00:00.000');
-	assert.equal(quickTime('monday', SUN), '2026-11-09T09:00:00.000');
-	// On a Monday (even before 09:00) it is the next week's Monday.
-	assert.equal(quickTime('monday', MON), '2026-11-16T09:00:00.000');
-	assert.equal(quickTime('monday', SAT), '2026-11-16T09:00:00.000');
-});
-
-test('splitTimestamp gives date and HH:MM for the form inputs', () => {
-	assert.deepEqual(splitTimestamp('2026-11-20T09:05:00.000'), { date: '2026-11-20', time: '09:05' });
+test('hasTime: typed times and in N min/h, not defaulted 09:00 or in N days', () => {
+	const has = (input) => parseReminder(input, SUN).hasTime;
+	assert.equal(has('call Anna at 9'), true);
+	assert.equal(has('call Anna tomorrow 14:00'), true);
+	assert.equal(has('call Anna in 20 min'), true);
+	assert.equal(has('call Anna in 2 hours'), true);
+	assert.equal(has('call Anna tomorrow'), false);
+	assert.equal(has('call Anna in 2 days'), false);
+	assert.equal(has('water plants every day'), false);
+	assert.equal(has('water plants every day at 7'), true);
+	assert.equal(has('call Anna'), undefined, 'no date or time: an error result');
 });
 
 test('isPast compares against now', () => {
 	assert.equal(isPast('2026-11-08T14:30:00.000', SUN), true);
 	assert.equal(isPast('2026-11-08T14:31:00.000', SUN), false);
 	assert.equal(isPast('garbage', SUN), false);
-});
-
-const uiRow = (id, remind_at, state, todo_id = null) => ({ id, remind_at, state, todo_id, updated_at: remind_at });
-
-test('activeForTodo and todoBells: fired first, then the next pending; done ignored', () => {
-	const list = [
-		uiRow(1, '2026-11-10T09:00:00.000', 'pending', 7),
-		uiRow(2, '2026-11-09T09:00:00.000', 'pending', 7),
-		uiRow(3, '2026-11-08T08:00:00.000', 'done', 7),
-		uiRow(4, '2026-11-12T09:00:00.000', 'fired', 8),
-		uiRow(5, '2026-11-08T09:00:00.000', 'pending', 8),
-		uiRow(6, '2026-11-08T09:00:00.000', 'pending', null)
-	];
-	assert.deepEqual(activeForTodo(list, 7).map((r) => r.id), [2, 1]);
-	assert.deepEqual(activeForTodo(list, 8).map((r) => r.id), [4, 5]);
-	const bells = todoBells(list);
-	assert.equal(bells.get(7).id, 2);
-	assert.equal(bells.get(8).id, 4);
-	assert.equal(bells.size, 2);
-});
-
-test('toastStack shows up to three fired, not dismissed, and counts the rest', () => {
-	const list = [
-		uiRow(1, '2026-11-08T09:00:00.000', 'fired'),
-		uiRow(2, '2026-11-08T08:00:00.000', 'fired'),
-		uiRow(3, '2026-11-08T10:00:00.000', 'fired'),
-		uiRow(4, '2026-11-08T11:00:00.000', 'fired'),
-		uiRow(5, '2026-11-08T12:00:00.000', 'fired'),
-		uiRow(6, '2026-11-08T12:00:00.000', 'pending')
-	];
-	let stack = toastStack(list, new Set());
-	assert.deepEqual(stack.shown.map((r) => r.id), [2, 1, 3]);
-	assert.equal(stack.more, 2);
-	stack = toastStack(list, new Set([toastKey(list[1]), toastKey(list[0])]));
-	assert.deepEqual(stack.shown.map((r) => r.id), [3, 4, 5]);
-	assert.equal(stack.more, 0);
-	// A re-fired occurrence (new remind_at) is a new toast.
-	stack = toastStack([uiRow(1, '2026-11-09T09:00:00.000', 'fired')], new Set([toastKey(list[0])]));
-	assert.equal(stack.shown.length, 1);
-});
-
-test('formStart: one-off rows keep remind_at; recurring rows use time_of_day at the next occurrence', () => {
-	const row = (over) => ({ remind_at: '2026-11-08T16:45:00.000', time_of_day: '09:00', repeat: 'none', weekdays: [], month_day: null, ...over });
-	assert.deepEqual(formStart(row({}), SUN), { date: '2026-11-08', time: '16:45' });
-	// Daily 09:00 snoozed to 16:45 today (SUN is 14:30): the anchor, on the next occurrence.
-	assert.deepEqual(formStart(row({ repeat: 'daily' }), SUN), { date: '2026-11-09', time: '09:00' });
-	assert.deepEqual(formStart(row({ repeat: 'daily', time_of_day: '18:00' }), SUN), { date: '2026-11-08', time: '18:00' });
-	// Weekdays: Saturday → Monday.
-	assert.deepEqual(formStart(row({ repeat: 'weekdays', remind_at: '2026-11-14T11:00:00.000' }), SAT), { date: '2026-11-16', time: '09:00' });
-	// Weekly Mon+Thu at 09:00, fired Mon 09:00 and snoozed (MON is 08:00 → today still ahead).
-	assert.deepEqual(formStart(row({ repeat: 'weekly', weekdays: [1, 4] }), MON), { date: '2026-11-09', time: '09:00' });
-	assert.deepEqual(formStart(row({ repeat: 'weekly', weekdays: [1, 4] }), SUN), { date: '2026-11-09', time: '09:00' });
-	// Monthly on the 31st clamps to the month's last day.
-	assert.deepEqual(formStart(row({ repeat: 'monthly', month_day: 31 }), SUN), { date: '2026-11-30', time: '09:00' });
-	// A malformed anchor falls back to remind_at.
-	assert.deepEqual(formStart(row({ repeat: 'daily', time_of_day: '' }), SUN), { date: '2026-11-08', time: '16:45' });
 });

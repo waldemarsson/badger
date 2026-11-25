@@ -9,8 +9,8 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{Mutex, Notify};
 
 use super::engine::{run_pass, Outcome, PassMode, PassReport};
-use super::{platform_store, PlatformStore, STATUS_EVENT, TODOS_CHANGED_EVENT};
-use crate::commands::reminders::local_now;
+use super::{platform_store, PlatformStore, STATUS_EVENT};
+use crate::recurrence::local_now;
 
 /// How long a nudge waits for more before the pass starts.
 pub const DEBOUNCE: Duration = Duration::from_millis(1500);
@@ -81,6 +81,15 @@ pub fn nudge(app: &AppHandle) {
     }
 }
 
+/// Nudges sync once `delay` has passed (a completion waits out its Undo window).
+pub fn nudge_after(app: &AppHandle, delay: Duration) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(delay).await;
+        nudge(&app);
+    });
+}
+
 /// Runs for the app's lifetime. The first pass runs at once (catch-up after a restart).
 pub async fn run(app: AppHandle, pool: Pool<Sqlite>, handle: SyncHandle) {
     let mut interval = tokio::time::interval(TICK);
@@ -108,11 +117,9 @@ pub async fn pass_now(
     if report.phone_writes > 0 {
         handle.quiet_for(QUIET_AFTER_WRITES);
     }
-    if report.reminders_changed {
-        crate::reminders_scheduler::reminders_refreshed(app, pool).await;
-    }
-    if report.todos_changed {
-        emit(app, TODOS_CHANGED_EVENT);
+    if report.tasks_changed {
+        // Sync changed tasks behind the UI's back; no nudge, or it would loop.
+        crate::task_scheduler::tasks_refreshed(app, pool).await;
     }
     if report.outcome != Outcome::Disabled {
         emit(app, STATUS_EVENT);

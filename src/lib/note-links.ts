@@ -321,12 +321,12 @@ export function slug(name: string): string | null {
 	return out && !numericRe.test(out) ? out : null;
 }
 
-/** `#issue/<id>` / `#todo/<id>` (normalized tag) → the entity it chips. */
-export function entityTag(tag: string): { kind: 'issue' | 'todo'; id: number } | null {
-	const m = /^(issue|todo)\/(\d+)$/.exec(tag);
+/** `#issue/<id>` / `#task/<id>` (normalized tag) → the entity it chips. */
+export function entityTag(tag: string): { kind: 'issue' | 'task'; id: number } | null {
+	const m = /^(issue|task)\/(\d+)$/.exec(tag);
 	if (!m) return null;
 	const id = Number(m[2]);
-	return Number.isSafeInteger(id) ? { kind: m[1] as 'issue' | 'todo', id } : null;
+	return Number.isSafeInteger(id) ? { kind: m[1] as 'issue' | 'task', id } : null;
 }
 
 // ── Autocomplete triggers ────────────────────────────────────────────────────
@@ -420,7 +420,7 @@ function hasWordStart(text: string, q: string): boolean {
 
 /** A `#` completion entry: what `list_tag_suggestions` returns (src/lib/types.ts). */
 export interface TagOption {
-	kind: 'tag' | 'customer' | 'project' | 'issue' | 'todo';
+	kind: 'tag' | 'customer' | 'project' | 'issue' | 'task';
 	tag: string;
 	label: string;
 	detail: string | null;
@@ -430,7 +430,7 @@ export interface TagOption {
 /**
  * `#` suggestions for `query` (what follows the `#`), best first: the exact tag, then tag
  * prefix, then a word of the tag or label starting with it, then substrings; ties keep the input order (tags in
- * use, customers, projects, issues, todos). Issues and todos match on their title too.
+ * use, customers, projects, issues, tasks). Issues and tasks match on their title too.
  */
 export function filterTagOptions<T extends TagOption>(options: T[], query: string, limit = 50): T[] {
 	const q = query.toLowerCase();
@@ -486,37 +486,37 @@ export function wikilinkOptions<T extends { title: string }>(
 export interface LinkTargetData {
 	notes: { id: number; title: string }[];
 	issues: { id: number; title: string; context: string }[];
-	todos: { id: number; title: string; status: string }[];
+	tasks: { id: number; title: string; status: string }[];
 }
 
 export interface LinkIndex {
 	/** Lowercased note title → note id. */
 	notes: Map<string, number>;
 	issues: Map<number, { title: string; context: string }>;
-	todos: Map<number, { title: string; status: string }>;
+	tasks: Map<number, { title: string; status: string }>;
 }
 
 export function indexLinkTargets(data: LinkTargetData): LinkIndex {
 	return {
 		notes: new Map(data.notes.map((n) => [n.title.toLowerCase(), n.id])),
 		issues: new Map(data.issues.map((i) => [i.id, { title: i.title, context: i.context }])),
-		todos: new Map(data.todos.map((t) => [t.id, { title: t.title, status: t.status }]))
+		tasks: new Map(data.tasks.map((t) => [t.id, { title: t.title, status: t.status }]))
 	};
 }
 
-/** A chip for a normalized tag, when it names an existing issue or todo. */
+/** A chip for a normalized tag, when it names an existing issue or task. */
 export function chipFor(
 	tag: string,
 	index: LinkIndex
-): { kind: 'issue' | 'todo'; id: number; title: string; status: string | null; detail: string | null } | null {
+): { kind: 'issue' | 'task'; id: number; title: string; status: string | null; detail: string | null } | null {
 	const entity = entityTag(tag);
 	if (!entity) return null;
 	if (entity.kind === 'issue') {
 		const issue = index.issues.get(entity.id);
 		return issue ? { ...entity, title: issue.title, status: null, detail: issue.context } : null;
 	}
-	const todo = index.todos.get(entity.id);
-	return todo ? { ...entity, title: todo.title, status: todo.status, detail: null } : null;
+	const task = index.tasks.get(entity.id);
+	return task ? { ...entity, title: task.title, status: task.status, detail: null } : null;
 }
 
 /** What following a tag, chip or wikilink does (⌘-click in the editor, click in the read view). */

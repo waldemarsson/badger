@@ -134,10 +134,10 @@
 		},
 		{
 			"name": "entity tags",
-			"md": "#issue/12 #todo/3 #acme/web-app",
+			"md": "#issue/12 #task/3 #acme/web-app",
 			"refs": [
 				{ "kind": "tag", "target": "issue/12", "text": "#issue/12" },
-				{ "kind": "tag", "target": "todo/3", "text": "#todo/3" },
+				{ "kind": "tag", "target": "task/3", "text": "#task/3" },
 				{ "kind": "tag", "target": "acme/web-app", "text": "#acme/web-app" }
 			]
 		},

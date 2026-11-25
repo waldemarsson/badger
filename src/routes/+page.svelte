@@ -2,7 +2,7 @@
 	import { invoke } from '@tauri-apps/api/core';
 	import { resolve } from '$app/paths';
 	import { onMount } from 'svelte';
-	import { flip } from 'svelte/animate';
+	import { goto } from '$app/navigation';
 	import { fade } from 'svelte/transition';
 	import { today } from '#lib/date-ranges.js';
 	import { formatShortcut } from '#lib/palette.js';
@@ -11,30 +11,25 @@
 		dailyTotals,
 		formatDayLabel,
 		formatHours,
-		inProgress,
 		isWeekend,
-		needsAttention,
 		progress,
 		sumHours,
 		todayEntries,
 		weekDays
 	} from '#lib/today.js';
-	import { formatDue } from '#lib/todos.js';
-	import type { TimeEntryRow, TodoRow } from '#lib/types.js';
-	import TodoModal from '#lib/components/TodoModal.svelte';
+	import type { Task, TimeEntryRow } from '#lib/types.js';
+	import { todayTasks } from '#lib/tasks.js';
+	import { clock, completeTask, completing, shownTasks, tasks } from '#lib/tasks-state.svelte.js';
+	import { appleSync } from '#lib/apple-sync-state.svelte.js';
+	import { rowLeave } from '#lib/task-transitions.js';
+	import TaskRow from '#lib/components/TaskRow.svelte';
 	import HandoverIncoming from '#lib/components/HandoverIncoming.svelte';
 	import HandoverToday from '#lib/components/HandoverToday.svelte';
 	import { HandoverCards } from '#lib/handover-cards.svelte.js';
-	import ReminderRow from '#lib/components/ReminderRow.svelte';
-	import { groupReminders } from '#lib/reminders.js';
-	import { clock, reminders } from '#lib/reminders-state.svelte.js';
-	import Check from '@lucide/svelte/icons/check';
-	import Clock from '@lucide/svelte/icons/clock';
-	import Link2 from '@lucide/svelte/icons/link-2';
 	import Plus from '@lucide/svelte/icons/plus';
-	import CalendarDays from '@lucide/svelte/icons/calendar-days';
 	import X from '@lucide/svelte/icons/x';
 	import ArrowRight from '@lucide/svelte/icons/arrow-right';
+	import Clock from '@lucide/svelte/icons/clock';
 
 	const WORKDAYS = 5;
 
@@ -45,31 +40,26 @@
 	const handovers = new HandoverCards(today());
 	$effect(() => handovers.setDay(handoverDay));
 	let entries = $state<TimeEntryRow[]>([]);
-	let todos = $state<TodoRow[]>([]);
 	let target = $state(8);
 	let loaded = $state(false); // true once a load has succeeded; hero stats and sections wait for it
 	let settled = $state(false); // true once a load has succeeded or failed (the handover cards wait for it)
 	let loadError = $state('');
 	let loadSeq = 0;
 	let actionError = $state('');
-	let completing = $state<number[]>([]);
-	let selected = $state<TodoRow | null>(null);
 
-	/** Loads the week, todos and target. Overlapping calls are fine: only the latest applies. */
+	/** Loads the week and target (tasks come from the shared list). Overlapping calls are fine: only the latest applies. */
 	async function load(): Promise<void> {
 		const seq = ++loadSeq;
 		const now = today();
 		const days = weekDays(now);
 		try {
-			const [weekEntries, allTodos, dailyTarget] = await Promise.all([
+			const [weekEntries, dailyTarget] = await Promise.all([
 				invoke<TimeEntryRow[]>('list_time_entries', { startDate: days[0], endDate: days[6] }),
-				invoke<TodoRow[]>('list_todos'),
 				invoke<number>('get_daily_target')
 			]);
 			if (seq !== loadSeq) return;
 			todayIso = now;
 			entries = weekEntries;
-			todos = allTodos;
 			target = dailyTarget;
 			loadError = '';
 			loaded = true;
@@ -104,17 +94,14 @@
 	const weekTarget = $derived(target * WORKDAYS);
 	const maxDayHours = $derived(Math.max(0, ...days.map((d) => d.hours)));
 
-	const attention = $derived(needsAttention(todos, todayIso));
-	const active = $derived(inProgress(todos, todayIso));
 	const logged = $derived(todayEntries(entries, todayIso));
 	const loggedHours = $derived(sumHours(logged));
 
 	const dateHeading = $derived(formatDayLabel(todayIso));
 
-	// Reminders card: overdue (fired) plus the rest of today.
+	// Tasks card: overdue (incl. sent reminders) and due today, with the same row and check as /tasks.
 	const now = $derived(new Date(clock.ms));
-	const reminderGroups = $derived(groupReminders(reminders.list, now));
-	const todayReminders = $derived([...reminderGroups.overdue, ...reminderGroups.today]);
+	const dueTasks = $derived(todayTasks(shownTasks(tasks.list, completing.rows), now));
 
 	function weekdayShort(ymd: string): string {
 		const [y, m, d] = ymd.split('-').map(Number);
@@ -131,62 +118,43 @@
 		return target > 0 && !isWeekend(date) && hours >= target;
 	}
 
-	// ── Todo actions ──────────────────────────────────────────────────────────────
+	// ── Task actions ──────────────────────────────────────────────────────────────
 
-	async function complete(todo: TodoRow): Promise<void> {
-		if (completing.includes(todo.id)) return;
-		completing = [...completing, todo.id];
-		actionError = '';
-		try {
-			await invoke('move_todo', { id: todo.id, status: 'done', index: 0 });
-			todos = todos.filter((t) => t.id !== todo.id);
-			void load();
-		} catch (e) {
-			actionError = String(e);
-		} finally {
-			completing = completing.filter((id) => id !== todo.id);
+	async function complete(t: Task): Promise<void> {
+		actionError = await completeTask(t);
+	}
+
+	/** Opens Log time at the hours step for the task's issue. */
+	function logTime(t: Task): void {
+		if (t.project_id !== null && t.issue_title) {
+			requestLogTime({ projectId: t.project_id, issueId: t.issue_id, issueTitle: t.issue_title });
 		}
 	}
 
-	function logTime(todo: TodoRow): void {
-		if (todo.project_id !== null && todo.issue_title) {
-			requestLogTime({ projectId: todo.project_id, issueId: todo.issue_id, issueTitle: todo.issue_title });
-		} else {
-			requestLogTime();
-		}
-	}
-
-	function onRowKeydown(e: KeyboardEvent, todo: TodoRow): void {
-		if (e.target !== e.currentTarget) return; // keys on the row's own buttons
-		if (e.key === 'Enter' || e.key === ' ') {
-			e.preventDefault();
-			selected = todo;
-		}
-	}
-
-	const dueClasses = {
-		overdue: 'bg-red-50 text-red-700 ring-red-200 dark:bg-red-500/10 dark:text-red-300 dark:ring-red-500/30',
-		today: 'bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/30',
-		upcoming: 'bg-slate-50 text-slate-600 ring-slate-200 dark:bg-neutral-800/40 dark:text-neutral-400 dark:ring-neutral-700'
-	};
-
-	function dueKind(due: string): keyof typeof dueClasses {
-		return due < todayIso ? 'overdue' : due === todayIso ? 'today' : 'upcoming';
+	function openTask(t: Task): void {
+		// eslint-disable-next-line svelte/no-navigation-without-resolve -- resolved path plus a query string
+		void goto(`${resolve('/tasks')}?id=${t.id}`);
 	}
 
 	onMount(() => {
 		void load();
 	});
 
-	// Reload when the command palette logs time or adds a todo.
-	let seenChanges = `${changes.timeEntries}:${changes.todos}`;
+	// Reload when the command palette logs time.
+	let seenChanges = changes.timeEntries;
 	$effect(() => {
-		const current = `${changes.timeEntries}:${changes.todos}`;
+		const current = changes.timeEntries;
 		if (current === seenChanges) return;
 		seenChanges = current;
 		void load();
 	});
 </script>
+
+{#snippet logTimeAction(t: Task)}
+	<button type="button" class="btn-icon-ghost" title="Log time on {t.issue_title}" aria-label="Log time for {t.title}" onclick={() => logTime(t)}>
+		<Clock size={16} />
+	</button>
+{/snippet}
 
 {#snippet progressBar(hours: number, goal: number)}
 	{@const fraction = progress(hours, goal)}
@@ -213,95 +181,6 @@
 	</div>
 {/snippet}
 
-{#snippet todoRow(t: TodoRow)}
-	<div
-		class="today-row group cursor-pointer"
-		role="button"
-		tabindex="0"
-		aria-label="Open {t.title}"
-		onclick={() => (selected = t)}
-		onkeydown={(e) => onRowKeydown(e, t)}
-	>
-		<span
-			class="h-2 w-2 shrink-0 rounded-full {t.status === 'in_progress' ? 'bg-sky-500 dark:bg-sky-400' : 'bg-slate-300 dark:bg-neutral-600'}"
-			title={t.status === 'in_progress' ? 'In progress' : 'Not started'}
-		></span>
-		<div class="min-w-0 flex-1">
-			<p class="truncate text-sm font-medium text-slate-800 dark:text-neutral-200" title={t.title}>{t.title}</p>
-			{#if t.due_date || t.issue_title}
-				<div class="mt-1 flex min-w-0 items-center gap-1.5">
-					{#if t.due_date}
-						{@const kind = dueKind(t.due_date)}
-						<span class="kanban-badge shrink-0 {dueClasses[kind]}">
-							<CalendarDays size={12} class="shrink-0" />
-							{kind === 'today' ? 'Today' : kind === 'overdue' ? `Overdue · ${formatDue(t.due_date)}` : formatDue(t.due_date)}
-						</span>
-					{/if}
-					{#if t.issue_title}
-						<span
-							class="kanban-badge min-w-0 bg-violet-50 text-violet-700 ring-violet-200 dark:bg-violet-500/10 dark:text-violet-300 dark:ring-violet-500/30"
-							title="{t.customer_name} / {t.project_name} / {t.issue_title}"
-						>
-							<Link2 size={12} class="shrink-0" />
-							<span class="truncate">{t.project_name} · {t.issue_title}</span>
-						</span>
-					{/if}
-				</div>
-			{/if}
-		</div>
-		<div class="flex shrink-0 items-center gap-1">
-			<button
-				type="button"
-				class="btn-icon-ghost"
-				title={t.issue_title ? `Log time on ${t.issue_title}` : 'Log time'}
-				aria-label="Log time for {t.title}"
-				onclick={(e) => {
-					e.stopPropagation();
-					logTime(t);
-				}}
-			>
-				<Clock size={16} />
-			</button>
-			<button
-				type="button"
-				class="inline-flex items-center justify-center rounded-md p-1.5 text-slate-400 transition hover:bg-emerald-50 hover:text-emerald-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300 disabled:opacity-50 dark:text-neutral-500 dark:hover:bg-emerald-500/10 dark:hover:text-emerald-400 dark:focus-visible:ring-emerald-500/40"
-				title="Mark done"
-				aria-label="Mark {t.title} done"
-				disabled={completing.includes(t.id)}
-				onclick={(e) => {
-					e.stopPropagation();
-					void complete(t);
-				}}
-			>
-				<Check size={16} />
-			</button>
-		</div>
-	</div>
-{/snippet}
-
-{#snippet todoSection(title: string, dot: string, items: TodoRow[], emptyText: string)}
-	<section class="today-section">
-		<header class="today-section-header">
-			<span class="h-2.5 w-2.5 rounded-full {dot}"></span>
-			<h2 class="today-section-title">{title}</h2>
-			{#if items.length}
-				<span class="today-count ml-auto">{items.length}</span>
-			{/if}
-		</header>
-		<!-- The list stays mounted so the last row's out:fade plays before the empty line fades in. -->
-		<div class="divide-y divide-slate-100 dark:divide-neutral-800">
-			{#each items as t (t.id)}
-				<div animate:flip={{ duration: 200 }} out:fade={{ duration: 150 }}>
-					{@render todoRow(t)}
-				</div>
-			{/each}
-		</div>
-		{#if items.length === 0}
-			<p class="today-empty" in:fade={{ delay: 150, duration: 150 }}>{emptyText}</p>
-		{/if}
-	</section>
-{/snippet}
-
 <div class="page-shell">
 	<div class="page-view">
 		<h1 class="sr-only">Today</h1>
@@ -326,33 +205,40 @@
 							<button type="button" onclick={() => (actionError = '')} title="Dismiss" aria-label="Dismiss"><X size={14} /></button>
 						</div>
 					{/if}
-					{@render todoSection('Needs attention', 'bg-red-500 dark:bg-red-400', attention, 'Nothing overdue or due today')}
-					<section class="today-section">
+					<section class="today-section" aria-labelledby="today-tasks">
 						<header class="today-section-header">
-							<span class="h-2.5 w-2.5 rounded-full {reminderGroups.overdue.length ? 'bg-red-500 dark:bg-red-400' : 'bg-amber-500 dark:bg-amber-400'}"></span>
-							<h2 class="today-section-title">Reminders</h2>
-							{#if todayReminders.length}
-								<span class="today-count">{todayReminders.length}</span>
+							<span class="h-2.5 w-2.5 rounded-full {dueTasks.some((t) => t.due_date !== null && t.due_date < todayIso) ? 'bg-red-500 dark:bg-red-400' : 'bg-amber-500 dark:bg-amber-400'}"></span>
+							<h2 id="today-tasks" class="today-section-title">Tasks</h2>
+							{#if dueTasks.length}
+								<span class="today-count">{dueTasks.length}</span>
 							{/if}
-							<a href="{resolve('/reminders')}?new=1" class="btn-icon-ghost ml-auto -my-1" title="New reminder" aria-label="New reminder"><Plus size={15} /></a>
-							<a href={resolve('/reminders')} class="-my-1 inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-xs font-medium text-slate-500 transition hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200">
+							<a href="{resolve('/tasks')}?new=1" class="btn-icon-ghost ml-auto -my-1" title="New task" aria-label="New task"><Plus size={15} /></a>
+							<a href={resolve('/tasks')} class="-my-1 inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-xs font-medium text-slate-500 transition hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200">
 								All <ArrowRight size={12} />
 							</a>
 						</header>
-						<div class="divide-y divide-slate-100 dark:divide-neutral-800">
-							{#each todayReminders as r (r.id)}
-								<div animate:flip={{ duration: 200 }} out:fade={{ duration: 150 }}>
-									<ReminderRow {r} {now} compact />
+						<!-- The list stays mounted so the last row's slide-out plays before the empty line fades in. -->
+						<div class="py-1">
+							{#each dueTasks as t (t.id)}
+								<div out:rowLeave>
+									<TaskRow
+										task={t}
+										{now}
+										ticking={completing.rows[t.id]?.phase === 'tick'}
+										syncOn={appleSync.on}
+										onselect={() => openTask(t)}
+										ontoggle={() => void complete(t)}
+										actions={t.project_id !== null && t.issue_title ? logTimeAction : undefined}
+									/>
 								</div>
 							{/each}
 						</div>
-						{#if todayReminders.length === 0}
-							<p class="today-empty" in:fade={{ delay: 150, duration: 150 }}>
-								{reminderGroups.tomorrow.length + reminderGroups.later.length ? 'No more reminders today' : 'No reminders'}
-							</p>
+						{#if tasks.loaded && dueTasks.length === 0}
+							<p class="today-empty" in:fade={{ delay: 250, duration: 150 }}>Nothing overdue or due today</p>
+						{:else if tasks.error && !tasks.loaded}
+							<p class="form-error px-1 py-3">Could not load tasks: {tasks.error}</p>
 						{/if}
 					</section>
-					{@render todoSection('In progress', 'bg-sky-500 dark:bg-sky-400', active, 'Nothing in progress')}
 				{/if}
 				<!-- Handovers sit below the sections. Mounted at once (they load on their own) and shown
 				     once the page's load settled, success or failure, so they don't jump. -->
@@ -447,6 +333,3 @@
 <svelte:window onfocus={reloadIfNewDay} />
 <svelte:document onvisibilitychange={reloadIfNewDay} />
 
-{#if selected}
-	<TodoModal todo={selected} onclose={() => (selected = null)} onchange={load} />
-{/if}

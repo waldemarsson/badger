@@ -216,15 +216,15 @@ pub fn tag_term(term: &str) -> Option<String> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntityKind {
     Issue,
-    Todo,
+    Task,
 }
 
-/// `issue/<id>` / `todo/<id>` (a normalized tag) → the entity it chips.
+/// `issue/<id>` / `task/<id>` (a normalized tag) → the entity it chips.
 pub fn entity_tag(tag: &str) -> Option<(EntityKind, i64)> {
     let (kind, id) = tag.split_once('/')?;
     let kind = match kind {
         "issue" => EntityKind::Issue,
-        "todo" => EntityKind::Todo,
+        "task" => EntityKind::Task,
         _ => return None,
     };
     if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
@@ -267,11 +267,13 @@ pub fn slug(name: &str) -> Option<String> {
     }
 }
 
-/// Customer slugs that would collide with the chip namespaces (`#issue/<id>`, `#todo/<id>`).
-pub const RESERVED_CUSTOMER_SLUGS: [&str; 2] = ["issue", "todo"];
+/// Customer slugs that would collide with the chip namespaces (`#issue/<id>`, `#task/<id>`).
+/// Such a customer (an existing "Task" one included) keeps its name but gets no tag, so
+/// `#task/<id>` always resolves to a task and a rename never rewrites chips.
+pub const RESERVED_CUSTOMER_SLUGS: [&str; 2] = ["issue", "task"];
 
 /// Tag slug of a customer name: like `slug`, but `None` for a reserved slug
-/// (`issue`, `todo`), so such a customer (and its projects) gets no tag.
+/// (`issue`, `task`), so such a customer (and its projects) gets no tag.
 pub fn customer_slug(name: &str) -> Option<String> {
     slug(name).filter(|s| !RESERVED_CUSTOMER_SLUGS.contains(&s.as_str()))
 }
@@ -412,9 +414,10 @@ mod tests {
     }
 
     #[test]
-    fn entity_tag_recognises_issue_and_todo_chips() {
+    fn entity_tag_recognises_issue_and_task_chips() {
         assert_eq!(entity_tag("issue/12"), Some((EntityKind::Issue, 12)));
-        assert_eq!(entity_tag("todo/3"), Some((EntityKind::Todo, 3)));
+        assert_eq!(entity_tag("task/3"), Some((EntityKind::Task, 3)));
+        assert_eq!(entity_tag("todo/3"), None, "todo chips are gone with todos");
         assert_eq!(entity_tag("issue/x"), None);
         assert_eq!(entity_tag("issue/12/a"), None);
         assert_eq!(entity_tag("issue/+1"), None);

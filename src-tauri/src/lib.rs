@@ -314,7 +314,6 @@ pub fn run() {
                     commands::apple_sync::sync_apple_reminders_now,
                     commands::apple_sync::recreate_apple_sync_lists,
                     commands::apple_sync::apple_sync_delete_anyway,
-                    commands::apple_sync::dismiss_apple_sync_old_lists_note,
                     // Updater
                     commands::updater::check_for_update,
                     commands::updater::install_update,
@@ -456,7 +455,6 @@ pub fn run() {
                     commands::apple_sync::sync_apple_reminders_now,
                     commands::apple_sync::recreate_apple_sync_lists,
                     commands::apple_sync::apple_sync_delete_anyway,
-                    commands::apple_sync::dismiss_apple_sync_old_lists_note,
                     // Updater
                     commands::updater::check_for_update,
                     commands::updater::install_update,

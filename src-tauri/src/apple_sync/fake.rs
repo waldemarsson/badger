@@ -44,8 +44,9 @@ fn apply(item: &mut PhoneItem, draft: &PhoneDraft) {
     if let Some(due) = draft.due {
         item.due = due;
     }
-    if let Some(alarm) = draft.alarm {
-        item.alarms = vec![alarm];
+    if let Some(alarms) = &draft.alarms {
+        // Absolute alarms become exactly these (the fake models no relative ones).
+        item.alarms = alarms.clone();
     }
     item.completed = draft.completed;
     if draft.strip_recurrence {
@@ -295,7 +296,7 @@ mod tests {
             title: title.to_string(),
             notes: None,
             due: None,
-            alarm: None,
+            alarms: None,
             completed: false,
             strip_recurrence: false,
         }
@@ -304,9 +305,9 @@ mod tests {
     #[tokio::test]
     async fn create_fetch_update_delete_round_trip() {
         let store = FakeStore::default();
-        let list = store.create_list("Badger Todos").await.unwrap();
+        let list = store.create_list("Badger").await.unwrap();
         assert!(store.list_exists(&list).await.unwrap());
-        assert_eq!(store.list_id("Badger Todos"), Some(list.clone()));
+        assert_eq!(store.list_id("Badger"), Some(list.clone()));
 
         let created = store.create_item(&list, &draft("A")).await.unwrap();
         assert!(created.ek_id.starts_with("ek-"));
@@ -317,8 +318,20 @@ mod tests {
         d.due = Some(Some(due));
         d.notes = Some(Some("n".to_string()));
         d.completed = true;
+        let alarms = vec![
+            NaiveDate::from_ymd_opt(2026, 11, 19)
+                .unwrap()
+                .and_hms_opt(9, 0, 0)
+                .unwrap(),
+            NaiveDate::from_ymd_opt(2026, 11, 20)
+                .unwrap()
+                .and_hms_opt(8, 45, 0)
+                .unwrap(),
+        ];
+        d.alarms = Some(alarms.clone());
         let updated = store.update_item(&created.ek_id, &d).await.unwrap();
         assert_eq!(updated.title, "B");
+        assert_eq!(updated.alarms, alarms, "several absolute alarms");
         assert_eq!(updated.due, Some(due));
         assert!(updated.completed);
 
@@ -333,6 +346,11 @@ mod tests {
             .unwrap();
         assert_eq!(kept.notes.as_deref(), Some("n"));
         assert_eq!(kept.due, Some(due));
+        assert_eq!(kept.alarms.len(), 2, "no alarms in the draft: left alone");
+        let mut cleared = draft("C");
+        cleared.alarms = Some(vec![]);
+        let cleared = store.update_item(&created.ek_id, &cleared).await.unwrap();
+        assert!(cleared.alarms.is_empty());
 
         store.delete_item(&created.ek_id).await.unwrap();
         store.delete_item(&created.ek_id).await.unwrap(); // already gone: fine
@@ -343,7 +361,7 @@ mod tests {
         );
         assert_eq!(
             store.writes(),
-            6,
+            7,
             "every write call counts, failed ones too"
         );
     }

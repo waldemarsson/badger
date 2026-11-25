@@ -473,7 +473,7 @@
     @apply mx-1.5 h-5 w-px bg-slate-200 dark:bg-neutral-800;
   }
 
-  /* Overdue reminders on the Reminders tab (mirrors the dock badge). */
+  /* Overdue tasks on the Tasks tab (mirrors the dock badge). */
   .nav-count {
     @apply ml-1.5 inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-red-500 px-1.5 py-px text-[11px] font-semibold tabular-nums leading-4 text-white dark:bg-red-500 dark:text-white;
   }
@@ -483,66 +483,9 @@
     @apply absolute right-2 top-2 h-2 w-2 rounded-full bg-sky-500 ring-2 ring-white dark:bg-sky-400 dark:ring-neutral-900;
   }
 
-  /* Todos kanban board */
-  /* Flat board: lanes are full-height columns split by dividers (see todos page grid). */
-  .kanban-lane {
-    @apply flex min-h-[24rem] flex-col px-3 pb-4 transition-colors duration-200 sm:px-4 lg:px-6;
-  }
-
-  .kanban-lane-target {
-    @apply bg-sky-50/70 dark:bg-sky-500/5;
-  }
-
-  .kanban-card {
-    @apply cursor-grab select-none rounded-xl bg-white p-3 shadow-sm ring-1 ring-slate-200/80 transition duration-150 hover:-translate-y-0.5 hover:shadow-md hover:ring-slate-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 dark:bg-neutral-800 dark:shadow-black/30 dark:ring-neutral-700/80 dark:hover:ring-neutral-600;
-    touch-action: none;
-  }
-
-  .kanban-placeholder {
-    @apply rounded-xl border-2 border-dashed border-sky-300 bg-sky-100/40 p-3 dark:border-sky-500/50 dark:bg-sky-500/10;
-  }
-
-  .kanban-add-card {
-    @apply mt-2 flex w-full items-center gap-1.5 rounded-xl px-2 py-1.5 text-sm text-slate-500 transition hover:bg-slate-100 hover:text-slate-800 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200;
-  }
-
+  /* Small inline badge (handover cards). */
   .kanban-badge {
     @apply inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium ring-1 ring-inset;
-  }
-
-  /* "Keep off phone" (Apple Reminders sync): a small switch with its label, and the
-     "Mac only" mark on cards and rows. */
-  .mac-only-toggle {
-    @apply flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-medium text-slate-600 dark:text-neutral-300;
-  }
-
-  .mac-only-toggle-disabled {
-    @apply text-slate-400 dark:text-neutral-500;
-  }
-
-  .mini-switch {
-    @apply relative inline-flex h-4 w-7 shrink-0 items-center rounded-full bg-slate-200 ring-1 ring-inset ring-slate-300 transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-neutral-800 dark:ring-neutral-700 dark:focus-visible:ring-sky-500;
-  }
-
-  .mini-switch-on {
-    @apply bg-sky-500 ring-sky-500 dark:bg-sky-500 dark:ring-sky-500;
-  }
-
-  .mini-switch-knob {
-    @apply inline-block h-3 w-3 translate-x-0.5 rounded-full bg-white shadow-sm transition-transform duration-150 dark:bg-neutral-100;
-  }
-
-  .mini-switch-on .mini-switch-knob {
-    @apply translate-x-[0.8125rem];
-  }
-
-  .mac-only-badge {
-    @apply bg-slate-50 text-slate-500 ring-slate-200 dark:bg-neutral-800/40 dark:text-neutral-400 dark:ring-neutral-700;
-  }
-
-  .kanban-drag-lift {
-    @apply cursor-grabbing shadow-2xl ring-2 ring-sky-400/50 dark:ring-sky-400/60;
-    animation: kanban-lift 160ms ease-out forwards;
   }
 
   /* Today page */
@@ -884,9 +827,10 @@
     @apply ring-2 ring-inset ring-sky-300 dark:ring-sky-400/60;
   }
 
-  /* Right-click menu (ContextMenu.svelte). */
+  /* Right-click menu (ContextMenu.svelte); above the reminder toasts (z-55), so a menu opened
+     beside them (Add reminder in the task panel) is never covered. */
   .ctx-menu {
-    @apply fixed z-50 min-w-[11rem] max-w-[16rem] rounded-xl bg-white p-1 text-sm shadow-lg ring-1 ring-slate-200 focus:outline-none dark:bg-neutral-900 dark:shadow-black/40 dark:ring-neutral-700;
+    @apply fixed z-[56] min-w-[11rem] max-w-[16rem] rounded-xl bg-white p-1 text-sm shadow-lg ring-1 ring-slate-200 focus:outline-none dark:bg-neutral-900 dark:shadow-black/40 dark:ring-neutral-700;
   }
 
   .ctx-menu-item {
@@ -908,6 +852,10 @@
   .ctx-menu-item-danger .ctx-menu-icon,
   .ctx-menu-item-danger:focus .ctx-menu-icon {
     @apply text-red-500 dark:text-red-400;
+  }
+
+  .ctx-menu-item-disabled {
+    @apply cursor-not-allowed text-slate-400 focus:bg-slate-50 focus:text-slate-400 dark:text-neutral-500 dark:focus:bg-neutral-800/60 dark:focus:text-neutral-500;
   }
 
   .ctx-menu-hint {
@@ -1048,7 +996,7 @@
     @apply min-h-0 flex-1;
   }
 
-  /* Tags, #issue/#todo chips and [[wikilinks]]: read view links (<a>, which `.note-prose a`
+  /* Tags, #issue/#task chips and [[wikilinks]]: read view links (<a>, which `.note-prose a`
      would otherwise style) and editor live preview (<span>). */
   .note-tag,
   .note-prose a.note-tag {
@@ -1064,7 +1012,7 @@
     @apply inline-flex items-baseline gap-1.5 whitespace-nowrap rounded-md bg-slate-100 px-1.5 py-px text-[0.88em] font-medium leading-snug text-slate-700 no-underline ring-1 ring-inset ring-slate-200 transition-colors dark:bg-neutral-800 dark:text-neutral-300 dark:ring-neutral-700;
   }
 
-  /* Marker: a square for issues; for todos a circle that fills with progress. */
+  /* Marker: a square for issues; for tasks a circle, filled once done. */
   .note-chip::before {
     content: '';
     @apply h-2 w-2 shrink-0 translate-y-[-0.05em] self-center rounded-full border-[1.5px] border-current opacity-80;
@@ -1079,21 +1027,12 @@
     @apply rounded-[2px] bg-current;
   }
 
-  .note-chip-todo[data-status='in_progress'],
-  .note-prose a.note-chip-todo[data-status='in_progress'] {
-    @apply bg-sky-50 text-sky-700 ring-sky-200 dark:bg-sky-500/10 dark:text-sky-300 dark:ring-sky-500/30;
-  }
-
-  .note-chip-todo[data-status='in_progress']::before {
-    background: linear-gradient(90deg, currentColor 50%, transparent 50%);
-  }
-
-  .note-chip-todo[data-status='done'],
-  .note-prose a.note-chip-todo[data-status='done'] {
+  .note-chip-task[data-status='done'],
+  .note-prose a.note-chip-task[data-status='done'] {
     @apply bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-300 dark:ring-emerald-500/30;
   }
 
-  .note-chip-todo[data-status='done']::before {
+  .note-chip-task[data-status='done']::before {
     @apply bg-current;
   }
 
@@ -1137,7 +1076,7 @@
 
   .cm-link-kind-tag,
   .cm-link-kind-new,
-  .cm-link-kind-todo-in_progress {
+  .cm-link-kind-task {
     @apply bg-sky-50 text-sky-700 dark:bg-sky-500/10 dark:text-sky-300;
   }
 
@@ -1357,49 +1296,286 @@
     cursor: grabbing !important;
   }
 
-  /* Reminders (page, Today card, TodoModal, toasts) */
-  .btn-icon-ghost-confirm {
-    @apply inline-flex items-center justify-center rounded-md p-1.5 text-slate-400 transition hover:bg-emerald-50 hover:text-emerald-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300 disabled:opacity-50 dark:text-neutral-500 dark:hover:bg-emerald-500/10 dark:hover:text-emerald-400 dark:focus-visible:ring-emerald-500/40;
+  /* Tasks (page, details panel, Today card): date-grouped rows with a round check. */
+  .task-quickadd {
+    @apply flex items-center gap-2.5 rounded-xl border border-slate-300 bg-white px-3 shadow-sm transition focus-within:border-slate-500 focus-within:ring-4 focus-within:ring-slate-200 dark:border-neutral-700 dark:bg-neutral-900 dark:focus-within:border-neutral-500 dark:focus-within:ring-neutral-700/60;
   }
 
-  .reminder-row {
-    @apply flex min-w-0 items-start gap-3 rounded-lg px-1 py-2.5 transition-colors duration-150 hover:bg-slate-50 dark:hover:bg-neutral-800/60;
+  .task-quickadd-input {
+    @apply min-w-0 flex-1 border-0 bg-transparent px-0 py-2.5 text-sm text-slate-950 outline-none placeholder:text-slate-400 focus:ring-0 dark:text-neutral-100 dark:placeholder:text-neutral-500;
   }
 
-  .reminder-row-confirm {
-    @apply bg-red-50 hover:bg-red-50 dark:bg-red-500/10 dark:hover:bg-red-500/10;
+  .task-kbd {
+    @apply rounded-md border border-slate-200 px-1.5 py-px font-sans text-[11px] text-slate-500 dark:border-neutral-700 dark:text-neutral-400;
   }
 
-  /* Opened from a notification click. */
-  .reminder-row-flash {
-    @apply ring-2 ring-inset ring-sky-300 dark:ring-sky-400/60;
-    animation: tree-flash 1600ms ease-out;
+  .task-toolbar {
+    @apply flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-slate-200 px-1 pb-3 pt-1 dark:border-neutral-800;
   }
 
-  .dark .reminder-row-flash {
-    animation-name: tree-flash-dark;
+  .task-group-header {
+    @apply m-0 flex w-full items-center gap-2 rounded-lg px-3 pb-1.5 pt-3.5 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-neutral-400;
   }
 
-  .reminder-link {
-    @apply inline-flex items-center gap-1 rounded-md bg-white px-1.5 py-0.5 text-[11px] font-medium text-slate-600 ring-1 ring-inset ring-slate-200 transition-colors hover:text-sky-700 hover:ring-sky-300 dark:bg-neutral-900 dark:text-neutral-300 dark:ring-neutral-700 dark:hover:text-sky-300 dark:hover:ring-sky-500/50;
+  button.task-group-header {
+    @apply transition-colors hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 dark:hover:text-neutral-100;
   }
 
-  .reminder-form {
-    @apply space-y-3 rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200 dark:bg-neutral-800/40 dark:ring-neutral-800;
+  .task-group-count {
+    @apply rounded-full px-2 py-px text-[11px] font-medium normal-case tracking-normal text-slate-500 ring-1 ring-inset ring-slate-200 dark:text-neutral-400 dark:ring-neutral-800;
   }
 
-  .reminder-chip {
-    @apply rounded-full bg-white px-2.5 py-1 text-xs font-medium text-slate-600 ring-1 ring-slate-200 transition hover:-translate-y-0.5 hover:text-sky-700 hover:ring-sky-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 dark:bg-neutral-900 dark:text-neutral-300 dark:ring-neutral-700 dark:hover:text-sky-300 dark:hover:ring-sky-500/50;
+  .task-group-count-bump {
+    @apply text-emerald-600 ring-emerald-500 dark:text-emerald-400 dark:ring-emerald-500;
+    animation: task-bump 400ms cubic-bezier(0.3, 1.6, 0.5, 1);
   }
 
-  .reminder-day {
-    @apply w-11 rounded-lg bg-white py-1 text-xs font-medium text-slate-600 ring-1 ring-slate-200 transition hover:ring-slate-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 dark:bg-neutral-900 dark:text-neutral-400 dark:ring-neutral-700 dark:hover:ring-neutral-600;
+  .task-dot {
+    @apply h-2.5 w-2.5 shrink-0 rounded-full;
   }
 
-  .reminder-day-on {
+  .task-dot-overdue {
+    @apply bg-red-500 dark:bg-red-400;
+  }
+
+  .task-dot-today {
+    @apply bg-amber-500 dark:bg-amber-400;
+  }
+
+  .task-dot-upcoming {
+    @apply bg-sky-500 dark:bg-sky-400;
+  }
+
+  .task-dot-none {
+    @apply bg-slate-400 dark:bg-neutral-500;
+  }
+
+  .task-dot-done {
+    @apply bg-emerald-500 dark:bg-emerald-400;
+  }
+
+  .task-row {
+    @apply flex items-start gap-3 rounded-xl px-3 py-2.5 transition-colors duration-150 hover:bg-slate-50 dark:hover:bg-neutral-800/50;
+  }
+
+  .task-row-selected {
+    @apply bg-sky-50 ring-1 ring-inset ring-sky-200 hover:bg-sky-50 dark:bg-sky-500/10 dark:ring-sky-500/30 dark:hover:bg-sky-500/10;
+  }
+
+  .task-row-button {
+    @apply flex min-w-0 flex-1 cursor-pointer flex-col gap-[3px] rounded-md text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 focus-visible:ring-offset-4 focus-visible:ring-offset-white dark:focus-visible:ring-offset-neutral-900;
+  }
+
+  .task-title {
+    @apply line-clamp-2 self-start break-words text-sm font-medium leading-5 text-slate-950 dark:text-neutral-100;
+  }
+
+  .task-title-done {
+    @apply text-slate-500 line-through decoration-slate-400 dark:text-neutral-400 dark:decoration-neutral-500;
+  }
+
+  /* Completion: the title dims while a line draws through it. */
+  .task-title-striking {
+    @apply text-slate-500 transition-colors duration-300 dark:text-neutral-400;
+    background: linear-gradient(currentColor, currentColor) no-repeat 0 58% / 0 1.5px;
+    animation: task-strike 240ms ease-out 100ms forwards;
+  }
+
+  .task-notes {
+    @apply truncate text-xs leading-[18px] text-slate-500 dark:text-neutral-400;
+  }
+
+  .task-chips {
+    @apply mt-1 flex flex-wrap gap-1.5;
+  }
+
+  .task-chip {
+    @apply inline-flex max-w-full items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-0.5 text-[11px] font-medium leading-4 ring-1 ring-inset;
+  }
+
+  .task-chip-red {
+    @apply bg-red-50 text-red-700 ring-red-200 dark:bg-red-500/10 dark:text-red-300 dark:ring-red-500/30;
+  }
+
+  .task-chip-amber {
+    @apply bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/30;
+  }
+
+  .task-chip-sky {
+    @apply bg-sky-50 text-sky-700 ring-sky-200 dark:bg-sky-500/10 dark:text-sky-300 dark:ring-sky-500/30;
+  }
+
+  .task-chip-violet {
+    @apply bg-violet-50 text-violet-700 ring-violet-200 dark:bg-violet-500/10 dark:text-violet-300 dark:ring-violet-500/30;
+  }
+
+  .task-chip-slate {
+    @apply bg-slate-50 text-slate-600 ring-slate-200 dark:bg-neutral-800/40 dark:text-neutral-400 dark:ring-neutral-800;
+  }
+
+  /* The round check: hover previews the tick; completing pops it, draws the tick, sparks. */
+  .task-check {
+    @apply relative -mt-px grid h-[22px] w-[22px] shrink-0 place-items-center rounded-full border-2 border-slate-300 bg-transparent p-0 text-emerald-500 transition duration-150 hover:scale-105 hover:border-emerald-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 focus-visible:ring-offset-2 focus-visible:ring-offset-white active:scale-90 dark:border-neutral-600 dark:text-emerald-400 dark:hover:border-emerald-400 dark:focus-visible:ring-offset-neutral-900;
+  }
+
+  .task-tick {
+    stroke-dasharray: 24;
+    stroke-dashoffset: 24;
+    opacity: 0;
+    transition: stroke-dashoffset 200ms ease, opacity 150ms;
+  }
+
+  .task-check:hover .task-tick {
+    stroke-dashoffset: 0;
+    opacity: 0.5;
+  }
+
+  .task-check-attention {
+    @apply border-red-500 dark:border-red-400;
+  }
+
+  .task-check-done,
+  .task-check-ticking {
+    @apply border-emerald-500 bg-emerald-500 text-white hover:border-emerald-500 dark:border-emerald-500 dark:bg-emerald-500 dark:text-white dark:hover:border-emerald-500;
+  }
+
+  .task-check-done .task-tick,
+  .task-check-done:hover .task-tick {
+    stroke-dashoffset: 0;
+    opacity: 1;
+  }
+
+  .task-check-ticking {
+    animation: task-pop 280ms cubic-bezier(0.3, 1.6, 0.5, 1);
+  }
+
+  .task-check-ticking .task-tick {
+    opacity: 1;
+    animation: task-draw 200ms ease-out 60ms both;
+  }
+
+  .task-burst {
+    @apply pointer-events-none absolute inset-0;
+  }
+
+  .task-burst i {
+    @apply absolute left-1/2 top-1/2 h-[5px] w-[5px] rounded-full opacity-0;
+    margin: -2.5px;
+    animation: task-spark 400ms ease-out 40ms forwards;
+  }
+
+  .task-burst i:nth-child(3n + 1) {
+    @apply bg-emerald-500 dark:bg-emerald-400;
+  }
+
+  .task-burst i:nth-child(3n + 2) {
+    @apply bg-amber-500 dark:bg-amber-400;
+  }
+
+  .task-burst i:nth-child(3n) {
+    @apply bg-sky-500 dark:bg-sky-400;
+  }
+
+  /* Details panel */
+  .task-panel {
+    @apply min-w-0 border-t border-slate-200 bg-slate-50 dark:border-neutral-800 dark:bg-neutral-950 lg:border-l lg:border-t-0;
+  }
+
+  .task-eyebrow {
+    @apply text-xs font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-neutral-400;
+  }
+
+  .task-title-input {
+    @apply min-w-0 flex-1 rounded-md border-0 bg-transparent p-0 text-lg font-semibold leading-6 text-slate-950 outline-none placeholder:text-slate-300 focus:ring-4 focus:ring-slate-200 dark:text-neutral-100 dark:placeholder:text-neutral-600 dark:focus:ring-neutral-700/60;
+  }
+
+  .task-help {
+    @apply text-xs leading-[18px] text-slate-500 dark:text-neutral-400;
+  }
+
+  .task-reminder {
+    @apply flex min-h-9 items-center gap-2 rounded-[10px] bg-white py-1 pl-2.5 pr-1 text-sky-700 ring-1 ring-inset ring-slate-200 dark:bg-neutral-900 dark:text-sky-300 dark:ring-neutral-800;
+  }
+
+  .task-reminder-sent {
+    @apply bg-red-50 text-red-700 ring-red-200 dark:bg-red-500/10 dark:text-red-300 dark:ring-red-500/30;
+  }
+
+  .task-reminder-muted {
+    @apply text-slate-400 dark:text-neutral-500;
+  }
+
+  .task-reminder-label {
+    @apply text-[13px] font-medium text-slate-950 dark:text-neutral-100;
+  }
+
+  .task-reminder-when {
+    @apply ml-auto whitespace-nowrap text-xs tabular-nums text-slate-500 dark:text-neutral-400;
+  }
+
+  .task-reminder-sent .task-reminder-when {
+    @apply text-red-700 dark:text-red-300;
+  }
+
+  .task-reminder-input {
+    @apply ml-auto w-auto rounded-lg border border-slate-300 bg-white px-2 py-0.5 text-xs text-slate-950 outline-none transition focus:border-slate-500 focus:ring-4 focus:ring-slate-200 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:focus:border-neutral-500 dark:focus:ring-neutral-700/60;
+  }
+
+  .task-link-field {
+    @apply flex items-center justify-between gap-2 rounded-xl border border-slate-300 bg-white py-1.5 pl-2.5 pr-1.5 shadow-sm dark:border-neutral-700 dark:bg-neutral-900;
+  }
+
+  .task-day {
+    @apply w-10 rounded-lg bg-white py-1 text-xs font-medium text-slate-600 ring-1 ring-slate-200 transition hover:ring-slate-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 dark:bg-neutral-900 dark:text-neutral-400 dark:ring-neutral-700 dark:hover:ring-neutral-600;
+  }
+
+  .task-day-on {
     @apply bg-sky-50 text-sky-700 ring-sky-300 hover:ring-sky-400 dark:bg-sky-500/10 dark:text-sky-300 dark:ring-sky-500/40 dark:hover:ring-sky-500/60;
   }
 
+  .task-switch {
+    @apply flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full bg-slate-300 p-0.5 transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-neutral-700 dark:focus-visible:ring-offset-neutral-950;
+  }
+
+  .task-switch-on {
+    @apply bg-sky-500 dark:bg-sky-500;
+  }
+
+  .task-switch-knob {
+    @apply h-4 w-4 rounded-full bg-white shadow transition-transform duration-150;
+  }
+
+  .task-switch-on .task-switch-knob {
+    @apply translate-x-4;
+  }
+
+  /* Undo after completing (bottom centre, clear of the reminder toasts on the right). */
+  .task-undo {
+    @apply pointer-events-auto flex max-w-[min(32rem,calc(100vw-2rem))] items-center gap-3 rounded-xl bg-slate-900 py-2 pl-4 pr-2 text-sm font-medium text-white shadow-lg ring-1 ring-slate-900/10 dark:bg-neutral-100 dark:text-neutral-900 dark:ring-neutral-100/10;
+  }
+
+  .task-undo-button {
+    @apply shrink-0 rounded-lg px-2.5 py-1 text-sm font-semibold text-sky-300 transition hover:bg-white/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 dark:text-sky-700 dark:hover:bg-neutral-900/10;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .task-check,
+    .task-tick,
+    .task-check-ticking,
+    .task-check-ticking .task-tick,
+    .task-title-striking,
+    .task-group-count-bump {
+      animation-duration: 1ms !important;
+      animation-delay: 0s !important;
+      transition: none !important;
+    }
+
+    .task-burst {
+      display: none;
+    }
+  }
+
+  /* Reminder toasts (sent task reminders, bottom right) */
   .reminder-toast {
     @apply pointer-events-auto w-80 rounded-xl bg-white p-3 shadow-lg ring-1 ring-slate-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 dark:bg-neutral-900 dark:shadow-black/40 dark:ring-neutral-700;
   }
@@ -1409,7 +1585,7 @@
   }
 
   /* Scratchpad drawer (⌘J), a left slide-over: above page content and modals (z-40), below
-     menus (z-50), toasts (bottom-right, so they never sit under it) and the palette. */
+     menus (z-[56]), toasts (bottom-right, so they never sit under it) and the palette. */
   .scratchpad-drawer {
     @apply fixed bottom-3 left-3 top-3 z-[45] flex w-[30rem] max-w-[calc(100vw-1.5rem)] flex-col overflow-hidden rounded-2xl bg-white shadow-2xl ring-1 ring-slate-200 dark:bg-neutral-900 dark:shadow-black/60 dark:ring-neutral-700;
   }
@@ -1439,15 +1615,6 @@
   }
 }
 
-@keyframes kanban-lift {
-  from {
-    transform: rotate(0deg) scale(1);
-  }
-  to {
-    transform: rotate(2.5deg) scale(1.04);
-  }
-}
-
 @keyframes tree-flash {
   from {
     background-color: rgb(186 230 253 / 0.8);
@@ -1457,5 +1624,49 @@
 @keyframes tree-flash-dark {
   from {
     background-color: rgb(14 165 233 / 0.3);
+  }
+}
+
+@keyframes task-pop {
+  0% {
+    transform: scale(0.8);
+  }
+  60% {
+    transform: scale(1.2);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes task-draw {
+  from {
+    stroke-dashoffset: 24;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes task-spark {
+  0% {
+    opacity: 1;
+    transform: rotate(var(--a)) translateY(-8px) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: rotate(var(--a)) translateY(-20px) scale(0.4);
+  }
+}
+
+@keyframes task-strike {
+  to {
+    background-size: 100% 1.5px;
+  }
+}
+
+@keyframes task-bump {
+  50% {
+    transform: scale(1.3);
   }
 }

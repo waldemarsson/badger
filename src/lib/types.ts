@@ -70,25 +70,86 @@ export interface MonthlyReportRow {
 	hours: number;
 }
 
-export type TodoStatus = 'not_started' | 'in_progress' | 'done';
+export type TaskRepeat = 'none' | 'daily' | 'weekdays' | 'weekly' | 'monthly';
+/** pending → sent (notified; counts as overdue) → dismissed (toast ×, or silently past). */
+export type TaskReminderState = 'pending' | 'sent' | 'dismissed';
 
-/** Kanban todo; link fields are null when the todo is not linked to an issue. */
-export interface TodoRow {
+/** A task reminder: relative to the due (`offset_minutes`, 0 = at due time) or custom (`at`).
+ *  Times are naive local `YYYY-MM-DDTHH:MM:SS.mmm`. */
+export interface TaskReminder {
+	id: number;
+	task_id: number;
+	offset_minutes: number | null;
+	at: string | null;
+	state: TaskReminderState;
+	snoozed_until: string | null;
+	/** Effective time (snooze, else due-relative or custom); null = relative without a due date. */
+	fire_at: string | null;
+	created_at: string;
+}
+
+/** A task (list_tasks and the task commands). Link fields are null when unlinked. */
+export interface Task {
 	id: number;
 	title: string;
 	notes: string | null;
-	status: TodoStatus;
-	position: number; // order within its status column
+	done: boolean;
+	completed_at: string | null;
 	due_date: string | null; // YYYY-MM-DD
-	created_at: string;
+	due_time: string | null; // HH:MM, only with a due date
+	repeat: TaskRepeat;
+	weekdays: number[]; // ISO 1=Mon … 7=Sun; weekly only
+	month_day: number | null;
 	issue_id: number | null;
 	issue_title: string | null;
 	project_id: number | null;
 	project_name: string | null;
 	customer_id: number | null;
 	customer_name: string | null;
-	/** "Keep off phone": never synced to Apple Reminders (nor are its reminders). */
+	note_id: number | null;
+	note_title: string | null;
+	/** "Keep off phone": never synced to Apple Reminders (repeating tasks never sync either). */
 	mac_only: boolean;
+	created_at: string;
+	updated_at: string;
+	/** By fire_at (null last), then id. */
+	reminders: TaskReminder[];
+}
+
+/** create_task / update_task `input` (camelCase). Update replaces every field (null clears). */
+export interface TaskInput {
+	title: string;
+	notes?: string | null;
+	dueDate?: string | null;
+	dueTime?: string | null;
+	repeat?: TaskRepeat;
+	/** Weekly: empty → the due date's weekday. */
+	weekdays?: number[];
+	/** Monthly: missing → the due date's day. */
+	monthDay?: number | null;
+	issueId?: number | null;
+	noteId?: number | null;
+	/** Create: default false. Update: omitted keeps the current value. */
+	macOnly?: boolean;
+}
+
+/** Exactly one of `offsetMinutes` (0..40320) or `at` (a future local timestamp). */
+export type TaskReminderInput = { offsetMinutes: number; at?: undefined } | { at: string; offsetMinutes?: undefined };
+
+/** Opaque pre-completion snapshot: hand it back to undo_complete_task unchanged. */
+export type TaskUndo = { readonly task_id: number } & Record<string, unknown>;
+
+/** complete_task result; `undo` is null when the task was already done. */
+export interface TaskCompletion {
+	task: Task;
+	undo: TaskUndo | null;
+}
+
+/** restore_data result. A pre-tasks backup keeps the current tasks and reports the legacy rows it skipped. */
+export interface RestoreReport {
+	kept_tasks: boolean;
+	skipped_todos: number;
+	skipped_reminders: number;
 }
 
 /** A trip; km and amount (kr) are null when not entered. */
@@ -176,8 +237,11 @@ export interface AppleSyncStatus {
 	/** Why the mass-delete guard holds sync, while it does. */
 	paused: 'access' | 'list_missing' | 'empty_fetch' | null;
 	skipped: AppleSyncSkipped[];
-	reminders_list: string;
-	todos_list: string;
+	/** The synced list's name ("Badger"; "Badger Dev" in debug builds). */
+	list: string;
+	/** Show the one-time note that the old lists (`old_lists`) can be deleted on the phone. */
+	old_lists_note: boolean;
+	old_lists: string[];
 }
 
 /** search_index_stats / rebuild_search_index. */
@@ -195,11 +259,11 @@ export interface RenamedNote {
 
 /** list_tag_suggestions: one `#` autocomplete entry; `tag` is what follows the `#`. */
 export interface TagSuggestion {
-	kind: 'tag' | 'customer' | 'project' | 'issue' | 'todo';
-	tag: string; // e.g. "meeting", "acme", "acme/web", "issue/12", "todo/3"
-	label: string; // tag / customer or project name / "title — customer / project" / todo title
+	kind: 'tag' | 'customer' | 'project' | 'issue' | 'task';
+	tag: string; // e.g. "meeting", "acme", "acme/web", "issue/12", "task/3"
+	label: string; // tag / customer or project name / "title — customer / project" / task title
 	detail: string | null; // projects: the customer name
-	status: Exclude<TodoStatus, 'done'> | null; // todos only
+	status: 'open' | null; // tasks only (open tasks are suggested)
 }
 
 /** list_backlinks: a note linking to the open one, with the line that links (raw markdown). */
@@ -209,11 +273,11 @@ export interface Backlink {
 	snippet: string;
 }
 
-/** get_link_targets: what wikilinks and #issue/#todo chips resolve to. */
+/** get_link_targets: what wikilinks and #issue/#task chips resolve to. */
 export interface LinkTargets {
 	notes: { id: number; title: string }[];
 	issues: { id: number; title: string; context: string }[]; // context: "Customer / Project"
-	todos: { id: number; title: string; status: TodoStatus }[];
+	tasks: { id: number; title: string; status: 'open' | 'done' }[];
 }
 
 /** render_markdown mode: the read view, or "Copy as HTML" (links and tags as plain text). */
@@ -247,47 +311,6 @@ export interface Note {
 	updated_at: string;
 	position: number;
 	kind: NoteKind;
-}
-
-export type ReminderRepeat = 'none' | 'daily' | 'weekdays' | 'weekly' | 'monthly';
-export type ReminderState = 'pending' | 'fired' | 'done';
-
-/** A reminder (list_reminders and the reminder commands); times are naive local
- *  `YYYY-MM-DDTHH:MM:SS.mmm`. Link fields are null when unlinked. */
-export interface Reminder {
-	id: number;
-	text: string;
-	remind_at: string; // current occurrence
-	time_of_day: string; // HH:MM recurrence anchor
-	repeat: ReminderRepeat;
-	weekdays: number[]; // ISO 1=Mon … 7=Sun; weekly only
-	month_day: number | null; // 1–31; monthly only
-	state: ReminderState; // fired = overdue
-	todo_id: number | null;
-	note_id: number | null;
-	todo_title: string | null;
-	todo_status: TodoStatus | null;
-	note_title: string | null;
-	created_at: string;
-	updated_at: string;
-	/** "Keep off phone" set on the reminder itself. */
-	mac_only: boolean;
-	/** Its linked todo is Mac-only, so it is too (whatever `mac_only` says). */
-	todo_mac_only: boolean;
-}
-
-/** create_reminder / update_reminder argument (`invoke(cmd, { input })`, camelCase).
- *  remindAt is a local timestamp (`YYYY-MM-DDTHH:MM`, seconds optional). */
-export interface ReminderInput {
-	text: string;
-	remindAt: string;
-	repeat: ReminderRepeat;
-	weekdays: number[];
-	monthDay: number | null;
-	todoId: number | null;
-	noteId: number | null;
-	/** "Keep off phone". Omitted: synced on create, unchanged on update. */
-	macOnly?: boolean;
 }
 
 /** Backup folder and encryption settings (`get_backup_settings`). */

@@ -9,12 +9,12 @@
   import { toThemeMode } from '#lib/theme.js';
   import { applyTheme, theme } from '#lib/theme-state.svelte.js';
   import { normalizeShortcut, togglesScratchpad } from '#lib/palette.js';
-  import { changes, palette } from '#lib/palette-state.svelte.js';
-  import { TODOS_CHANGED_EVENT } from '#lib/apple-sync.js';
+  import { palette } from '#lib/palette-state.svelte.js';
   import { FLUSH_REQUEST_EVENT, runFlushHandlers } from '#lib/flush-guard.js';
   import { watchSemanticStatus } from '#lib/semantic-state.svelte.js';
   import { watchAppleSync } from '#lib/apple-sync-state.svelte.js';
-  import { reminders, requestHighlight, watchReminders } from '#lib/reminders-state.svelte.js';
+  import { clock, requestOpen, tasks, watchTasks } from '#lib/tasks-state.svelte.js';
+  import { overdueCount } from '#lib/tasks.js';
   import { scratchpad, toggleScratchpad } from '#lib/scratchpad-state.svelte.js';
   import { checkForUpdate, updater } from '#lib/updater-state.svelte.js';
   import { showToast } from '#lib/palette-state.svelte.js';
@@ -22,6 +22,7 @@
   import CommandPalette from '#lib/components/CommandPalette.svelte';
   import Toast from '#lib/components/Toast.svelte';
   import ReminderToasts from '#lib/components/ReminderToasts.svelte';
+  import TaskUndoToast from '#lib/components/TaskUndoToast.svelte';
   import ScratchpadDrawer from '#lib/components/ScratchpadDrawer.svelte';
   import SettingsIcon from '@lucide/svelte/icons/settings';
   import StickyNote from '@lucide/svelte/icons/sticky-note';
@@ -31,10 +32,9 @@
   // Every page, for ⌘K. The nav bar groups them below.
   const navLinks = [
     { href: '/', label: 'Today' },
-    { href: '/todos', label: 'Todos' },
+    { href: '/tasks', label: 'Tasks' },
     { href: '/notes', label: 'Notes' },
     { href: '/playground', label: 'Playground' },
-    { href: '/reminders', label: 'Reminders' },
     { href: '/timesheet', label: 'Timesheet' },
     { href: '/travel', label: 'Travel' },
     { href: '/reports/weekly', label: 'Weekly report' },
@@ -55,10 +55,9 @@
   const tabGroups = $derived<Tab[][]>([
     [{ href: '/', label: 'Today' }],
     [
-      { href: '/todos', label: 'Todos' },
+      { href: '/tasks', label: 'Tasks' },
       { href: '/notes', label: 'Notes' },
       { href: '/playground', label: 'Playground' },
-      { href: '/reminders', label: 'Reminders' },
     ],
     [
       { href: '/timesheet', label: 'Timesheet' },
@@ -92,17 +91,13 @@
     })
       .then((stop) => (disposed ? stop() : (unlisten = stop)))
       .catch(() => {});
-    // Apple Reminders sync changed todos: the board, Today and TodoModal re-read on `changes.todos`.
-    let stopTodos: (() => void) | null = null;
-    listen(TODOS_CHANGED_EVENT, () => (changes.todos += 1))
-      .then((stop) => (disposed ? stop() : (stopTodos = stop)))
-      .catch(() => {});
     const stopSemantic = watchSemanticStatus();
     const stopAppleSync = watchAppleSync(); // "Keep off phone" controls show while sync is on
-    // Notification click (Rust already focused the window): open the row on /reminders.
-    const stopReminders = watchReminders((id) => {
-      requestHighlight(id);
-      if (page.url.pathname !== '/reminders') void goto(resolve('/reminders'));
+    // The shared tasks list (sync, scheduler and other windows' writes arrive as events).
+    // Notification click (Rust already focused the window): open the task on /tasks.
+    const stopTasks = watchTasks((id) => {
+      requestOpen(id);
+      if (page.url.pathname !== '/tasks') void goto(resolve('/tasks'));
     });
     // Quiet update check: a toast and a dot on the gear, never a dialog. Errors (offline,
     // no release yet) are silent here; Settings shows them on a manual check.
@@ -115,10 +110,9 @@
     return () => {
       disposed = true;
       unlisten?.();
-      stopTodos?.();
       stopSemantic();
       stopAppleSync();
-      stopReminders();
+      stopTasks();
       window.removeEventListener('keydown', onScratchpadKeydown, true);
     };
   });
@@ -132,7 +126,8 @@
     if (!e.repeat) toggleScratchpad();
   }
 
-  const overdue = $derived(reminders.list.filter((r) => r.state === 'fired').length);
+  // Past due or a sent reminder (D10), like the dock badge; the clock ticks it over as times pass.
+  const overdue = $derived(overdueCount(tasks.list, new Date(clock.ms)));
 
   function navigate(href: Href) {
     void goto(resolve(href));
@@ -151,7 +146,7 @@
             class="nav-link"
             class:nav-link-active={link.active}
             aria-current={link.active ? 'page' : undefined}
-          >{link.label}{#if link.href === '/reminders' && overdue > 0}<span class="nav-count" title="{overdue} overdue">{overdue}</span>{/if}</a>
+          >{link.label}{#if link.href === '/tasks' && overdue > 0}<span class="nav-count" title="{overdue} overdue">{overdue}</span>{/if}</a>
         {/each}
       {/each}
       <span class="nav-divider" aria-hidden="true"></span>
@@ -182,4 +177,5 @@
 <ScratchpadDrawer />
 <CommandPalette pages={navLinks} {navigate} />
 <ReminderToasts />
+<TaskUndoToast />
 <Toast />

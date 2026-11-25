@@ -1,12 +1,13 @@
-// Whether Apple Reminders sync is on, kept current from Rust's status events. The root
-// layout starts the watch; todo cards, reminder rows and the forms read `appleSync.on`
-// to show the "Keep off phone" controls and "Mac only" marks.
+// Whether Apple Reminders sync is on (and its last status), kept current from Rust's status
+// events. The root layout starts the watch; task rows and the details panel read
+// `appleSync.on` to show the "Keep off phone" switch and "Mac only" chips, and /tasks shows
+// the last sync beside its totals.
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { AppleSyncStatus } from '#lib/types.js';
 import { APPLE_SYNC_STATUS_EVENT, syncShowsMacOnly } from '#lib/apple-sync.js';
 
-export const appleSync = $state<{ on: boolean }>({ on: false });
+export const appleSync = $state<{ on: boolean; status: AppleSyncStatus | null }>({ on: false, status: null });
 
 let inFlight = false;
 let again = false;
@@ -21,7 +22,9 @@ export async function refreshAppleSync(): Promise<void> {
 	try {
 		do {
 			again = false;
-			appleSync.on = syncShowsMacOnly(await invoke<AppleSyncStatus>('get_apple_sync_status'));
+			const status = await invoke<AppleSyncStatus>('get_apple_sync_status');
+			appleSync.status = status;
+			appleSync.on = syncShowsMacOnly(status);
 		} while (again);
 	} catch {
 		// Settings shows command errors; the controls stay as they were.

@@ -1,44 +1,42 @@
-//! One sync pass: load Badger's rows in scope (plus every paired row), fetch both lists,
-//! merge each pair field by field against the last-synced snapshots, apply both sides,
-//! and import or push what is unpaired.
+//! One sync pass: load the tasks in scope (plus every paired one), fetch the "Badger" list,
+//! merge each pair field by field against the last-synced snapshots, apply both sides, and
+//! push or import what is unpaired.
 //!
-//! Order: todo pairings, then reminder pairings (loaded after, so a todo deleted on the
-//! phone has already cascaded its reminders away), then pushes and imports of both kinds
-//! (after every dropped pairing, so an item moved between lists can be paired again).
+//! Synced fields: title, notes, due (date or date-time) and completed, merged three-way
+//! (Badger wins a conflict). Alarms are Badger's: every pass sets the item's absolute alarms
+//! to one per reminder (recomputed when the due moves, on either side), overwriting phone
+//! edits. Repeating and Mac-only tasks stay off the phone; a completion younger than the
+//! Undo window waits for a later pass.
 
 use std::collections::{HashMap, HashSet};
 
-use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Timelike};
+use chrono::NaiveDateTime;
 use sqlx::{Pool, Sqlite};
 
 use crate::app_settings::{
     get_apple_sync_settings, set_apple_sync_list_id, set_apple_sync_outcome,
     set_apple_sync_restore_pending,
 };
-use crate::commands::reminders::{format_timestamp, local_exists, parse_timestamp, resolve_gap};
-use crate::commands::todos::clean_notes;
+use crate::commands::tasks::clean_notes;
+use crate::recurrence::{format_timestamp, local_now};
 use crate::AppError;
 
 use super::badger_writes::{
-    apply_reminder, apply_todo, badger_edited, clean_reminder_text, delete_and_unpair,
-    delete_pairing, import_reminder, import_todo, insert_pairing, load_pairings, load_reminder,
-    load_reminders, load_todo, load_todos, set_pairing_ek_id, set_pairing_missed, update_pairing,
-    BReminder, BTodo, Pairing, PairingState, Snap,
+    apply_task, badger_edited, cut_title, delete_and_unpair, delete_pairing, import_task,
+    insert_pairing, load_pairings, load_task, load_tasks, phone_due_key, set_pairing_ek_id,
+    set_pairing_missed, to_phone_due, update_pairing, BTask, Pairing, PairingState, Snap,
 };
 use super::{
-    AccessState, ListKind, PhoneDraft, PhoneDue, PhoneItem, ReminderStore, SkippedItem, StoreError,
-    PAUSED_ACCESS, PAUSED_EMPTY_FETCH, PAUSED_LIST_MISSING,
+    alarm_key, list_name, AccessState, PhoneDraft, PhoneItem, ReminderStore, SkippedItem,
+    StoreError, PAUSED_ACCESS, PAUSED_EMPTY_FETCH, PAUSED_LIST_MISSING,
 };
-
-/// Time a date-only phone reminder gets.
-const DATE_ONLY_TIME: (u32, u32) = (9, 0);
 
 /// Consecutive passes an open item must be missing on the phone before Badger deletes it.
 const MISSES_BEFORE_DELETE: i64 = 2;
-/// Mass-delete guard: this many open items missing from one list in one pass, if they are
+/// Mass-delete guard: this many open items missing from the list in one pass, if they are
 /// also more than half of its open items, pauses sync.
 const MASS_MISSING_MIN: usize = 3;
-/// Open pairings a list must have before an empty fetch of it pauses sync.
+/// Open pairings the list must have before an empty fetch of it pauses sync.
 const EMPTY_LIST_MIN: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,8 +64,8 @@ pub enum Outcome {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PassReport {
     pub outcome: Outcome,
-    pub todos_changed: bool,
-    pub reminders_changed: bool,
+    /// Badger tasks changed (the runner tells the frontend).
+    pub tasks_changed: bool,
     pub phone_writes: usize,
     pub skipped: Vec<SkippedItem>,
     /// Per-item failures; the items are retried next pass.
@@ -78,24 +76,10 @@ impl PassReport {
     fn new() -> Self {
         PassReport {
             outcome: Outcome::Disabled,
-            todos_changed: false,
-            reminders_changed: false,
+            tasks_changed: false,
             phone_writes: 0,
             skipped: Vec::new(),
             errors: Vec::new(),
-        }
-    }
-
-    /// Whether Badger rows changed (the runner tells the frontend).
-    pub fn badger_changed(&self) -> bool {
-        self.todos_changed || self.reminders_changed
-    }
-
-    fn changed(&mut self, kind: ListKind) {
-        // Reminders show their todo's title and cascade with it.
-        self.reminders_changed = true;
-        if kind == ListKind::Todos {
-            self.todos_changed = true;
         }
     }
 }
@@ -145,7 +129,7 @@ async fn record(pool: &Pool<Sqlite>, report: &PassReport) -> Result<(), AppError
             };
             let skipped = (!report.skipped.is_empty())
                 .then(|| serde_json::to_string(&report.skipped).unwrap_or_default());
-            let stamp = format_timestamp(crate::commands::reminders::local_now());
+            let stamp = format_timestamp(local_now());
             set_apple_sync_outcome(
                 pool,
                 Some(&stamp),
@@ -178,167 +162,56 @@ fn paused_access() -> Outcome {
     }
 }
 
-fn paused_list_missing(kind: ListKind) -> Outcome {
+fn paused_list_missing() -> Outcome {
     Outcome::Paused {
         kind: PAUSED_LIST_MISSING,
         message: format!(
             "The “{}” list is missing in Reminders, so sync is paused and nothing is deleted. \
-             Recreate the lists to continue.",
-            kind.list_name()
+             Recreate the list to continue.",
+            list_name()
         ),
     }
 }
 
-fn paused_empty(kind: ListKind, synced: usize) -> Outcome {
+fn paused_empty(synced: usize) -> Outcome {
     let items = if synced == 1 { "item" } else { "items" };
     Outcome::Paused {
         kind: PAUSED_EMPTY_FETCH,
         message: format!(
             "The “{}” list came back empty although {synced} synced {items} should be in it, \
              so sync is paused and nothing is deleted in Badger.",
-            kind.list_name()
+            list_name()
         ),
     }
 }
 
-fn paused_missing(kind: ListKind, missing: usize, open: usize) -> Outcome {
+fn paused_missing(missing: usize, open: usize) -> Outcome {
     Outcome::Paused {
         kind: PAUSED_EMPTY_FETCH,
         message: format!(
             "{missing} of the {open} synced items in the “{}” list went missing at once, so \
              sync is paused and nothing is deleted in Badger.",
-            kind.list_name()
+            list_name()
         ),
     }
 }
 
 // ── Field mapping ─────────────────────────────────────────────────────────────
 
-/// A Badger row of either kind.
-#[derive(Debug, Clone)]
-enum Row {
-    Todo(BTodo),
-    Reminder(BReminder),
-}
-
-impl Row {
-    fn id(&self) -> i64 {
-        match self {
-            Row::Todo(t) => t.id,
-            Row::Reminder(r) => r.id,
-        }
-    }
-
-    fn snap(&self) -> Snap {
-        match self {
-            Row::Todo(t) => t.snap(),
-            Row::Reminder(r) => r.snap(),
-        }
-    }
-
-    /// Pushed when unpaired: open todos, open one-off reminders.
-    fn in_scope(&self) -> bool {
-        match self {
-            Row::Todo(t) => t.in_scope(),
-            Row::Reminder(r) => r.in_scope(),
-        }
-    }
-
-    fn done(&self) -> bool {
-        self.snap().done
-    }
-
-    /// Out of the sync, so never pushed or deleted because of the phone: a recurring
-    /// reminder (D7), or a row kept off the phone (its own flag, or a reminder's todo's).
-    fn off_phone(&self) -> bool {
-        match self {
-            Row::Todo(t) => t.mac_only,
-            Row::Reminder(r) => r.repeat != "none" || r.mac_only,
-        }
-    }
-
-    /// "Keep off phone" (a reminder's own flag or its todo's).
-    fn mac_only(&self) -> bool {
-        match self {
-            Row::Todo(t) => t.mac_only,
-            Row::Reminder(r) => r.mac_only,
-        }
-    }
-}
-
-async fn load_rows(kind: ListKind, pool: &Pool<Sqlite>) -> Result<HashMap<i64, Row>, AppError> {
-    Ok(match kind {
-        ListKind::Todos => load_todos(pool)
-            .await?
-            .into_iter()
-            .map(|t| (t.id, Row::Todo(t)))
-            .collect(),
-        ListKind::Reminders => load_reminders(pool)
-            .await?
-            .into_iter()
-            .map(|r| (r.id, Row::Reminder(r)))
-            .collect(),
-    })
-}
-
-async fn load_row(kind: ListKind, id: i64, pool: &Pool<Sqlite>) -> Result<Option<Row>, AppError> {
-    Ok(match kind {
-        ListKind::Todos => load_todo(id, pool).await?.map(Row::Todo),
-        ListKind::Reminders => load_reminder(id, pool).await?.map(Row::Reminder),
-    })
-}
-
-/// The local date-time a phone reminder's due stands for (date-only → 09:00).
-fn reminder_time(due: PhoneDue) -> NaiveDateTime {
-    match due {
-        PhoneDue::DateTime(t) => t.with_nanosecond(0).unwrap_or(t),
-        PhoneDue::Date(d) => d.and_time(
-            NaiveTime::from_hms_opt(DATE_ONLY_TIME.0, DATE_ONLY_TIME.1, 0)
-                .unwrap_or(NaiveTime::MIN),
-        ),
-    }
-}
-
-fn format_date(d: NaiveDate) -> String {
-    d.format("%Y-%m-%d").to_string()
-}
-
 /// A phone item's synced fields in Badger terms (the phone side of the merge).
-fn phone_snap(kind: ListKind, p: &PhoneItem) -> Snap {
-    match kind {
-        ListKind::Todos => Snap {
-            title: p.title.trim().to_string(),
-            notes: clean_notes(p.notes.as_deref()),
-            due: p.due.map(|d| format_date(d.date())),
-            done: p.completed,
-        },
-        ListKind::Reminders => Snap {
-            title: clean_reminder_text(&p.title).unwrap_or_default(),
-            // Reminder notes are Badger-owned (link line); the phone's aren't synced.
-            notes: None,
-            due: p.due.map(|d| format_timestamp(reminder_time(d))),
-            done: p.completed,
-        },
-    }
-}
-
-/// The pushed due a native notification may defer to: a reminder's due date-time that has
-/// an alarm at the same time and isn't completed.
-fn phone_due(kind: ListKind, p: &PhoneItem) -> Option<String> {
-    match (kind, p.due) {
-        (ListKind::Reminders, Some(PhoneDue::DateTime(t))) if !p.completed => {
-            let t = t.with_nanosecond(0).unwrap_or(t);
-            p.alarms.contains(&t).then(|| format_timestamp(t))
-        }
-        _ => None,
+fn phone_snap(p: &PhoneItem) -> Snap {
+    Snap {
+        title: cut_title(&p.title).unwrap_or_default(),
+        notes: clean_notes(p.notes.as_deref()),
+        due: phone_due_key(p.due),
+        done: p.completed,
     }
 }
 
 /// Per-field three-way merge. A field changed on one side only takes that side; changed on
-/// both, Badger wins. Phone values Badger can't hold (empty title, a reminder without a
-/// date) lose. A done reminder is final; after a restore Badger wins everything.
-fn merge(kind: ListKind, b: &Snap, bs: &Snap, p: &Snap, ps: &Snap, authoritative: bool) -> Snap {
-    if authoritative || (kind == ListKind::Reminders && b.done) {
+/// both, Badger wins. An empty phone title loses. After a restore Badger wins everything.
+fn merge(b: &Snap, bs: &Snap, p: &Snap, ps: &Snap, authoritative: bool) -> Snap {
+    if authoritative {
         return b.clone();
     }
     let take =
@@ -351,11 +224,10 @@ fn merge(kind: ListKind, b: &Snap, bs: &Snap, p: &Snap, ps: &Snap, authoritative
     ) {
         m.title = p.title.clone();
     }
-    if kind == ListKind::Todos && take(b.notes != bs.notes, p.notes != ps.notes, true) {
+    if take(b.notes != bs.notes, p.notes != ps.notes, true) {
         m.notes = p.notes.clone();
     }
-    let due_ok = kind == ListKind::Todos || p.due.is_some();
-    if take(b.due != bs.due, p.due != ps.due, due_ok) {
+    if take(b.due != bs.due, p.due != ps.due, true) {
         m.due = p.due.clone();
     }
     if take(b.done != bs.done, p.done != ps.done, true) {
@@ -364,83 +236,49 @@ fn merge(kind: ListKind, b: &Snap, bs: &Snap, p: &Snap, ps: &Snap, authoritative
     m
 }
 
-/// What the phone item should look like for this Badger row. `current` is the phone item
-/// (none when creating), `synced` Badger's side at the last sync.
-fn draft_for(row: &Row, current: Option<&PhoneItem>, synced: Option<&Snap>) -> PhoneDraft {
-    match row {
-        Row::Todo(t) => {
-            let want = t
-                .due_date
-                .as_deref()
-                .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
-            // Same date: keep the phone's due as is (it may carry a time).
-            let same = current.is_some_and(|p| p.due.map(PhoneDue::date) == want);
-            PhoneDraft {
-                title: t.title.clone(),
-                notes: Some(t.notes.clone()),
-                due: (!same).then_some(want.map(PhoneDue::Date)),
-                alarm: None,
-                completed: t.status == "done",
-                strip_recurrence: false,
-            }
-        }
-        Row::Reminder(r) => {
-            let at = parse_timestamp(&r.remind_at)
-                .ok()
-                .map(|t| t.with_nanosecond(0).unwrap_or(t));
-            let old_line = synced.and_then(|s| s.notes.as_deref());
-            let notes = match (r.link_note(), current) {
-                (Some(line), _) => Some(Some(line)),
-                // Unlinked since the last sync: take Badger's line off the phone, unless the
-                // notes were rewritten there (then they're the user's).
-                (None, Some(p))
-                    if old_line.is_some()
-                        && clean_notes(p.notes.as_deref()).as_deref() == old_line =>
-                {
-                    Some(None)
-                }
-                // Unlinked: the phone's notes are left alone.
-                (None, _) => None,
-            };
-            PhoneDraft {
-                title: r.text.clone(),
-                notes,
-                due: Some(at.map(PhoneDue::DateTime)),
-                alarm: at,
-                completed: r.state == "done",
-                strip_recurrence: current.is_some_and(|p| p.recurring),
-            }
-        }
+/// What the phone item should look like for this task. `current` is the phone item (none
+/// when creating).
+fn draft_for(task: &BTask, current: Option<&PhoneItem>, now: NaiveDateTime) -> PhoneDraft {
+    let on_phone = current.map(|p| p.alarms.as_slice()).unwrap_or(&[]);
+    PhoneDraft {
+        title: task.title.clone(),
+        notes: Some(task.notes.clone()),
+        due: Some(to_phone_due(task.snap().due.as_deref())),
+        alarms: Some(task.wanted_alarms(on_phone, now)),
+        completed: task.done,
+        strip_recurrence: current.is_some_and(|p| p.recurring),
     }
 }
 
-/// Whether writing `d` would change `p`.
+fn alarm_keys(alarms: &[NaiveDateTime]) -> Vec<String> {
+    let mut keys: Vec<String> = alarms.iter().map(|t| alarm_key(*t)).collect();
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
+/// Whether writing `d` would change `p` (dues compared to the minute, alarms as a set).
 fn needs_push(p: &PhoneItem, d: &PhoneDraft) -> bool {
     p.title.trim() != d.title
         || d.notes
             .as_ref()
             .is_some_and(|n| clean_notes(p.notes.as_deref()) != *n)
-        || d.due.is_some_and(|due| p.due != due)
-        || d.alarm.is_some_and(|t| p.alarms.as_slice() != [t])
+        || d.due
+            .is_some_and(|due| phone_due_key(p.due) != phone_due_key(due))
+        || d.alarms
+            .as_ref()
+            .is_some_and(|a| alarm_keys(&p.alarms) != alarm_keys(a))
         || p.completed != d.completed
         || (d.strip_recurrence && p.recurring)
 }
 
-fn pairing_state(kind: ListKind, row: &Row, p: &PhoneItem) -> PairingState {
+fn pairing_state(task: &BTask, p: &PhoneItem) -> PairingState {
     PairingState {
         ek_id: p.ek_id.clone(),
         external_id: p.external_id.clone(),
-        badger_snap: row.snap(),
-        phone_snap: phone_snap(kind, p),
-        phone_due: phone_due(kind, p),
-    }
-}
-
-/// The other Badger list.
-fn other(kind: ListKind) -> ListKind {
-    match kind {
-        ListKind::Reminders => ListKind::Todos,
-        ListKind::Todos => ListKind::Reminders,
+        badger_snap: task.snap(),
+        phone_snap: phone_snap(p),
+        phone_alarms: alarm_keys(&p.alarms),
     }
 }
 
@@ -457,7 +295,7 @@ fn current_state(p: &Pairing) -> PairingState {
         external_id: p.external_id.clone(),
         badger_snap: p.badger_snap.clone(),
         phone_snap: p.phone_snap.clone(),
-        phone_due: p.phone_due.clone(),
+        phone_alarms: p.phone_alarms.clone(),
     }
 }
 
@@ -468,28 +306,21 @@ struct Ctx<'a, S> {
     store: &'a S,
     now: NaiveDateTime,
     authoritative: bool,
-    /// list id and the items fetched at the start of the pass, per kind
-    lists: HashMap<ListKind, (String, Vec<PhoneItem>)>,
-    /// Phone items this pass deleted (they are still in `lists`).
+    list_id: String,
+    /// The items fetched at the start of the pass.
+    items: Vec<PhoneItem>,
+    /// Phone items this pass deleted (they are still in `items`).
     gone: HashSet<String>,
     /// "Delete in Badger anyway": phone deletes apply at once.
     delete_anyway: bool,
 }
 
-impl<S> Ctx<'_, S> {
-    fn list_id(&self, kind: ListKind) -> &str {
-        self.lists
-            .get(&kind)
-            .map(|(id, _)| id.as_str())
-            .unwrap_or("")
-    }
-
-    fn items(&self, kind: ListKind) -> &[PhoneItem] {
-        self.lists
-            .get(&kind)
-            .map(|(_, items)| items.as_slice())
-            .unwrap_or(&[])
-    }
+async fn load_rows(pool: &Pool<Sqlite>) -> Result<HashMap<i64, BTask>, AppError> {
+    Ok(load_tasks(pool)
+        .await?
+        .into_iter()
+        .map(|t| (t.id, t))
+        .collect())
 }
 
 async fn pass<S: ReminderStore>(
@@ -508,31 +339,21 @@ async fn pass<S: ReminderStore>(
     }
     let pairings = load_pairings(pool).await?;
 
-    let mut lists = HashMap::new();
-    for kind in ListKind::ALL {
-        let stored = match kind {
-            ListKind::Reminders => settings.reminders_list_id.clone(),
-            ListKind::Todos => settings.todos_list_id.clone(),
-        };
-        let list_id = match stored {
-            Some(id) => id,
-            None if pairings.iter().any(|p| p.kind == kind) => {
-                return Ok(paused_list_missing(kind))
-            }
-            None => {
-                let id = store.create_list(kind.list_name()).await?;
-                set_apple_sync_list_id(pool, kind.settings_key(), Some(&id)).await?;
-                id
-            }
-        };
-        let items = match store.fetch(&list_id).await {
-            Ok(items) => items,
-            Err(StoreError::ListMissing) => return Ok(paused_list_missing(kind)),
-            Err(StoreError::AccessDenied) => return Ok(paused_access()),
-            Err(e) => return Err(e.into()),
-        };
-        lists.insert(kind, (list_id, items));
-    }
+    let list_id = match settings.list_id.clone() {
+        Some(id) => id,
+        None if !pairings.is_empty() => return Ok(paused_list_missing()),
+        None => {
+            let id = store.create_list(list_name()).await?;
+            set_apple_sync_list_id(pool, Some(&id)).await?;
+            id
+        }
+    };
+    let items = match store.fetch(&list_id).await {
+        Ok(items) => items,
+        Err(StoreError::ListMissing) => return Ok(paused_list_missing()),
+        Err(StoreError::AccessDenied) => return Ok(paused_access()),
+        Err(e) => return Err(e.into()),
+    };
 
     // "Delete in Badger anyway" overrides only the pause the user saw it on; a stale click
     // runs an ordinary pass.
@@ -540,43 +361,32 @@ async fn pass<S: ReminderStore>(
         mode == PassMode::DeleteAnyway && settings.paused.as_deref() == Some(PAUSED_EMPTY_FETCH);
 
     // Mass-delete guard: an empty list while open items are paired to it, or most of the
-    // Badger rows a miss would delete missing at once, is more likely an iCloud or account
-    // problem than the user deleting everything. Items moved to the other list aren't
-    // missing; rows deleted, done, recurring or Mac-only in Badger only unpair, so they
-    // don't count (Mac-only ones not even toward an empty list).
+    // tasks a miss would delete missing at once, is more likely an iCloud or account
+    // problem than the user deleting everything. Tasks deleted, done, repeating or Mac-only
+    // in Badger only unpair, so they don't count (Mac-only ones not even toward an empty
+    // list).
     if !delete_anyway {
-        let items = |kind: ListKind| {
-            lists
-                .get(&kind)
-                .map(|(_, items)| items.as_slice())
-                .unwrap_or(&[])
-        };
-        for kind in ListKind::ALL {
-            let rows = load_rows(kind, pool).await?;
-            let open: Vec<&Pairing> = pairings
-                .iter()
-                .filter(|p| p.kind == kind && !p.phone_snap.done)
-                .filter(|p| !rows.get(&p.badger_id).is_some_and(Row::mac_only))
-                .collect();
-            // One open item can be the user clearing their last one; the two-pass rule
-            // still covers a glitch then.
-            if items(kind).is_empty() && open.len() >= EMPTY_LIST_MIN {
-                return Ok(paused_empty(kind, open.len()));
-            }
-            let deletable: Vec<&&Pairing> = open
-                .iter()
-                .filter(|p| {
-                    rows.get(&p.badger_id)
-                        .is_some_and(|r| !r.done() && !r.off_phone())
-                })
-                .collect();
-            let missing = deletable
-                .iter()
-                .filter(|p| !holds(items(kind), p) && !holds(items(other(kind)), p))
-                .count();
-            if missing >= MASS_MISSING_MIN && missing * 2 > deletable.len() {
-                return Ok(paused_missing(kind, missing, deletable.len()));
-            }
+        let rows = load_rows(pool).await?;
+        let open: Vec<&Pairing> = pairings
+            .iter()
+            .filter(|p| !p.phone_snap.done)
+            .filter(|p| !rows.get(&p.badger_id).is_some_and(|t| t.mac_only))
+            .collect();
+        // One open item can be the user clearing their last one; the two-pass rule still
+        // covers a glitch then.
+        if items.is_empty() && open.len() >= EMPTY_LIST_MIN {
+            return Ok(paused_empty(open.len()));
+        }
+        let deletable: Vec<&&Pairing> = open
+            .iter()
+            .filter(|p| {
+                rows.get(&p.badger_id)
+                    .is_some_and(|t| !t.done && !t.off_phone())
+            })
+            .collect();
+        let missing = deletable.iter().filter(|p| !holds(&items, p)).count();
+        if missing >= MASS_MISSING_MIN && missing * 2 > deletable.len() {
+            return Ok(paused_missing(missing, deletable.len()));
         }
     }
 
@@ -585,31 +395,25 @@ async fn pass<S: ReminderStore>(
         store,
         now,
         authoritative: settings.restore_pending,
-        lists,
+        list_id,
+        items,
         gone: HashSet::new(),
         delete_anyway,
     };
     repair_by_external_id(&ctx, pairings).await?;
-    for kind in ListKind::ALL {
-        process_pairings(&mut ctx, kind, report).await?;
-    }
-    for kind in ListKind::ALL {
-        push_unpaired(&ctx, kind, report).await?;
-        import_unpaired(&ctx, kind, report).await?;
-    }
+    process_pairings(&mut ctx, report).await?;
+    push_unpaired(&ctx, report).await?;
+    import_unpaired(&ctx, report).await?;
     Ok(Outcome::Synced)
 }
 
-/// A pairing whose EventKit id no longer shows up is moved to the item in the same list
-/// with its external id, when exactly one unclaimed item has it.
+/// A pairing whose EventKit id no longer shows up is moved to the item in the list with its
+/// external id, when exactly one unclaimed item has it.
 async fn repair_by_external_id<S>(
     ctx: &Ctx<'_, S>,
     pairings: Vec<Pairing>,
 ) -> Result<(), AppError> {
-    let present: HashSet<&str> = ListKind::ALL
-        .iter()
-        .flat_map(|k| ctx.items(*k).iter().map(|i| i.ek_id.as_str()))
-        .collect();
+    let present: HashSet<&str> = ctx.items.iter().map(|i| i.ek_id.as_str()).collect();
     let mut claimed: HashSet<String> = pairings.iter().map(|p| p.ek_id.clone()).collect();
     for p in &pairings {
         let Some(external) = p.external_id.as_deref() else {
@@ -619,7 +423,7 @@ async fn repair_by_external_id<S>(
             continue;
         }
         let candidates: Vec<&PhoneItem> = ctx
-            .items(p.kind)
+            .items
             .iter()
             .filter(|i| i.external_id.as_deref() == Some(external) && !claimed.contains(&i.ek_id))
             .collect();
@@ -633,17 +437,12 @@ async fn repair_by_external_id<S>(
 
 async fn process_pairings<S: ReminderStore>(
     ctx: &mut Ctx<'_, S>,
-    kind: ListKind,
     report: &mut PassReport,
 ) -> Result<(), AppError> {
-    let pairings: Vec<Pairing> = load_pairings(ctx.pool)
-        .await?
-        .into_iter()
-        .filter(|p| p.kind == kind)
-        .collect();
-    let rows = load_rows(kind, ctx.pool).await?;
+    let pairings = load_pairings(ctx.pool).await?;
+    let rows = load_rows(ctx.pool).await?;
     let phone: HashMap<String, PhoneItem> = ctx
-        .items(kind)
+        .items
         .iter()
         .map(|i| (i.ek_id.clone(), i.clone()))
         .collect();
@@ -655,17 +454,22 @@ async fn process_pairings<S: ReminderStore>(
                 report.errors.push(e.to_string());
             }
         }
-        let result = match (rows.get(&pair.badger_id), phone.get(&pair.ek_id)) {
-            (Some(row), Some(p)) if row.off_phone() => {
-                // Became recurring (D7) or Mac-only in Badger: it leaves the phone; the
-                // Badger row stays.
+        let row = rows.get(&pair.badger_id);
+        if !pair.badger_snap.done && row.is_some_and(|t| t.in_undo_window(ctx.now)) {
+            // Completed in Badger moments ago and not synced yet: Undo may still take it
+            // back (D21). A completion that came from the phone is already in the snapshot.
+            continue;
+        }
+        let result = match (row, phone.get(&pair.ek_id)) {
+            (Some(task), Some(p)) if task.off_phone() => {
+                // Became repeating (D6) or Mac-only in Badger: it leaves the phone; the task
+                // stays.
                 delete_on_phone(ctx, pair, p, report).await
             }
-            (Some(row), Some(p)) => merge_pair(ctx, kind, pair, row, p, report).await,
-            (Some(row), None) => phone_missing(ctx, kind, pair, row, report).await,
-            (None, Some(p)) if ctx.authoritative => {
+            (Some(task), Some(p)) => merge_pair(ctx, pair, task, p, report).await,
+            (Some(task), None) => phone_missing(ctx, pair, task, report).await,
+            (None, Some(_)) if ctx.authoritative => {
                 // Not in the restored data: unpair, and the item is imported like a new one.
-                let _ = p;
                 delete_pairing(pair.id, ctx.pool).await
             }
             (None, Some(p)) => delete_on_phone(ctx, pair, p, report).await,
@@ -678,7 +482,7 @@ async fn process_pairings<S: ReminderStore>(
     Ok(())
 }
 
-/// Deletes the phone item and its pairing (Badger deleted the row, or it became recurring
+/// Deletes the phone item and its pairing (Badger deleted the task, or it became repeating
 /// or Mac-only).
 async fn delete_on_phone<S: ReminderStore>(
     ctx: &mut Ctx<'_, S>,
@@ -695,67 +499,62 @@ async fn delete_on_phone<S: ReminderStore>(
 /// The phone item is gone (deleted, cleared, or moved to another list).
 ///
 /// An open item is deleted in Badger only once it has been missing for two passes in a row
-/// (a one-pass iCloud glitch deletes nothing), at once when it moved to the other list or
-/// the user confirmed "Delete in Badger anyway". If Badger edited the row since the last
-/// sync, Badger wins (D14) and the item is put back on the phone.
+/// (a one-pass iCloud glitch deletes nothing), at once when the user confirmed "Delete in
+/// Badger anyway". If Badger edited the task since the last sync, Badger wins and the item
+/// is put back on the phone.
 async fn phone_missing<S: ReminderStore>(
     ctx: &mut Ctx<'_, S>,
-    kind: ListKind,
     pair: &Pairing,
-    row: &Row,
+    task: &BTask,
     report: &mut PassReport,
 ) -> Result<(), AppError> {
-    if row.off_phone() || row.done() || pair.phone_snap.done {
-        // Completed items cleared on the phone, or rows that left the sync (recurring,
-        // Mac-only): only unpair. A Mac-only row is never deleted because of the phone.
+    if task.off_phone() || task.done || pair.phone_snap.done {
+        // Completed items cleared on the phone, or tasks that left the sync (repeating,
+        // Mac-only): only unpair. A Mac-only task is never deleted because of the phone.
         return delete_pairing(pair.id, ctx.pool).await;
     }
     if ctx.authoritative {
         // After a restore Badger is authoritative: put it back on the phone.
-        return push_new(ctx, kind, row, Some(pair.id), report).await;
+        return push_new(ctx, task, Some(pair.id), report).await;
     }
-    let moved = holds(ctx.items(other(kind)), pair);
-    if !moved && !ctx.delete_anyway && pair.missed + 1 < MISSES_BEFORE_DELETE {
+    if !ctx.delete_anyway && pair.missed + 1 < MISSES_BEFORE_DELETE {
         return set_pairing_missed(pair.id, pair.missed + 1, ctx.pool).await;
     }
-    if badger_edited(kind, &row.snap(), &pair.badger_snap) {
-        return push_new(ctx, kind, row, Some(pair.id), report).await;
+    if badger_edited(&task.snap(), &pair.badger_snap) {
+        return push_new(ctx, task, Some(pair.id), report).await;
     }
-    if delete_and_unpair(kind, row.id(), pair.id, &pair.badger_snap, ctx.pool).await? {
-        report.changed(kind);
+    if delete_and_unpair(task.id, pair.id, &pair.badger_snap, ctx.pool).await? {
+        report.tasks_changed = true;
         return Ok(());
     }
     // Edited in Badger meanwhile: Badger wins.
-    match load_row(kind, row.id(), ctx.pool).await? {
-        Some(row) if !(row.off_phone() || row.done()) => {
-            push_new(ctx, kind, &row, Some(pair.id), report).await
+    match load_task(task.id, ctx.pool).await? {
+        Some(task) if !(task.off_phone() || task.done) => {
+            push_new(ctx, &task, Some(pair.id), report).await
         }
         _ => delete_pairing(pair.id, ctx.pool).await,
     }
 }
 
-/// Creates the phone item for `row` and records it in the pairing `pairing_id` (a new
+/// Creates the phone item for `task` and records it in the pairing `pairing_id` (a new
 /// pairing when `None`). If the pairing can't be recorded, the new phone item is deleted
 /// again (best effort): unpaired, the next pass would import it as a duplicate.
 async fn push_new<S: ReminderStore>(
     ctx: &Ctx<'_, S>,
-    kind: ListKind,
-    row: &Row,
+    task: &BTask,
     pairing_id: Option<i64>,
     report: &mut PassReport,
 ) -> Result<(), AppError> {
     let item = ctx
         .store
-        .create_item(ctx.list_id(kind), &draft_for(row, None, None))
+        .create_item(&ctx.list_id, &draft_for(task, None, ctx.now))
         .await?;
     report.phone_writes += 1;
-    let state = pairing_state(kind, row, &item);
+    let state = pairing_state(task, &item);
     let recorded = match pairing_id {
         Some(id) => update_pairing(id, &state, ctx.pool).await,
         None => match ctx.pool.acquire().await {
-            Ok(mut conn) => insert_pairing(kind, row.id(), &state, &mut conn)
-                .await
-                .map(|_| ()),
+            Ok(mut conn) => insert_pairing(task.id, &state, &mut conn).await.map(|_| ()),
             Err(e) => Err(e.into()),
         },
     };
@@ -774,53 +573,45 @@ async fn push_new<S: ReminderStore>(
 
 async fn merge_pair<S: ReminderStore>(
     ctx: &mut Ctx<'_, S>,
-    kind: ListKind,
     pair: &Pairing,
-    row: &Row,
+    task: &BTask,
     p: &PhoneItem,
     report: &mut PassReport,
 ) -> Result<(), AppError> {
-    let b_now = row.snap();
-    let p_now = phone_snap(kind, p);
+    let b_now = task.snap();
     let target = merge(
-        kind,
         &b_now,
         &pair.badger_snap,
-        &p_now,
+        &phone_snap(p),
         &pair.phone_snap,
         ctx.authoritative,
     );
-    let row = if target != b_now {
-        let applied = match row {
-            Row::Todo(t) => apply_todo(t, &target, ctx.pool).await?,
-            Row::Reminder(r) => apply_reminder(r, &target, ctx.now, ctx.pool).await?,
-        };
-        if !applied {
+    let task = if target != b_now {
+        if !apply_task(task, &target, ctx.now, ctx.pool).await? {
             // Edited meanwhile: next pass.
             return Ok(());
         }
-        report.changed(kind);
-        match load_row(kind, row.id(), ctx.pool).await? {
-            Some(row) => row,
+        report.tasks_changed = true;
+        match load_task(task.id, ctx.pool).await? {
+            Some(task) => task,
             None => return Ok(()),
         }
     } else {
-        row.clone()
+        task.clone()
     };
-    finish(ctx, kind, pair.id, &current_state(pair), &row, p, report).await
+    finish(ctx, pair.id, &current_state(pair), &task, p, report).await
 }
 
-/// Brings the phone item in line with the Badger row and records the pairing.
+/// Brings the phone item in line with the task (alarms recomputed) and records the pairing.
 async fn finish<S: ReminderStore>(
     ctx: &Ctx<'_, S>,
-    kind: ListKind,
     pairing_id: i64,
     current: &PairingState,
-    row: &Row,
+    task: &BTask,
     p: &PhoneItem,
     report: &mut PassReport,
 ) -> Result<(), AppError> {
-    let draft = draft_for(row, Some(p), Some(&current.badger_snap));
+    let draft = draft_for(task, Some(p), ctx.now);
     let p_after = if needs_push(p, &draft) {
         let item = match ctx.store.update_item(&p.ek_id, &draft).await {
             Ok(item) => item,
@@ -833,32 +624,30 @@ async fn finish<S: ReminderStore>(
     } else {
         p.clone()
     };
-    let state = pairing_state(kind, row, &p_after);
+    let state = pairing_state(task, &p_after);
     if state != *current {
         update_pairing(pairing_id, &state, ctx.pool).await?;
     }
     Ok(())
 }
 
-/// Creates phone items for unpaired Badger rows in scope.
+/// Creates phone items for unpaired tasks in scope.
 async fn push_unpaired<S: ReminderStore>(
     ctx: &Ctx<'_, S>,
-    kind: ListKind,
     report: &mut PassReport,
 ) -> Result<(), AppError> {
     let paired: HashSet<i64> = load_pairings(ctx.pool)
         .await?
         .into_iter()
-        .filter(|p| p.kind == kind)
         .map(|p| p.badger_id)
         .collect();
-    let mut rows: Vec<Row> = load_rows(kind, ctx.pool).await?.into_values().collect();
-    rows.sort_by_key(Row::id);
-    for row in rows
+    let mut tasks = load_tasks(ctx.pool).await?;
+    tasks.sort_by_key(|t| t.id);
+    for task in tasks
         .iter()
-        .filter(|r| r.in_scope() && !paired.contains(&r.id()))
+        .filter(|t| t.in_scope() && !paired.contains(&t.id))
     {
-        if let Err(e) = push_new(ctx, kind, row, None, report).await {
+        if let Err(e) = push_new(ctx, task, None, report).await {
             report.errors.push(e.to_string());
         }
     }
@@ -868,7 +657,6 @@ async fn push_unpaired<S: ReminderStore>(
 /// Imports phone items nobody is paired with. Completed ones are left alone.
 async fn import_unpaired<S: ReminderStore>(
     ctx: &Ctx<'_, S>,
-    kind: ListKind,
     report: &mut PassReport,
 ) -> Result<(), AppError> {
     let claimed: HashSet<String> = load_pairings(ctx.pool)
@@ -876,18 +664,18 @@ async fn import_unpaired<S: ReminderStore>(
         .into_iter()
         .map(|p| p.ek_id)
         .collect();
-    for p in ctx.items(kind) {
+    for p in &ctx.items {
         if p.completed || claimed.contains(&p.ek_id) || ctx.gone.contains(&p.ek_id) {
             continue;
         }
-        if let Err(e) = import_one(ctx, kind, p, report).await {
+        if let Err(e) = import_one(ctx, p, report).await {
             report.errors.push(e.to_string());
         }
     }
     Ok(())
 }
 
-fn skip(report: &mut PassReport, kind: ListKind, p: &PhoneItem, reason: &str) {
+fn skip(report: &mut PassReport, p: &PhoneItem, reason: &str) {
     let title = p.title.trim();
     report.skipped.push(SkippedItem {
         title: if title.is_empty() {
@@ -895,20 +683,21 @@ fn skip(report: &mut PassReport, kind: ListKind, p: &PhoneItem, reason: &str) {
         } else {
             title.to_string()
         },
-        list: kind.list_name().to_string(),
+        list: list_name().to_string(),
         reason: reason.to_string(),
     });
 }
 
+/// A phone-created item becomes a task: date-only dues stay date-only, alarms become
+/// reminders (D22), a repeat rule is stripped (it imports as a one-off).
 async fn import_one<S: ReminderStore>(
     ctx: &Ctx<'_, S>,
-    kind: ListKind,
     p: &PhoneItem,
     report: &mut PassReport,
 ) -> Result<(), AppError> {
-    let snap = phone_snap(kind, p);
+    let snap = phone_snap(p);
     if snap.title.is_empty() {
-        skip(report, kind, p, "needs a title");
+        skip(report, p, "needs a title");
         return Ok(());
     }
     let initial = PairingState {
@@ -916,36 +705,17 @@ async fn import_one<S: ReminderStore>(
         external_id: p.external_id.clone(),
         badger_snap: Snap::default(),
         phone_snap: snap.clone(),
-        phone_due: phone_due(kind, p),
+        phone_alarms: alarm_keys(&p.alarms),
     };
-    let (id, pairing_id) = match kind {
-        ListKind::Todos => {
-            import_todo(
-                &snap.title,
-                snap.notes.as_deref(),
-                snap.due.as_deref(),
-                &initial,
-                ctx.pool,
-            )
-            .await?
-        }
-        ListKind::Reminders => {
-            let Some(due) = p.due else {
-                skip(report, kind, p, "needs a date");
-                return Ok(());
-            };
-            let at = resolve_gap(reminder_time(due), local_exists);
-            import_reminder(&snap.title, at, ctx.now, &initial, ctx.pool).await?
-        }
-    };
-    report.changed(kind);
-    let Some(row) = load_row(kind, id, ctx.pool).await? else {
+    let (id, pairing_id) = import_task(&snap, &p.alarms, &initial, ctx.now, ctx.pool).await?;
+    report.tasks_changed = true;
+    let Some(task) = load_task(id, ctx.pool).await? else {
         return Ok(());
     };
     let mut current = initial;
-    current.badger_snap = row.snap();
-    // Phone form of the new row: a 09:00 time and alarm, no repeat rule, a cut title.
-    finish(ctx, kind, pairing_id, &current, &row, p, report).await
+    current.badger_snap = task.snap();
+    // Phone form of the new task: no repeat rule, a cut title, at most ten alarms.
+    finish(ctx, pairing_id, &current, &task, p, report).await
 }
 
 #[cfg(test)]

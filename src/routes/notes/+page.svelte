@@ -38,8 +38,8 @@
 	import NoteReader from '#lib/components/NoteReader.svelte';
 	import NoteTree from '#lib/components/NoteTree.svelte';
 	import MoveToDialog from '#lib/components/MoveToDialog.svelte';
-	import ReminderDialog from '#lib/components/ReminderDialog.svelte';
-	import { formatRemindAt } from '#lib/reminders.js';
+	import TaskRemindDialog from '#lib/components/TaskRemindDialog.svelte';
+	import { formatWhen } from '#lib/tasks.js';
 	import { showToast } from '#lib/palette-state.svelte.js';
 	import BookOpen from '@lucide/svelte/icons/book-open';
 	import Braces from '@lucide/svelte/icons/braces';
@@ -1469,11 +1469,12 @@
 </div>
 
 {#if reminding}
-	<ReminderDialog
+	<TaskRemindDialog
 		noteId={reminding.id}
 		title={reminding.title}
-		onsaved={(r) => {
-			showToast(`Reminder set for ${formatRemindAt(r.remind_at, new Date())}`);
+		onsaved={(t) => {
+			const at = t.reminders[0]?.fire_at;
+			showToast(at ? `Reminder set for ${formatWhen(at, new Date())}` : 'Task added');
 			void closeRemind();
 		}}
 		onclose={() => void closeRemind()}

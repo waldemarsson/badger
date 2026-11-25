@@ -1,6 +1,6 @@
-// `#tags`, `#issue/<id>` / `#todo/<id>` chips and `[[wikilinks]]` in the editor: `#` and `[[`
+// `#tags`, `#issue/<id>` / `#task/<id>` chips and `[[wikilinks]]` in the editor: `#` and `[[`
 // completion, live-preview decorations, and ⌘-click to follow. What links resolve to (note
-// titles, issue and todo titles) lives in a StateField the page fills through
+// titles, issue and task titles) lives in a StateField the page fills through
 // `setLinkData`, which also redraws the decorations. The rules live in src/lib/note-links.ts.
 import { pickedCompletion, type Completion, type CompletionContext, type CompletionResult } from '@codemirror/autocomplete';
 import { syntaxTree } from '@codemirror/language';
@@ -39,7 +39,7 @@ export function linkData(targets: LinkTargetData, suggestions: TagOption[]): Lin
 	return { notes: targets.notes, index: indexLinkTargets(targets), suggestions };
 }
 
-export const emptyLinkData: LinkData = linkData({ notes: [], issues: [], todos: [] }, []);
+export const emptyLinkData: LinkData = linkData({ notes: [], issues: [], tasks: [] }, []);
 
 export const setLinkData = StateEffect.define<LinkData>();
 
@@ -90,7 +90,7 @@ const kindLabel: Record<TagOption['kind'], string> = {
 	customer: 'Customer',
 	project: 'Project',
 	issue: 'Issue',
-	todo: 'Todo'
+	task: 'Task'
 };
 
 /** Prefix of the completion `type` that picks the row's kind badge (`linkKindBadge`). */
@@ -98,14 +98,14 @@ const kindPrefix = 'link-';
 
 function tagOptionCompletion(option: TagOption): Completion {
 	const tag = tagCompletion(option.tag);
-	const chip = option.kind === 'issue' || option.kind === 'todo';
+	const chip = option.kind === 'issue' || option.kind === 'task';
 	const project = option.kind === 'project' && option.detail ? `${option.detail} / ${option.label}` : option.label;
 	return {
 		label: tag,
-		// Issues and todos show their title; everything else its tag, with the name beside it.
+		// Issues and tasks show their title; everything else its tag, with the name beside it.
 		displayLabel: chip ? option.label : option.kind === 'project' ? project : option.kind === 'tag' ? tag : option.label,
 		detail: option.kind === 'tag' ? undefined : tag,
-		type: `${kindPrefix}${option.kind === 'todo' ? `todo-${option.status ?? 'not_started'}` : option.kind}`,
+		type: `${kindPrefix}${option.kind}`,
 		apply: tag
 	};
 }
@@ -128,7 +128,7 @@ function tagSource(context: CompletionContext): CompletionResult | null {
 		local.push({ kind: 'tag', tag: ref.target, label: ref.target, detail: null, status: null });
 	}
 	const options = filterTagOptions([...local, ...suggestions], trigger.query).map(tagOptionCompletion);
-	// Not filtered or re-sorted by CodeMirror: issues and todos match on their title too.
+	// Not filtered or re-sorted by CodeMirror: issues and tasks match on their title too.
 	return { from: hash, options, filter: false };
 }
 
@@ -174,8 +174,7 @@ const badges: Record<string, [text: string, className: string]> = {
 	customer: [kindLabel.customer, 'cm-link-kind'],
 	project: [kindLabel.project, 'cm-link-kind'],
 	issue: [kindLabel.issue, 'cm-link-kind cm-link-kind-issue'],
-	'todo-not_started': [kindLabel.todo, 'cm-link-kind'],
-	'todo-in_progress': [kindLabel.todo, 'cm-link-kind cm-link-kind-todo-in_progress']
+	task: [kindLabel.task, 'cm-link-kind cm-link-kind-task']
 };
 
 /** The kind badge in front of `#` and `[[` completion rows (the `/` menu has none). */
@@ -209,7 +208,7 @@ const hidden = Decoration.replace({});
 class ChipWidget extends WidgetType {
 	constructor(
 		readonly tag: string,
-		readonly kind: 'issue' | 'todo',
+		readonly kind: 'issue' | 'task',
 		readonly title: string,
 		readonly status: string | null,
 		readonly detail: string | null,
@@ -229,7 +228,7 @@ class ChipWidget extends WidgetType {
 	toDOM(): HTMLElement {
 		const el = document.createElement('span');
 		// Literal class names: Tailwind only keeps app.css component rules it finds in sources.
-		el.className = this.kind === 'issue' ? 'note-chip note-chip-issue' : 'note-chip note-chip-todo';
+		el.className = this.kind === 'issue' ? 'note-chip note-chip-issue' : 'note-chip note-chip-task';
 		if (this.followable) el.dataset.linkTag = this.tag;
 		if (this.status) el.dataset.status = this.status;
 		el.title = `${this.detail ? `${this.detail} · ` : ''}#${this.tag}${this.followable ? ` · ${modKey}-click to find notes` : ''}`;

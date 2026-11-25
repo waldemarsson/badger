@@ -7,9 +7,9 @@
 //! `#tags` and `[[wikilinks]]` (see `note_links`) become `<a href="#">` with data
 //! attributes in the read view, which the reader dispatches on: `data-tag` (normalized
 //! tag) for tags and chips, `data-note` (title as written) plus `data-note-id` or
-//! `data-unresolved` for wikilinks. `#issue/<id>` and `#todo/<id>` render as chips with
-//! the entity's title (`note-chip-todo` also carries `data-status`); unknown ids stay
-//! plain tags. Copy mode writes all of them as plain text.
+//! `data-unresolved` for wikilinks. `#issue/<id>` and `#task/<id>` render as chips with
+//! the entity's title (`note-chip-task` also carries `data-status`, `open` or `done`);
+//! unknown ids stay plain tags. Copy mode writes all of them as plain text.
 
 use crate::note_links::{self, EntityKind, Ref, RefKind};
 use crate::AppError;
@@ -86,13 +86,13 @@ pub struct Resolver {
     pub notes: HashMap<String, (i64, String)>,
     /// Issue id → title.
     pub issues: HashMap<i64, String>,
-    /// Todo id → (title, status).
-    pub todos: HashMap<i64, (String, String)>,
+    /// Task id → (title, status `open`/`done`).
+    pub tasks: HashMap<i64, (String, String)>,
 }
 
 impl Resolver {
     /// Loads what `refs` need: note titles when there are wikilinks, and the issues and
-    /// todos that chips reference.
+    /// tasks that chips reference.
     pub async fn load(refs: &[Ref], pool: &Pool<Sqlite>) -> Result<Self, AppError> {
         let mut resolver = Resolver::default();
         if refs.iter().any(|r| r.kind == RefKind::Link) {
@@ -107,11 +107,11 @@ impl Resolver {
             }
         }
         let mut issues = BTreeSet::new();
-        let mut todos = BTreeSet::new();
+        let mut tasks = BTreeSet::new();
         for r in refs.iter().filter(|r| r.kind == RefKind::Tag) {
             match note_links::entity_tag(&r.target) {
                 Some((EntityKind::Issue, id)) => issues.insert(id),
-                Some((EntityKind::Todo, id)) => todos.insert(id),
+                Some((EntityKind::Task, id)) => tasks.insert(id),
                 None => false,
             };
         }
@@ -124,14 +124,15 @@ impl Resolver {
                 resolver.issues.insert(id, title);
             }
         }
-        for id in todos {
-            let todo: Option<(String, String)> =
-                sqlx::query_as("SELECT Title, Status FROM todos WHERE id = ?")
-                    .bind(id)
-                    .fetch_optional(pool)
-                    .await?;
-            if let Some(todo) = todo {
-                resolver.todos.insert(id, todo);
+        for id in tasks {
+            let task: Option<(String, String)> = sqlx::query_as(
+                "SELECT Title, CASE WHEN Done = 1 THEN 'done' ELSE 'open' END FROM tasks WHERE id = ?",
+            )
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
+            if let Some(task) = task {
+                resolver.tasks.insert(id, task);
             }
         }
         Ok(resolver)
@@ -165,10 +166,10 @@ fn ref_event(markdown: &str, r: &Ref, mode: RenderMode, resolver: &Resolver) -> 
                     .issues
                     .get(&id)
                     .map(|title| (title.as_str(), "note-chip note-chip-issue", None)),
-                Some((EntityKind::Todo, id)) => resolver.todos.get(&id).map(|(title, status)| {
+                Some((EntityKind::Task, id)) => resolver.tasks.get(&id).map(|(title, status)| {
                     (
                         title.as_str(),
-                        "note-chip note-chip-todo",
+                        "note-chip note-chip-task",
                         Some(status.as_str()),
                     )
                 }),
@@ -691,7 +692,7 @@ mod tests {
         r.notes
             .insert("a \"q\" & <co".into(), (4, "A \"q\" & <co".into()));
         r.issues.insert(12, "Login <bug>".into());
-        r.todos.insert(5, ("Call Åsa".into(), "in_progress".into()));
+        r.tasks.insert(5, ("Call Åsa".into(), "open".into()));
         r
     }
 
@@ -716,12 +717,12 @@ mod tests {
 
     #[test]
     fn read_mode_renders_chips_and_unknown_ids_as_plain_tags() {
-        let html = render_with("#issue/12 #todo/5 #todo/99 #issue/7", RenderMode::Read);
+        let html = render_with("#issue/12 #task/5 #task/99 #issue/7", RenderMode::Read);
         assert_eq!(
             html,
             "<p><a href=\"#\" class=\"note-chip note-chip-issue\" data-tag=\"issue/12\">Login &lt;bug&gt;</a> \
-             <a href=\"#\" class=\"note-chip note-chip-todo\" data-tag=\"todo/5\" data-status=\"in_progress\">Call Åsa</a> \
-             <a href=\"#\" class=\"note-tag\" data-tag=\"todo/99\">#todo/99</a> \
+             <a href=\"#\" class=\"note-chip note-chip-task\" data-tag=\"task/5\" data-status=\"open\">Call Åsa</a> \
+             <a href=\"#\" class=\"note-tag\" data-tag=\"task/99\">#task/99</a> \
              <a href=\"#\" class=\"note-tag\" data-tag=\"issue/7\">#issue/7</a></p>\n"
         );
     }
@@ -766,12 +767,12 @@ mod tests {
     #[test]
     fn copy_mode_writes_tags_links_and_chips_as_plain_text() {
         let html = render_with(
-            "#Acme [[Plan|the plan]] [[Missing]] #issue/12 #todo/5 #todo/99 <i>",
+            "#Acme [[Plan|the plan]] [[Missing]] #issue/12 #task/5 #task/99 <i>",
             RenderMode::Copy,
         );
         assert_eq!(
             html,
-            "<p>#Acme the plan Missing Login &lt;bug&gt; Call Åsa #todo/99 &lt;i&gt;</p>\n"
+            "<p>#Acme the plan Missing Login &lt;bug&gt; Call Åsa #task/99 &lt;i&gt;</p>\n"
         );
     }
 
@@ -782,13 +783,13 @@ mod tests {
             "INSERT INTO customers (id, Name) VALUES (1, 'Acme');
              INSERT INTO projects (id, CustomerId, Name) VALUES (1, 1, 'Web');
              INSERT INTO issues (id, ProjectId, Title) VALUES (12, 1, 'Login bug');
-             INSERT INTO todos (id, Title, Status, CreatedAt) VALUES (5, 'Ship', 'done', 'x');
+             INSERT INTO tasks (id, Title, Done, CreatedAt, UpdatedAt) VALUES (5, 'Ship', 1, 'x', 'x');
              INSERT INTO notes (id, Title, CreatedAt, UpdatedAt) VALUES (3, 'Åsa', 'x', 'x');",
         )
         .execute(&pool)
         .await
         .unwrap();
-        let html = inner_render_markdown("[[ÅSA]] #issue/12 #todo/5", RenderMode::Read, &pool)
+        let html = inner_render_markdown("[[ÅSA]] #issue/12 #task/5", RenderMode::Read, &pool)
             .await
             .unwrap();
         assert!(
@@ -800,7 +801,7 @@ mod tests {
             "{html}"
         );
         assert!(html.contains("data-status=\"done\">Ship</a>"), "{html}");
-        let copy = inner_render_markdown("[[ÅSA]] #todo/5", RenderMode::Copy, &pool)
+        let copy = inner_render_markdown("[[ÅSA]] #task/5", RenderMode::Copy, &pool)
             .await
             .unwrap();
         assert_eq!(copy, "<p>ÅSA Ship</p>\n");

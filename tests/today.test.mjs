@@ -5,8 +5,6 @@ const {
 	weekDays,
 	dailyTotals,
 	todayEntries,
-	needsAttention,
-	inProgress,
 	progress,
 	parseDayParam,
 	sumHours,
@@ -27,22 +25,6 @@ const entry = (id, date, hours) => ({
 	project_name: 'Web',
 	customer_id: 1,
 	customer_name: 'Acme'
-});
-
-const todo = (id, status, position, due_date = null) => ({
-	id,
-	title: `Todo ${id}`,
-	notes: null,
-	status,
-	position,
-	due_date,
-	created_at: '2026-01-01 00:00:00',
-	issue_id: null,
-	issue_title: null,
-	project_id: null,
-	project_name: null,
-	customer_id: null,
-	customer_name: null
 });
 
 const ids = (rows) => rows.map((r) => r.id);
@@ -118,45 +100,6 @@ test('todayEntries keeps only today in input order; sumHours totals', () => {
 	assert.deepEqual(ids(rows), [3, 1]);
 	assert.equal(sumHours(rows), 3.5);
 	assert.equal(sumHours([]), 0);
-});
-
-test('needsAttention: non-done todos due <= today, overdue first, then position', () => {
-	const todos = [
-		todo(1, 'not_started', 0, '2026-11-06'),
-		todo(2, 'in_progress', 1, '2026-11-01'),
-		todo(3, 'done', 0, '2026-11-01'),
-		todo(4, 'not_started', 2, '2026-11-07'),
-		todo(5, 'in_progress', 0, '2026-11-06'),
-		todo(6, 'not_started', 3, null),
-		todo(7, 'not_started', 0, '2026-11-01')
-	];
-	assert.deepEqual(ids(needsAttention(todos, '2026-11-06')), [7, 2, 1, 5]);
-	assert.deepEqual(needsAttention([], '2026-11-06'), []);
-});
-
-test('inProgress: remaining in_progress todos in board order, no duplicates', () => {
-	const todos = [
-		todo(1, 'in_progress', 2, null),
-		todo(2, 'in_progress', 0, '2026-11-06'),
-		todo(3, 'in_progress', 1, '2026-11-20'),
-		todo(4, 'not_started', 0, null),
-		todo(5, 'done', 0, null),
-		todo(6, 'in_progress', 3, '2026-11-02')
-	];
-	const today = '2026-11-06';
-	const attention = needsAttention(todos, today);
-	const active = inProgress(todos, today);
-	assert.deepEqual(ids(active), [3, 1]);
-	assert.deepEqual(ids(attention), [6, 2]);
-	const all = [...ids(attention), ...ids(active)];
-	assert.equal(new Set(all).size, all.length);
-});
-
-test('needsAttention/inProgress do not mutate the input', () => {
-	const todos = [todo(1, 'in_progress', 1), todo(2, 'in_progress', 0)];
-	inProgress(todos, '2026-11-06');
-	needsAttention(todos, '2026-11-06');
-	assert.deepEqual(ids(todos), [1, 2]);
 });
 
 test('progress is a 0..1 fraction, capped, and 0 when target is off', () => {

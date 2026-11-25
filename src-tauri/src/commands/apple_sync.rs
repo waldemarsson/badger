@@ -1,17 +1,21 @@
-//! Apple Reminders sync commands: status, the switch, access, sync now, recreate lists and
-//! the confirmed "Delete in Badger anyway". The sync itself lives in `crate::apple_sync`.
+//! Apple Reminders sync commands: status, the switch, access, sync now, recreate the list,
+//! the confirmed "Delete in Badger anyway" and dismissing the old-lists note. The sync itself
+//! lives in `crate::apple_sync`.
 
 use serde::Serialize;
 use sqlx::{Pool, Sqlite};
 use tauri::{AppHandle, State};
 
 use crate::app_settings::{
-    get_apple_sync_settings, set_apple_sync_enabled as store_enabled, set_apple_sync_list_id,
+    dismiss_apple_sync_old_lists_note as store_dismiss_note, get_apple_sync_settings,
+    set_apple_sync_enabled as store_enabled, set_apple_sync_list_id,
 };
-use crate::apple_sync::badger_writes::{delete_pairings_of, reset_missed};
+use crate::apple_sync::badger_writes::{delete_all_pairings, reset_missed};
 use crate::apple_sync::engine::PassMode;
 use crate::apple_sync::runner::{emit, pass_now, SyncHandle};
-use crate::apple_sync::{AccessState, ListKind, ReminderStore, SkippedItem, STATUS_EVENT};
+use crate::apple_sync::{
+    list_name, old_list_names, AccessState, ReminderStore, SkippedItem, STATUS_EVENT,
+};
 use crate::AppError;
 
 /// System Settings → Privacy & Security → Reminders.
@@ -30,8 +34,11 @@ pub struct AppleSyncStatus {
     /// `access`, `list_missing` or `empty_fetch` while the mass-delete guard holds sync.
     pub paused: Option<String>,
     pub skipped: Vec<SkippedItem>,
-    pub reminders_list: String,
-    pub todos_list: String,
+    /// The synced list's name ("Badger").
+    pub list: String,
+    /// Show the one-time note that the old lists (`old_lists`) can be deleted on the phone.
+    pub old_lists_note: bool,
+    pub old_lists: Vec<String>,
 }
 
 // ── Inner functions (testable with the fake store) ────────────────────────────
@@ -53,8 +60,9 @@ pub async fn inner_get_status<S: ReminderStore>(
             .skipped
             .and_then(|json| serde_json::from_str(&json).ok())
             .unwrap_or_default(),
-        reminders_list: ListKind::Reminders.list_name().to_string(),
-        todos_list: ListKind::Todos.list_name().to_string(),
+        list: list_name().to_string(),
+        old_lists_note: s.old_lists_note,
+        old_lists: old_list_names().iter().map(|n| n.to_string()).collect(),
     })
 }
 
@@ -89,33 +97,33 @@ pub async fn inner_request_access<S: ReminderStore>(store: &S) -> Result<AccessS
     Ok(store.request_access().await?)
 }
 
-/// Creates a new list for each one whose stored id no longer resolves, and drops that
-/// list's pairings, so the next pass pushes its Badger items again. Returns how many lists
-/// were recreated.
+/// Creates a new "Badger" list when the stored id no longer resolves, and drops every
+/// pairing, so the next pass pushes the tasks again. Returns whether it was recreated.
 pub async fn inner_recreate_lists<S: ReminderStore>(
     pool: &Pool<Sqlite>,
     store: &S,
-) -> Result<usize, AppError> {
+) -> Result<bool, AppError> {
     let s = get_apple_sync_settings(pool).await?;
-    let mut recreated = 0;
-    for kind in ListKind::ALL {
-        let stored = match kind {
-            ListKind::Reminders => s.reminders_list_id.as_deref(),
-            ListKind::Todos => s.todos_list_id.as_deref(),
-        };
-        let exists = match stored {
-            Some(id) => store.list_exists(id).await?,
-            None => false,
-        };
-        if exists {
-            continue;
-        }
-        let id = store.create_list(kind.list_name()).await?;
-        set_apple_sync_list_id(pool, kind.settings_key(), Some(&id)).await?;
-        delete_pairings_of(kind, pool).await?;
-        recreated += 1;
+    let exists = match s.list_id.as_deref() {
+        Some(id) => store.list_exists(id).await?,
+        None => false,
+    };
+    if exists {
+        return Ok(false);
     }
-    Ok(recreated)
+    let id = store.create_list(list_name()).await?;
+    set_apple_sync_list_id(pool, Some(&id)).await?;
+    delete_all_pairings(pool).await?;
+    Ok(true)
+}
+
+/// Hides the old-lists note for good.
+pub async fn inner_dismiss_old_lists_note<S: ReminderStore>(
+    pool: &Pool<Sqlite>,
+    store: &S,
+) -> Result<AppleSyncStatus, AppError> {
+    store_dismiss_note(pool).await?;
+    inner_get_status(pool, store).await
 }
 
 async fn require_enabled(pool: &Pool<Sqlite>) -> Result<(), AppError> {
@@ -201,6 +209,17 @@ pub async fn recreate_apple_sync_lists(
     inner_get_status(pool.inner(), sync.store.as_ref()).await
 }
 
+#[tauri::command]
+pub async fn dismiss_apple_sync_old_lists_note(
+    app: AppHandle,
+    pool: State<'_, Pool<Sqlite>>,
+    sync: State<'_, SyncHandle>,
+) -> Result<AppleSyncStatus, AppError> {
+    let status = inner_dismiss_old_lists_note(pool.inner(), sync.store.as_ref()).await?;
+    emit(&app, STATUS_EVENT);
+    Ok(status)
+}
+
 /// The confirmed override of the mass-delete guard: one pass that applies the deletions.
 /// The engine honours it only while paused with `empty_fetch` (checked under the sync lock);
 /// otherwise this is an ordinary pass.
@@ -223,11 +242,22 @@ mod tests {
     use crate::apple_sync::engine::{run_pass, Outcome};
     use crate::apple_sync::fake::FakeStore;
     use crate::apple_sync::{UnsupportedStore, PAUSED_LIST_MISSING};
-    use crate::commands::reminders::parse_timestamp;
-    use crate::commands::todos::inner_create_todo;
+    use crate::commands::tasks::{inner_create_task, inner_get_task, TaskInput};
+    use crate::recurrence::parse_timestamp;
 
     fn now() -> chrono::NaiveDateTime {
         parse_timestamp("2026-11-19T12:00").unwrap()
+    }
+
+    async fn task(title: &str, pool: &Pool<Sqlite>) -> i64 {
+        let input = TaskInput {
+            title: title.to_string(),
+            ..Default::default()
+        };
+        inner_create_task(&input, &[], now(), pool)
+            .await
+            .unwrap()
+            .id
     }
 
     #[tokio::test]
@@ -237,6 +267,8 @@ mod tests {
         assert!(!status.available);
         assert!(!status.enabled);
         assert_eq!(status.access, AccessState::Unsupported);
+        assert_eq!(status.list, list_name());
+        assert!(!status.old_lists_note);
         let err = inner_set_enabled(true, &pool, &UnsupportedStore)
             .await
             .unwrap_err();
@@ -256,37 +288,31 @@ mod tests {
         assert!(status.enabled && status.available);
         assert_eq!(status.access, AccessState::Granted);
 
-        inner_create_todo("T", None, None, "not_started", None, &pool)
-            .await
-            .unwrap();
-        let tl = {
-            run_pass(&pool, &store, now(), PassMode::Normal).await;
-            store.list_id(ListKind::Todos.list_name()).unwrap()
-        };
-        store.add(&tl, crate::apple_sync::fake::phone("   "));
+        task("T", &pool).await;
+        run_pass(&pool, &store, now(), PassMode::Normal).await;
+        let list = store.list_id(list_name()).unwrap();
+        store.add(&list, crate::apple_sync::fake::phone("   "));
         run_pass(&pool, &store, now(), PassMode::Normal).await;
         let status = inner_get_status(&pool, &store).await.unwrap();
         assert!(status.last_sync_at.is_some());
         assert_eq!(status.skipped.len(), 1);
         assert_eq!(status.skipped[0].reason, "needs a title");
+        assert_eq!(status.skipped[0].list, list_name());
 
-        // Off keeps lists and pairings.
+        // Off keeps the list and pairings.
         let status = inner_set_enabled(false, &pool, &store).await.unwrap();
         assert!(!status.enabled);
-        assert_eq!(store.items(&tl).len(), 2);
+        assert_eq!(store.items(&list).len(), 2);
     }
 
     #[tokio::test]
-    async fn recreate_lists_replaces_a_missing_list_and_pushes_again() {
+    async fn recreate_list_replaces_a_missing_list_and_pushes_again() {
         let pool = crate::test_db().await;
         let store = FakeStore::default();
         inner_set_enabled(true, &pool, &store).await.unwrap();
-        let t = inner_create_todo("T", None, None, "not_started", None, &pool)
-            .await
-            .unwrap();
+        let t = task("T", &pool).await;
         run_pass(&pool, &store, now(), PassMode::Normal).await;
-        let old = store.list_id(ListKind::Todos.list_name()).unwrap();
-        let reminders = store.list_id(ListKind::Reminders.list_name()).unwrap();
+        let old = store.list_id(list_name()).unwrap();
         store.remove_list(&old);
         let report = run_pass(&pool, &store, now(), PassMode::Normal).await;
         assert!(matches!(
@@ -297,22 +323,15 @@ mod tests {
             }
         ));
 
-        assert_eq!(inner_recreate_lists(&pool, &store).await.unwrap(), 1);
-        let new = store.list_id(ListKind::Todos.list_name()).unwrap();
+        assert!(inner_recreate_lists(&pool, &store).await.unwrap());
+        let new = store.list_id(list_name()).unwrap();
         assert_ne!(new, old);
-        assert_eq!(
-            store.list_id(ListKind::Reminders.list_name()),
-            Some(reminders),
-            "the intact list stays"
-        );
         let report = run_pass(&pool, &store, now(), PassMode::Normal).await;
         assert_eq!(report.outcome, Outcome::Synced);
         assert_eq!(store.items(&new).len(), 1);
         assert_eq!(store.items(&new)[0].title, "T");
-        assert!(crate::commands::todos::inner_get_todo(t.id, &pool)
-            .await
-            .is_ok());
-        assert_eq!(inner_recreate_lists(&pool, &store).await.unwrap(), 0);
+        assert!(inner_get_task(t, &pool).await.is_ok());
+        assert!(!inner_recreate_lists(&pool, &store).await.unwrap());
     }
 
     #[tokio::test]
@@ -321,9 +340,7 @@ mod tests {
         let pool = crate::test_db().await;
         let store = FakeStore::default();
         inner_set_enabled(true, &pool, &store).await.unwrap();
-        inner_create_todo("T", None, None, "not_started", None, &pool)
-            .await
-            .unwrap();
+        task("T", &pool).await;
         run_pass(&pool, &store, now(), PassMode::Normal).await;
         let pairing = load_pairings(&pool).await.unwrap()[0].id;
         set_pairing_missed(pairing, 1, &pool).await.unwrap();
@@ -331,6 +348,43 @@ mod tests {
         assert_eq!(load_pairings(&pool).await.unwrap()[0].missed, 1);
         inner_set_enabled(true, &pool, &store).await.unwrap();
         assert_eq!(load_pairings(&pool).await.unwrap()[0].missed, 0);
+    }
+
+    #[tokio::test]
+    async fn the_old_lists_note_shows_until_dismissed_and_old_lists_are_never_touched() {
+        let pool = crate::test_db().await;
+        let store = FakeStore::default();
+        let old_todos = store.create_list(old_list_names()[0]).await.unwrap();
+        store.add(&old_todos, crate::apple_sync::fake::phone("Old todo"));
+        sqlx::query(
+            "INSERT INTO app_settings (Key, Value) VALUES ('apple_sync_old_lists_note', 'true')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let status = inner_set_enabled(true, &pool, &store).await.unwrap();
+        assert!(status.old_lists_note);
+        assert_eq!(status.old_lists.len(), 2);
+        run_pass(&pool, &store, now(), PassMode::Normal).await;
+        assert_eq!(store.items(&old_todos).len(), 1, "untouched");
+        assert!(
+            store.list_id(list_name()).is_some(),
+            "the new list is created"
+        );
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tasks")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(n, 0, "nothing imported from the old lists");
+
+        let status = inner_dismiss_old_lists_note(&pool, &store).await.unwrap();
+        assert!(!status.old_lists_note);
+        assert!(
+            !inner_get_status(&pool, &store)
+                .await
+                .unwrap()
+                .old_lists_note
+        );
     }
 
     #[tokio::test]

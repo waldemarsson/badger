@@ -1,5 +1,6 @@
-//! Two-way sync of one-off reminders and open todos with two Apple Reminders lists
-//! ("Badger Reminders", "Badger Todos") through EventKit; iCloud carries them to the phone.
+//! Two-way sync of tasks with one Apple Reminders list ("Badger"; "Badger Dev" in debug
+//! builds) through EventKit; iCloud carries it to the phone. Repeating and Mac-only tasks
+//! stay off the phone. Badger owns reminders: each pushes as one absolute alarm.
 //!
 //! The engine ([`engine::run_pass`]) only sees the [`ReminderStore`] trait and the pool, so
 //! all merge logic runs in `cargo test` on any OS against the in-memory fake. The EventKit
@@ -20,7 +21,6 @@ use std::future::Future;
 use chrono::{NaiveDate, NaiveDateTime};
 use serde::{Deserialize, Serialize};
 
-use crate::app_settings::{APPLE_SYNC_REMINDERS_LIST_KEY, APPLE_SYNC_TODOS_LIST_KEY};
 use crate::AppError;
 
 /// The store the app uses on this platform.
@@ -41,41 +41,23 @@ pub fn platform_store(_on_change: std::sync::Arc<dyn Fn() + Send + Sync>) -> Pla
     UnsupportedStore
 }
 
-/// Which Badger list an item lives in; the list decides the kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ListKind {
-    Reminders,
-    Todos,
+/// The list's name when Badger creates it. Debug builds use a separate list, so a
+/// development database never touches the real one. Found again by its stored id, so a
+/// rename on the phone is fine.
+pub fn list_name() -> &'static str {
+    if cfg!(debug_assertions) {
+        "Badger Dev"
+    } else {
+        "Badger"
+    }
 }
 
-impl ListKind {
-    pub const ALL: [ListKind; 2] = [ListKind::Todos, ListKind::Reminders];
-
-    /// `apple_sync_items.Kind` value.
-    pub fn kind(self) -> &'static str {
-        match self {
-            ListKind::Reminders => "reminder",
-            ListKind::Todos => "todo",
-        }
-    }
-
-    /// The list's name when Badger creates it. Debug builds use separate lists, so a
-    /// development database never touches the real ones.
-    pub fn list_name(self) -> &'static str {
-        match (self, cfg!(debug_assertions)) {
-            (ListKind::Reminders, false) => "Badger Reminders",
-            (ListKind::Todos, false) => "Badger Todos",
-            (ListKind::Reminders, true) => "Badger Dev Reminders",
-            (ListKind::Todos, true) => "Badger Dev Todos",
-        }
-    }
-
-    /// `app_settings` key of the stored list id.
-    pub fn settings_key(self) -> &'static str {
-        match self {
-            ListKind::Reminders => APPLE_SYNC_REMINDERS_LIST_KEY,
-            ListKind::Todos => APPLE_SYNC_TODOS_LIST_KEY,
-        }
+/// The lists synced before tasks; never touched, Settings says they can be deleted.
+pub fn old_list_names() -> [&'static str; 2] {
+    if cfg!(debug_assertions) {
+        ["Badger Dev Todos", "Badger Dev Reminders"]
+    } else {
+        ["Badger Todos", "Badger Reminders"]
     }
 }
 
@@ -95,7 +77,7 @@ impl PhoneDue {
     }
 }
 
-/// An item in one of the two lists, as the store reports it.
+/// An item in the list, as the store reports it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PhoneItem {
     /// EventKit `calendarItemIdentifier` (device-local).
@@ -118,8 +100,8 @@ pub struct PhoneDraft {
     pub title: String,
     pub notes: Option<Option<String>>,
     pub due: Option<Option<PhoneDue>>,
-    /// The item's absolute alarms become exactly this one (relative alarms stay).
-    pub alarm: Option<NaiveDateTime>,
+    /// The item's absolute alarms become exactly these (relative alarms stay).
+    pub alarms: Option<Vec<NaiveDateTime>>,
     pub completed: bool,
     pub strip_recurrence: bool,
 }
@@ -139,7 +121,7 @@ pub enum AccessState {
 pub enum StoreError {
     #[error("Badger has no access to Reminders. Grant access in Settings.")]
     AccessDenied,
-    #[error("A Badger list is missing in Reminders")]
+    #[error("The Badger list is missing in Reminders")]
     ListMissing,
     #[error("The reminder no longer exists on the phone")]
     ItemMissing,
@@ -224,15 +206,16 @@ impl ReminderStore for UnsupportedStore {
     }
 }
 
-/// The fired reminders whose native macOS notification the scheduler skips because the
-/// phone notifies: only while sync is on and healthy (not paused, last pass without
-/// errors), for paired one-offs whose pushed phone time equals the firing `RemindAt`.
-/// Mac-only reminders (own flag or their todo's) always notify, even while a pairing the
-/// next pass drops is still there. On any error nothing is skipped (a duplicate beats a
-/// missed reminder).
-pub async fn phone_notifies(
+/// The sent task reminders whose native macOS notification the scheduler skips because the
+/// phone alarms for them: only while sync is on and healthy (not paused, last pass without
+/// errors), for reminders of a paired task whose fire time is among the alarms last pushed
+/// to its phone item (`PhoneAlarms`). A snoozed reminder fires at a time the phone doesn't
+/// have, so the Mac notifies. Mac-only and repeating tasks always notify on the Mac, even
+/// while a pairing the next pass drops is still there. On any error nothing is skipped (a
+/// duplicate beats a missed reminder). Returns reminder ids.
+pub async fn phone_alarms_cover(
     pool: &sqlx::Pool<sqlx::Sqlite>,
-    fired: &[crate::commands::reminders::Reminder],
+    fired: &[crate::commands::tasks::FiredReminder],
 ) -> std::collections::HashSet<i64> {
     let mut skip = std::collections::HashSet::new();
     let settings = match crate::app_settings::get_apple_sync_settings(pool).await {
@@ -245,22 +228,22 @@ pub async fn phone_notifies(
     if !settings.enabled || settings.paused.is_some() || settings.last_error.is_some() {
         return skip;
     }
-    for r in fired.iter().filter(|r| r.repeat == "none") {
-        let pushed: Result<Option<(Option<String>,)>, sqlx::Error> = sqlx::query_as(
-            "SELECT p.PhoneDue FROM apple_sync_items p \
-             JOIN reminders r ON r.id = p.BadgerId \
-             LEFT JOIN todos t ON t.id = r.TodoId \
-             WHERE p.Kind = 'reminder' AND p.BadgerId = ? \
-               AND r.MacOnly = 0 AND COALESCE(t.MacOnly, 0) = 0",
+    for f in fired {
+        let pushed: Result<Option<String>, sqlx::Error> = sqlx::query_scalar(
+            "SELECT p.PhoneAlarms FROM apple_sync_items p JOIN tasks t ON t.id = p.BadgerId \
+             WHERE p.BadgerId = ? AND t.MacOnly = 0 AND t.Repeat = 'none'",
         )
-        .bind(r.id)
+        .bind(f.task_id)
         .fetch_optional(pool)
         .await;
         match pushed {
-            Ok(Some((Some(due),))) if due == badger_writes::normalize_timestamp(&r.remind_at) => {
-                skip.insert(r.id);
+            Ok(Some(json)) => {
+                let alarms: Vec<String> = serde_json::from_str(&json).unwrap_or_default();
+                if alarms.contains(&alarm_key(f.fire_at)) {
+                    skip.insert(f.reminder_id);
+                }
             }
-            Ok(_) => {}
+            Ok(None) => {}
             Err(e) => {
                 tracing::error!("Apple Reminders sync: couldn't read a pairing: {}", e);
                 return std::collections::HashSet::new();
@@ -268,6 +251,12 @@ pub async fn phone_notifies(
         }
     }
     skip
+}
+
+/// How an alarm time is stored in `PhoneAlarms`: whole seconds, storage format.
+pub fn alarm_key(t: NaiveDateTime) -> String {
+    use chrono::Timelike;
+    crate::recurrence::format_timestamp(t.with_nanosecond(0).unwrap_or(t))
 }
 
 /// A phone item a pass left alone, and why ("needs a date", "needs a title").
@@ -285,9 +274,6 @@ pub const PAUSED_EMPTY_FETCH: &str = "empty_fetch";
 
 /// Emitted (no payload) when the sync status changes; Settings re-reads it.
 pub const STATUS_EVENT: &str = "apple-sync-status";
-/// Emitted (no payload) when todos changed outside the frontend's own calls (sync); the
-/// todos board, Today and TodoModal re-read on it.
-pub const TODOS_CHANGED_EVENT: &str = "todos-changed";
 
 #[cfg(test)]
 mod tests {
@@ -305,13 +291,15 @@ mod tests {
     }
 
     #[test]
-    fn debug_builds_use_the_dev_lists() {
+    fn debug_builds_use_the_dev_list() {
         if cfg!(debug_assertions) {
-            assert_eq!(ListKind::Reminders.list_name(), "Badger Dev Reminders");
-            assert_eq!(ListKind::Todos.list_name(), "Badger Dev Todos");
+            assert_eq!(list_name(), "Badger Dev");
+            assert_eq!(
+                old_list_names(),
+                ["Badger Dev Todos", "Badger Dev Reminders"]
+            );
         } else {
-            assert_eq!(ListKind::Reminders.list_name(), "Badger Reminders");
+            assert_eq!(list_name(), "Badger");
         }
-        assert_eq!(ListKind::Reminders.kind(), "reminder");
     }
 }

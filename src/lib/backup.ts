@@ -8,6 +8,8 @@ export interface RestorePreview {
   time_entries: number;
   notes: number;
   scripts: number;
+  /** null: a backup from before Tasks (no `tasks` field), so restoring keeps the current tasks. */
+  tasks: number | null;
 }
 
 /** Counts a backup's rows; null when the text is not JSON. Missing arrays count 0 (older backups). */
@@ -18,10 +20,12 @@ export function parseBackupPreview(jsonText: string): RestorePreview | null {
   } catch {
     return null;
   }
+  const field = (key: string) => (data !== null && typeof data === 'object' ? (data as Record<string, unknown>)[key] : undefined);
   const count = (key: string) => {
-    const value = data !== null && typeof data === 'object' ? (data as Record<string, unknown>)[key] : undefined;
+    const value = field(key);
     return Array.isArray(value) ? value.length : 0;
   };
+  const tasks = field('tasks');
   return {
     customers: count('customers'),
     projects: count('projects'),
@@ -29,7 +33,27 @@ export function parseBackupPreview(jsonText: string): RestorePreview | null {
     time_entries: count('time_entries'),
     notes: count('notes'),
     scripts: count('scripts'),
+    tasks: Array.isArray(tasks) ? tasks.length : null,
   };
+}
+
+/** What `restore_data` reports (src/lib/types.ts `RestoreReport`). */
+export interface RestoreOutcome {
+  kept_tasks: boolean;
+  skipped_todos: number;
+  skipped_reminders: number;
+}
+
+/** The extra line after a restore: a backup from before Tasks kept the current tasks. '' otherwise. */
+export function restoreNotice(report: RestoreOutcome | null): string {
+  if (!report?.kept_tasks) return '';
+  const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`;
+  const skipped = [
+    report.skipped_todos ? plural(report.skipped_todos, 'todo') : '',
+    report.skipped_reminders ? plural(report.skipped_reminders, 'reminder') : '',
+  ].filter(Boolean);
+  const tail = skipped.length ? ` Its ${skipped.join(' and ')} were not restored; recreate them as tasks if you need them.` : '';
+  return `This backup is from before Tasks, so your current tasks were kept.${tail}`;
 }
 
 /** `age1abcdef…uvwxyz`: enough of a public key to recognise it. */

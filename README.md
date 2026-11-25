@@ -1,8 +1,8 @@
 # Badger
 
-**Your time, your todos, your notes — on your Mac, and nowhere else.**
+**Your time, your tasks, your notes — on your Mac, and nowhere else.**
 
-Badger is a fast, keyboard-friendly desktop app for consultants and developers who bill by the hour. Log time against customers, projects, and issues; run your week from a kanban board; keep markdown notes next to the work; and get a month-end report you can paste straight into an invoice.
+Badger is a fast, keyboard-friendly desktop app for consultants and developers who bill by the hour. Log time against customers, projects, and issues; track tasks with reminders that follow you to your iPhone; keep markdown notes next to the work; and get a month-end report you can paste straight into an invoice.
 
 No account, no cloud, no subscription, no telemetry. Everything lives in one SQLite file in your home directory.
 
@@ -12,7 +12,7 @@ No account, no cloud, no subscription, no telemetry. Everything lives in one SQL
 
 - **Local-first, private by default.** All data is stored in `~/.badger/badger.db` on your machine. The app makes no network calls for your data and works fully offline.
 - **Yours to keep.** Plain SQLite plus one-click export to a gzipped JSON file. Automatic daily backups to a folder you choose (iCloud Drive or Dropbox for off-site copies), optionally encrypted with `age`.
-- **Built for the workflow, not the database.** A Today agenda, a drag-and-drop board, and a ⌘K command palette replace form-filling.
+- **Built for the workflow, not the database.** A Today agenda, a date-grouped task list, and a ⌘K command palette replace form-filling.
 - **Native and lightweight.** A Tauri 2 app with a Rust backend: small binary, quick start, low memory.
 - **Light and dark.** Follows the system appearance, or pick one.
 
@@ -20,7 +20,7 @@ No account, no cloud, no subscription, no telemetry. Everything lives in one SQL
 
 ### Today — start the day here
 
-Overdue and due-today todos, today's reminders, what's in progress, hours logged today, and a Mon–Sun strip showing progress against your daily target. Complete a todo or log time on it in one click. At the bottom, write a handover: a short markdown note to your future self at the end of the day (⌘K *Write handover*). It shows up above the editor on your next working day (Monday after a weekend), where you can tick its tasks, dismiss it, or page back through older ones.
+Overdue and due-today tasks (and any with a reminder that went off), hours logged today, and a Mon–Sun strip showing progress against your daily target. Complete a task or log time on it in one click. At the bottom, write a handover: a short markdown note to your future self at the end of the day (⌘K *Write handover*). It shows up above the editor on your next working day (Monday after a weekend), where you can tick its tasks, dismiss it, or page back through older ones.
 
 | Light | Dark |
 | --- | --- |
@@ -28,7 +28,7 @@ Overdue and due-today todos, today's reminders, what's in progress, hours logged
 
 ### Command palette — do anything with ⌘K
 
-Log time, create a todo or note, set a reminder, jump to any page, or search notes without touching the mouse. It remembers your last project and issue, so a time entry is a few keystrokes. The shortcut is configurable.
+Log time, create a task or note, jump to any page, or search notes without touching the mouse. It remembers your last project and issue, so a time entry is a few keystrokes. The shortcut is configurable.
 
 ![Command palette](docs/screenshots/palette.png)
 
@@ -38,25 +38,21 @@ Add, edit, and delete entries in place, with pickers for customer → project �
 
 ![Timesheet](docs/screenshots/timesheet.png)
 
-### Todos — a kanban board, not a table
+### Tasks — shaped like an Apple reminder
 
-Drag cards between *Not started*, *In progress*, and *Done*. Due dates turn amber for today and red when overdue. Link a todo to an issue (or create the issue from the card) so it's one click from logging time. A bell on the card shows its next reminder; set one with *Remind me…* in the card's editor.
+A task is open or done, with an optional due date and time and up to ten reminders (at the due time, 15 minutes, an hour, a day or a week before, or at a time you pick). Tasks are grouped Overdue, Today, Upcoming and No date, with a folded *Completed* group. Type in the quick-add box (`Call Anna fri 14:00 #Contoso`, English or Swedish) and a live preview shows the due date, the reminder and the issue it will link to; ⌘K *New task* does the same from anywhere. Tasks can repeat daily, on weekdays, weekly or monthly, and a repeating task moves to its next date when you complete it. Link a task to an issue (or create the issue from it) so it's one click from logging time, or to a note. Completing a task plays a short animation and offers *Undo* for a few seconds.
 
-| Light | Dark |
-| --- | --- |
-| ![Todos](docs/screenshots/todos.png) | ![Todos, dark](docs/screenshots/todos-dark.png) |
+When a reminder goes off you get a native macOS notification, or an in-app toast with *Done* and *Snooze* while the app is in front. Overdue tasks are counted on the nav tab and the dock badge, and reminders that came due while the app was closed show up on the next launch.
 
-### Reminders — Slack-style, from anywhere
-
-One-off or recurring reminders: daily, weekdays, weekly, or monthly. Type `remind call Anna in 20 min` (or Swedish `påminn…`) in ⌘K and a live preview shows exactly when it will fire, or set one from a todo or a note. When it's due you get a native macOS notification, or an in-app toast with *Done* and *Snooze* while the app is in front. Overdue reminders are counted on the nav tab and the dock badge, and ones that came due while the app was closed show up on the next launch.
+Optionally, turn on sync in Settings › Preferences › Apple Reminders: open tasks (except repeating ones and any you mark *Keep off phone*) sync both ways with one Reminders list, "Badger", so iCloud carries them and their alerts to your iPhone.
 
 | Light | Dark |
 | --- | --- |
-| ![Reminders](docs/screenshots/reminders.png) | ![Reminders, dark](docs/screenshots/reminders-dark.png) |
+| ![Tasks](docs/screenshots/tasks.png) | ![Tasks, dark](docs/screenshots/tasks-dark.png) |
 
 ### Notes — markdown with live preview
 
-Notes with a live-preview editor: headings, task lists, quotes, and syntax-highlighted code render as you type. Organise them in nested folders with drag and drop or a right-click menu, link notes with `[[wikilinks]]` and see what links back, and tag them with `#tags` — including your customers, projects, issues, and todos, which show up as live chips. Pin the important ones, search (or filter by `#tag`) everything with ranked full-text search and highlighted matches, optionally adding meaning-based results from a downloaded on-device model (Settings › Preferences), switch to a clean read view, and copy a note as HTML for email or chat. Edits save automatically, including on quit.
+Notes with a live-preview editor: headings, task lists, quotes, and syntax-highlighted code render as you type. Organise them in nested folders with drag and drop or a right-click menu, link notes with `[[wikilinks]]` and see what links back, and tag them with `#tags` — including your customers, projects, issues, and tasks, which show up as live chips. Pin the important ones, search (or filter by `#tag`) everything with ranked full-text search and highlighted matches, optionally adding meaning-based results from a downloaded on-device model (Settings › Preferences), switch to a clean read view, and copy a note as HTML for email or chat. Edits save automatically, including on quit.
 
 | Light | Dark |
 | --- | --- |

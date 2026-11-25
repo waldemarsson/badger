@@ -4,7 +4,7 @@ use crate::note_links::{customer_slug, slug};
 use crate::AppError;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Pool, Sqlite};
-use tauri::State;
+use tauri::{AppHandle, State};
 
 /// A project row returned to the frontend.
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -246,15 +246,27 @@ pub async fn create_project(
 pub async fn update_project(
     id: i64,
     name: String,
+    app: AppHandle,
     pool: State<'_, Pool<Sqlite>>,
     semantic: State<'_, crate::semantic::SemanticState>,
 ) -> Result<Project, AppError> {
-    update_project_and_queue(id, &name, pool.inner(), semantic.inner()).await
+    let project = update_project_and_queue(id, &name, pool.inner(), semantic.inner()).await?;
+    // Tasks show the project name of their issue.
+    crate::task_scheduler::tasks_refreshed(&app, pool.inner()).await;
+    Ok(project)
 }
 
 #[tauri::command]
-pub async fn delete_project(id: i64, pool: State<'_, Pool<Sqlite>>) -> Result<(), AppError> {
-    inner_delete_project(id, pool.inner()).await
+pub async fn delete_project(
+    id: i64,
+    app: AppHandle,
+    pool: State<'_, Pool<Sqlite>>,
+) -> Result<(), AppError> {
+    inner_delete_project(id, pool.inner()).await?;
+    // Its issues are gone, so tasks linked to them were unlinked (SET NULL). Not a sync
+    // change: issue links never reach the phone.
+    crate::task_scheduler::tasks_refreshed(&app, pool.inner()).await;
+    Ok(())
 }
 
 #[tauri::command]

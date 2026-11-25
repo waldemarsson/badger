@@ -3,7 +3,7 @@ use crate::note_links::customer_slug;
 use crate::AppError;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Pool, Sqlite, SqliteConnection};
-use tauri::State;
+use tauri::{AppHandle, State};
 
 /// A customer row returned to the frontend.
 /// SQL aliases map PascalCase schema columns to snake_case fields — no #[sqlx(rename)] needed.
@@ -223,15 +223,27 @@ pub async fn create_customer(
 pub async fn update_customer(
     id: i64,
     name: String,
+    app: AppHandle,
     pool: State<'_, Pool<Sqlite>>,
     semantic: State<'_, crate::semantic::SemanticState>,
 ) -> Result<Customer, AppError> {
-    update_customer_and_queue(id, &name, pool.inner(), semantic.inner()).await
+    let customer = update_customer_and_queue(id, &name, pool.inner(), semantic.inner()).await?;
+    // Tasks show the customer name of their issue.
+    crate::task_scheduler::tasks_refreshed(&app, pool.inner()).await;
+    Ok(customer)
 }
 
 #[tauri::command]
-pub async fn delete_customer(id: i64, pool: State<'_, Pool<Sqlite>>) -> Result<(), AppError> {
-    inner_delete_customer(id, pool.inner()).await
+pub async fn delete_customer(
+    id: i64,
+    app: AppHandle,
+    pool: State<'_, Pool<Sqlite>>,
+) -> Result<(), AppError> {
+    inner_delete_customer(id, pool.inner()).await?;
+    // Its issues are gone, so tasks linked to them were unlinked (SET NULL). Not a sync
+    // change: issue links never reach the phone.
+    crate::task_scheduler::tasks_refreshed(&app, pool.inner()).await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -461,29 +473,29 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn test_reserved_customer_slugs_get_no_tag() {
         let pool = crate::test_db().await;
-        // `issue` / `todo` are chip namespaces: such customers are allowed but untagged,
+        // `issue` / `task` are chip namespaces: such customers are allowed but untagged,
         // so they never clash with each other.
         let issue = inner_create_customer("Issue", &pool).await.unwrap();
         inner_create_customer("ISSUE!", &pool).await.unwrap();
         let acme = inner_create_customer("Acme", &pool).await.unwrap();
-        let n = tagged_note("Tagged", "#issue/12 #issue #acme #acme/web #todo/3", &pool).await;
+        let n = tagged_note("Tagged", "#issue/12 #issue #acme #acme/web #task/3", &pool).await;
         inner_update_customer(issue.id, "X", &pool).await.unwrap();
         assert_eq!(
             note_body(n, &pool).await.0,
-            "#issue/12 #issue #acme #acme/web #todo/3",
+            "#issue/12 #issue #acme #acme/web #task/3",
             "renaming from a reserved slug rewrites nothing"
         );
-        inner_update_customer(acme.id, "Todo", &pool).await.unwrap();
+        inner_update_customer(acme.id, "Task", &pool).await.unwrap();
         assert_eq!(
             note_body(n, &pool).await.0,
-            "#issue/12 #issue #acme #acme/web #todo/3",
+            "#issue/12 #issue #acme #acme/web #task/3",
             "renaming to a reserved slug rewrites nothing"
         );
         inner_update_customer(acme.id, "Acme", &pool).await.unwrap();
         assert_eq!(
             note_body(n, &pool).await.0,
-            "#issue/12 #issue #acme #acme/web #todo/3",
-            "Todo had no tag to rename from"
+            "#issue/12 #issue #acme #acme/web #task/3",
+            "Task had no tag to rename from"
         );
     }
 

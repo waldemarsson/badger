@@ -1,6 +1,6 @@
 use crate::AppError;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Pool, Sqlite};
+use sqlx::{FromRow, Pool, Sqlite, SqliteConnection};
 use tauri::State;
 
 /// SQL aliases: ProjectId→project_id, Title→title
@@ -58,6 +58,16 @@ pub async fn inner_resolve_issue(
     identifier: &str,
     pool: &Pool<Sqlite>,
 ) -> Result<i64, AppError> {
+    let mut conn = pool.acquire().await?;
+    resolve_issue_in(project_id, identifier, &mut conn).await
+}
+
+/// [`inner_resolve_issue`] on a caller's connection or transaction.
+pub(crate) async fn resolve_issue_in(
+    project_id: i64,
+    identifier: &str,
+    conn: &mut SqliteConnection,
+) -> Result<i64, AppError> {
     if identifier.trim().is_empty() {
         return Err(AppError::Custom("Issue is required".to_string()));
     }
@@ -66,7 +76,7 @@ pub async fn inner_resolve_issue(
         sqlx::query_as("SELECT id FROM issues WHERE Title = ? AND ProjectId = ?")
             .bind(identifier.trim())
             .bind(project_id)
-            .fetch_optional(pool)
+            .fetch_optional(&mut *conn)
             .await?;
 
     if let Some((id,)) = found {
@@ -77,7 +87,7 @@ pub async fn inner_resolve_issue(
         sqlx::query_as("INSERT INTO issues (ProjectId, Title) VALUES (?, ?) RETURNING id")
             .bind(project_id)
             .bind(identifier.trim())
-            .fetch_one(pool)
+            .fetch_one(conn)
             .await?;
 
     Ok(row.0)

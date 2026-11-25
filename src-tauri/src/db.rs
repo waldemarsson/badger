@@ -6,10 +6,44 @@ use sqlx::{
 use std::cmp::Ordering;
 use std::path::Path;
 
+/// DDL of the Apple Reminders pairing table, shared by `SCHEMA_SQL` and the tasks migration
+/// (which drops and recreates it).
+///
+/// One Badger task ↔ one EventKit item in the "Badger" list, with the synced fields as each
+/// side looked after the last sync (JSON), for the three-way merge. PhoneAlarms is the JSON
+/// list of absolute alarm times last pushed (past ones stay, so they aren't re-pushed); the
+/// native notification skip checks a firing reminder's time against it. MissedPasses counts
+/// consecutive passes the open phone item was missing from its list; a phone delete applies
+/// to Badger on the second, so a one-pass glitch deletes nothing. No foreign keys on purpose:
+/// a missing task means it was deleted in Badger, and restore's DELETEs must not cascade
+/// pairings away. Device-local: not part of backups.
+macro_rules! apple_sync_items_ddl {
+    () => {
+        "CREATE TABLE IF NOT EXISTS apple_sync_items (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    BadgerId     INTEGER NOT NULL,
+    EkId         TEXT    NOT NULL,
+    ExternalId   TEXT,
+    BadgerSnap   TEXT    NOT NULL,
+    PhoneSnap    TEXT    NOT NULL,
+    PhoneAlarms  TEXT    NOT NULL DEFAULT '[]',
+    SyncedAt     TEXT    NOT NULL,
+    MissedPasses INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (BadgerId),
+    UNIQUE (EkId)
+);
+"
+    };
+}
+
+/// [`apple_sync_items_ddl!`] as a constant.
+pub const APPLE_SYNC_ITEMS_DDL: &str = apple_sync_items_ddl!();
+
 /// Full schema DDL.  Uses PRAGMA lines so in-memory test pools also get FK enforcement.
 /// Execute via `sqlx::raw_sql()` — `sqlx::query()` only runs the first statement in a
 /// multi-statement string.
-pub const SCHEMA_SQL: &str = "
+pub const SCHEMA_SQL: &str = concat!(
+    "
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
@@ -38,20 +72,6 @@ CREATE TABLE IF NOT EXISTS time_entries (
     Date      TEXT    NOT NULL,
     Hours     REAL    NOT NULL,
     Notes     TEXT
-);
-
-CREATE TABLE IF NOT EXISTS todos (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    Title     TEXT    NOT NULL,
-    Notes     TEXT,
-    Status    TEXT    NOT NULL DEFAULT 'not_started'
-              CHECK (Status IN ('not_started', 'in_progress', 'done')),
-    Position  INTEGER NOT NULL DEFAULT 0,
-    DueDate   TEXT,
-    CreatedAt TEXT    NOT NULL,
-    IssueId   INTEGER REFERENCES issues(id) ON DELETE SET NULL,
-    -- Keep off phone: never synced to Apple Reminders. Same as MAC_ONLY_COLUMN.
-    MacOnly   INTEGER NOT NULL DEFAULT 0 CHECK (MacOnly IN (0, 1))
 );
 
 CREATE TABLE IF NOT EXISTS travel (
@@ -90,30 +110,51 @@ CREATE TABLE IF NOT EXISTS notes (
     Kind      TEXT    NOT NULL DEFAULT 'markdown' CHECK (Kind IN ('markdown', 'json'))
 );
 
--- Reminders: the current occurrence (RemindAt, naive local time), the recurrence anchor
--- (TimeOfDay HH:MM) and rule, an optional link to one todo or one note, and the state.
-CREATE TABLE IF NOT EXISTS reminders (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    Text      TEXT    NOT NULL,
-    RemindAt  TEXT    NOT NULL,
-    TimeOfDay TEXT    NOT NULL,
-    Repeat    TEXT    NOT NULL DEFAULT 'none'
-              CHECK (Repeat IN ('none', 'daily', 'weekdays', 'weekly', 'monthly')),
-    Weekdays  TEXT    NOT NULL DEFAULT '',
-    MonthDay  INTEGER CHECK (MonthDay IS NULL OR MonthDay BETWEEN 1 AND 31),
-    State     TEXT    NOT NULL DEFAULT 'pending'
-              CHECK (State IN ('pending', 'fired', 'done')),
-    TodoId    INTEGER REFERENCES todos(id) ON DELETE CASCADE,
-    NoteId    INTEGER REFERENCES notes(id) ON DELETE CASCADE,
-    CreatedAt TEXT    NOT NULL,
-    UpdatedAt TEXT    NOT NULL,
-    -- Keep off phone (a reminder of a Mac-only todo is Mac-only too). Same as MAC_ONLY_COLUMN.
-    MacOnly   INTEGER NOT NULL DEFAULT 0 CHECK (MacOnly IN (0, 1)),
-    CHECK (TodoId IS NULL OR NoteId IS NULL)
+-- Tasks: open or done, an optional due date (and time), an optional repeat rule (needs a due
+-- date; Mac-only: never synced), optional links to one issue and one note (deleting either
+-- unlinks the task). Times are naive local wall-clock strings like everywhere else.
+CREATE TABLE IF NOT EXISTS tasks (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    Title       TEXT    NOT NULL,
+    Notes       TEXT,
+    Done        INTEGER NOT NULL DEFAULT 0 CHECK (Done IN (0, 1)),
+    CompletedAt TEXT,
+    -- YYYY-MM-DD, and HH:MM only together with a date.
+    DueDate     TEXT,
+    DueTime     TEXT,
+    Repeat      TEXT    NOT NULL DEFAULT 'none'
+                CHECK (Repeat IN ('none', 'daily', 'weekdays', 'weekly', 'monthly')),
+    Weekdays    TEXT    NOT NULL DEFAULT '',
+    MonthDay    INTEGER CHECK (MonthDay IS NULL OR MonthDay BETWEEN 1 AND 31),
+    IssueId     INTEGER REFERENCES issues(id) ON DELETE SET NULL,
+    NoteId      INTEGER REFERENCES notes(id) ON DELETE SET NULL,
+    -- Keep off phone: never synced to Apple Reminders.
+    MacOnly     INTEGER NOT NULL DEFAULT 0 CHECK (MacOnly IN (0, 1)),
+    CreatedAt   TEXT    NOT NULL,
+    UpdatedAt   TEXT    NOT NULL,
+    CHECK (DueTime IS NULL OR DueDate IS NOT NULL),
+    CHECK (Repeat = 'none' OR DueDate IS NOT NULL)
 );
-CREATE INDEX IF NOT EXISTS idx_reminders_state ON reminders(State, RemindAt);
-CREATE INDEX IF NOT EXISTS idx_reminders_todo ON reminders(TodoId);
-CREATE INDEX IF NOT EXISTS idx_reminders_note ON reminders(NoteId);
+
+-- A task's reminders: relative to its due (OffsetMinutes before it; a date-only due counts
+-- from 09:00) or at a custom time (At). State is pending → sent (notified) → dismissed, and
+-- applies to the fire time in FiredFor: when edits move that time, the row re-arms (future)
+-- or is dismissed silently (past). SnoozedUntil moves only this reminder. Fired/snoozed state
+-- is Badger-only (not synced).
+CREATE TABLE IF NOT EXISTS task_reminders (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    TaskId        INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    OffsetMinutes INTEGER CHECK (OffsetMinutes IS NULL OR OffsetMinutes >= 0),
+    At            TEXT,
+    State         TEXT    NOT NULL DEFAULT 'pending'
+                  CHECK (State IN ('pending', 'sent', 'dismissed')),
+    SnoozedUntil  TEXT,
+    FiredFor      TEXT,
+    CreatedAt     TEXT    NOT NULL,
+    CHECK ((OffsetMinutes IS NULL) != (At IS NULL))
+);
+-- A new table, so the index never meets an older shape.
+CREATE INDEX IF NOT EXISTS idx_task_reminders_task ON task_reminders(TaskId);
 
 -- The scratchpad: a single row (id 1), written on first save. Not a note: it stays out of
 -- notes search, the link index and the semantic index.
@@ -176,28 +217,9 @@ CREATE TABLE IF NOT EXISTS note_embeddings (
     PRIMARY KEY (NoteId, ChunkIndex)
 );
 
--- Apple Reminders sync pairings: one Badger reminder or todo ↔ one EventKit item, with the
--- synced fields as each side looked after the last sync (JSON), for the three-way merge.
--- PhoneDue is the pushed due time of a reminder (the native notification skip compares it).
--- MissedPasses counts consecutive passes the open phone item was missing from its list; a
--- phone delete applies to Badger on the second, so a one-pass glitch deletes nothing.
--- No foreign keys on purpose: a missing Badger row means it was deleted in Badger, and restore's
--- DELETEs must not cascade pairings away. Device-local: not part of backups.
-CREATE TABLE IF NOT EXISTS apple_sync_items (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    Kind        TEXT    NOT NULL CHECK (Kind IN ('reminder', 'todo')),
-    BadgerId    INTEGER NOT NULL,
-    EkId        TEXT    NOT NULL,
-    ExternalId  TEXT,
-    BadgerSnap  TEXT    NOT NULL,
-    PhoneSnap   TEXT    NOT NULL,
-    PhoneDue    TEXT,
-    SyncedAt    TEXT    NOT NULL,
-    MissedPasses INTEGER NOT NULL DEFAULT 0,
-    UNIQUE (Kind, BadgerId),
-    UNIQUE (EkId)
+",
+    apple_sync_items_ddl!()
 );
-";
 
 /// Opens (or creates) the SQLite database at `db_path` with WAL mode and FK enforcement,
 /// then runs `SCHEMA_SQL` to create all tables idempotently.
@@ -220,39 +242,85 @@ pub async fn init_db(db_path: &Path) -> Result<Pool<Sqlite>, sqlx::Error> {
 
     // raw_sql handles multiple semicolon-separated statements (sqlx 0.8 feature)
     sqlx::raw_sql(SCHEMA_SQL).execute(&pool).await?;
-    migrate_todos_status(&pool).await?;
+    migrate_to_tasks(&pool).await?;
     migrate_issues_drop_external_id(&pool).await?;
     migrate_notes_position(&pool).await?;
     migrate_notes_kind(&pool).await?;
     migrate_scratchpad_kind(&pool).await?;
-    migrate_mac_only(&pool).await?;
     backfill_notes_fts(&pool).await?;
     backfill_note_refs(&pool).await?;
 
     Ok(pool)
 }
 
-/// Upgrades a `todos` table created with the early `Done` flag (no `Status`/`Position`).
-/// Idempotent: does nothing once `Status` exists.
-pub async fn migrate_todos_status(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
-    let columns: Vec<(String,)> = sqlx::query_as("SELECT name FROM pragma_table_info('todos')")
-        .fetch_all(pool)
+/// `app_settings` marker: the one-time switch from todos and reminders to tasks has run.
+pub const TASKS_MIGRATED_KEY: &str = "tasks_migrated";
+
+/// Apple Reminders sync settings the tasks migration clears: the two old list ids and the
+/// last pass's state. (`apple_sync_enabled` and the last sync time stay.)
+const CLEARED_SYNC_KEYS: [&str; 6] = [
+    crate::app_settings::LEGACY_APPLE_SYNC_REMINDERS_LIST_KEY,
+    crate::app_settings::LEGACY_APPLE_SYNC_TODOS_LIST_KEY,
+    crate::app_settings::APPLE_SYNC_PAUSED_KEY,
+    crate::app_settings::APPLE_SYNC_LAST_ERROR_KEY,
+    crate::app_settings::APPLE_SYNC_SKIPPED_KEY,
+    crate::app_settings::APPLE_SYNC_RESTORE_PENDING_KEY,
+];
+
+/// The one-time fresh start for tasks (no data migration): drops `reminders` (the FK child)
+/// and `todos`, recreates `apple_sync_items` empty in its single-kind shape, clears the old
+/// sync settings, and notes that the old phone lists can be deleted when sync had any.
+///
+/// Guarded by the [`TASKS_MIGRATED_KEY`] marker rather than by the old tables existing, so a
+/// downgrade (which recreates them) and a re-upgrade never wipe anything again. Runs right
+/// after `SCHEMA_SQL`, which has already created `tasks` and `task_reminders`. Fresh
+/// databases run it too and just get the marker.
+pub async fn migrate_to_tasks(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
+    let done: Option<String> = sqlx::query_scalar("SELECT Value FROM app_settings WHERE Key = ?")
+        .bind(TASKS_MIGRATED_KEY)
+        .fetch_optional(pool)
         .await?;
-    if columns.iter().any(|(name,)| name == "Status") {
+    if done.is_some() {
         return Ok(());
     }
 
     let mut tx = pool.begin().await?;
+    let (old_lists,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM app_settings WHERE Key IN (?, ?) AND TRIM(Value) != ''",
+    )
+    .bind(crate::app_settings::LEGACY_APPLE_SYNC_REMINDERS_LIST_KEY)
+    .bind(crate::app_settings::LEGACY_APPLE_SYNC_TODOS_LIST_KEY)
+    .fetch_one(&mut *tx)
+    .await?;
     sqlx::raw_sql(
-        "ALTER TABLE todos ADD COLUMN Status TEXT NOT NULL DEFAULT 'not_started' \
-             CHECK (Status IN ('not_started', 'in_progress', 'done'));
-         ALTER TABLE todos ADD COLUMN Position INTEGER NOT NULL DEFAULT 0;
-         UPDATE todos SET Status = CASE WHEN Done = 1 THEN 'done' ELSE 'not_started' END,
-                          Position = id;
-         ALTER TABLE todos DROP COLUMN Done;",
+        "DROP TABLE IF EXISTS reminders;
+         DROP TABLE IF EXISTS todos;
+         DROP TABLE IF EXISTS apple_sync_items;",
     )
     .execute(&mut *tx)
     .await?;
+    sqlx::raw_sql(APPLE_SYNC_ITEMS_DDL)
+        .execute(&mut *tx)
+        .await?;
+    for key in CLEARED_SYNC_KEYS {
+        sqlx::query("DELETE FROM app_settings WHERE Key = ?")
+            .bind(key)
+            .execute(&mut *tx)
+            .await?;
+    }
+    if old_lists > 0 {
+        sqlx::query(
+            "INSERT INTO app_settings (Key, Value) VALUES (?, 'true')
+             ON CONFLICT(Key) DO UPDATE SET Value = excluded.Value",
+        )
+        .bind(crate::app_settings::APPLE_SYNC_OLD_LISTS_NOTE_KEY)
+        .execute(&mut *tx)
+        .await?;
+    }
+    sqlx::query("INSERT INTO app_settings (Key, Value) VALUES (?, '1')")
+        .bind(TASKS_MIGRATED_KEY)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(())
 }
@@ -324,30 +392,6 @@ pub async fn migrate_notes_kind(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> 
 /// Adds `scratchpad.Kind` to databases created before JSON notes. Idempotent.
 pub async fn migrate_scratchpad_kind(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
     add_kind_column(pool, "scratchpad").await
-}
-
-/// Column definition shared by the `MacOnly` migration (same as in `SCHEMA_SQL`).
-const MAC_ONLY_COLUMN: &str = "MacOnly INTEGER NOT NULL DEFAULT 0 CHECK (MacOnly IN (0, 1))";
-
-/// Adds `MacOnly` ("Keep off phone") to `todos` and `reminders` in databases created before
-/// it; existing rows stay synced. Idempotent: skips a table that has the column.
-pub async fn migrate_mac_only(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
-    for table in ["todos", "reminders"] {
-        let columns: Vec<(String,)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "SELECT name FROM pragma_table_info('{table}')"
-        )))
-        .fetch_all(pool)
-        .await?;
-        if columns.iter().any(|(name,)| name == "MacOnly") {
-            continue;
-        }
-        sqlx::query(sqlx::AssertSqlSafe(format!(
-            "ALTER TABLE {table} ADD COLUMN {MAC_ONLY_COLUMN}"
-        )))
-        .execute(pool)
-        .await?;
-    }
-    Ok(())
 }
 
 /// Numbers notes and folders densely (0..n per folder / parent) in the order the tree
@@ -535,7 +579,13 @@ mod tests {
             names.contains(&"time_entries"),
             "time_entries table missing"
         );
-        assert!(names.contains(&"todos"), "todos table missing");
+        assert!(names.contains(&"tasks"), "tasks table missing");
+        assert!(
+            names.contains(&"task_reminders"),
+            "task_reminders table missing"
+        );
+        assert!(!names.contains(&"todos"), "todos table is gone");
+        assert!(!names.contains(&"reminders"), "reminders table is gone");
         assert!(
             names.contains(&"app_settings"),
             "app_settings table missing"
@@ -555,33 +605,85 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_apple_sync_items_is_unique_per_badger_row_and_per_eventkit_id() {
+    async fn test_apple_sync_items_is_unique_per_task_and_per_eventkit_id() {
         let pool = crate::test_db().await;
-        let insert = |kind: &'static str, badger_id: i64, ek_id: &'static str| {
+        let insert = |badger_id: i64, ek_id: &'static str| {
             let pool = pool.clone();
             async move {
                 sqlx::query(
-                    "INSERT INTO apple_sync_items (Kind, BadgerId, EkId, BadgerSnap, PhoneSnap, SyncedAt) \
-                     VALUES (?, ?, ?, '{}', '{}', 'x')",
+                    "INSERT INTO apple_sync_items (BadgerId, EkId, BadgerSnap, PhoneSnap, SyncedAt) \
+                     VALUES (?, ?, '{}', '{}', 'x')",
                 )
-                .bind(kind)
                 .bind(badger_id)
                 .bind(ek_id)
                 .execute(&pool)
                 .await
             }
         };
-        insert("reminder", 1, "ek-1").await.unwrap();
-        // Same Badger id under the other kind is a different row.
-        insert("todo", 1, "ek-2").await.unwrap();
-        assert!(
-            insert("reminder", 1, "ek-3").await.is_err(),
-            "kind + id is unique"
-        );
-        assert!(insert("todo", 2, "ek-1").await.is_err(), "EkId is unique");
-        assert!(insert("note", 3, "ek-4").await.is_err(), "kind is checked");
-        // No foreign keys: a pairing may point at a Badger row that doesn't exist.
-        insert("todo", 999, "ek-5").await.unwrap();
+        insert(1, "ek-1").await.unwrap();
+        assert!(insert(1, "ek-2").await.is_err(), "one pairing per task");
+        assert!(insert(2, "ek-1").await.is_err(), "EkId is unique");
+        // No foreign keys: a pairing may point at a task that doesn't exist.
+        insert(999, "ek-5").await.unwrap();
+        let alarms: String =
+            sqlx::query_scalar("SELECT PhoneAlarms FROM apple_sync_items WHERE BadgerId = 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(alarms, "[]");
+    }
+
+    #[tokio::test]
+    async fn test_task_checks_and_links() {
+        let pool = crate::test_db().await;
+        sqlx::raw_sql(
+            "INSERT INTO customers (id, Name) VALUES (1, 'C');
+             INSERT INTO projects (id, CustomerId, Name) VALUES (1, 1, 'P');
+             INSERT INTO issues (id, ProjectId, Title) VALUES (1, 1, 'I');
+             INSERT INTO notes (id, Title, CreatedAt, UpdatedAt) VALUES (1, 'N', 'x', 'x');
+             INSERT INTO tasks (id, Title, IssueId, NoteId, CreatedAt, UpdatedAt)
+                 VALUES (1, 'T', 1, 1, 'x', 'x');
+             INSERT INTO task_reminders (TaskId, OffsetMinutes, CreatedAt) VALUES (1, 0, 'x');
+             INSERT INTO task_reminders (TaskId, At, CreatedAt) VALUES (1, '2026-11-20T09:00:00.000', 'x');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let bad = [
+            "INSERT INTO tasks (Title, DueTime, CreatedAt, UpdatedAt) VALUES ('t', '09:00', 'x', 'x')",
+            "INSERT INTO tasks (Title, Repeat, CreatedAt, UpdatedAt) VALUES ('t', 'daily', 'x', 'x')",
+            "INSERT INTO tasks (Title, Done, CreatedAt, UpdatedAt) VALUES ('t', 2, 'x', 'x')",
+            "INSERT INTO task_reminders (TaskId, CreatedAt) VALUES (1, 'x')",
+            "INSERT INTO task_reminders (TaskId, OffsetMinutes, At, CreatedAt) VALUES (1, 0, 'y', 'x')",
+            "INSERT INTO task_reminders (TaskId, OffsetMinutes, State, CreatedAt) VALUES (1, 0, 'fired', 'x')",
+            "INSERT INTO task_reminders (TaskId, OffsetMinutes, CreatedAt) VALUES (1, -5, 'x')",
+            "INSERT INTO task_reminders (TaskId, OffsetMinutes, CreatedAt) VALUES (42, 0, 'x')",
+        ];
+        for sql in bad {
+            assert!(sqlx::query(sql).execute(&pool).await.is_err(), "{sql}");
+        }
+
+        // Deleting the issue or the note unlinks the task; deleting the task deletes its
+        // reminders.
+        sqlx::raw_sql("DELETE FROM customers; DELETE FROM notes;")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let links: (Option<i64>, Option<i64>) =
+            sqlx::query_as("SELECT IssueId, NoteId FROM tasks WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(links, (None, None));
+        sqlx::query("DELETE FROM tasks")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM task_reminders")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(left, 0);
     }
 
     async fn object_names(pool: &sqlx::SqlitePool, kind: &str) -> Vec<String> {
@@ -914,46 +1016,6 @@ mod tests {
         assert_eq!(notes, vec![(1, None), (2, Some(2))]);
     }
 
-    #[tokio::test]
-    async fn test_migrate_todos_from_done_flag() {
-        use sqlx::sqlite::SqlitePoolOptions;
-        let pool = SqlitePoolOptions::new()
-            .connect("sqlite::memory:")
-            .await
-            .unwrap();
-        sqlx::raw_sql(
-            "CREATE TABLE todos (id INTEGER PRIMARY KEY AUTOINCREMENT, Title TEXT NOT NULL,
-                 Notes TEXT, Done INTEGER NOT NULL DEFAULT 0, DueDate TEXT,
-                 CreatedAt TEXT NOT NULL, IssueId INTEGER);
-             INSERT INTO todos (Title, Done, CreatedAt) VALUES ('open', 0, 'x'), ('closed', 1, 'x');",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        super::migrate_todos_status(&pool).await.unwrap();
-        super::migrate_todos_status(&pool).await.unwrap(); // idempotent
-
-        let rows: Vec<(String, String, i64)> =
-            sqlx::query_as("SELECT Title, Status, Position FROM todos ORDER BY id")
-                .fetch_all(&pool)
-                .await
-                .unwrap();
-        assert_eq!(
-            rows,
-            vec![
-                ("open".into(), "not_started".into(), 1),
-                ("closed".into(), "done".into(), 2)
-            ]
-        );
-        let done_col: (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM pragma_table_info('todos') WHERE name = 'Done'")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(done_col.0, 0, "Done column must be dropped");
-    }
-
     #[test]
     fn folder_names_compare_case_insensitively_naturally_and_swedish() {
         let mut names = vec![
@@ -1200,108 +1262,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_migrate_mac_only_adds_the_flag_to_todos_and_reminders() {
-        use sqlx::sqlite::SqlitePoolOptions;
-        let pool = SqlitePoolOptions::new()
-            .connect("sqlite::memory:")
-            .await
-            .unwrap();
-        // Old shape: neither table has MacOnly.
-        sqlx::raw_sql(
-            "CREATE TABLE todos (id INTEGER PRIMARY KEY AUTOINCREMENT, Title TEXT NOT NULL,
-                 Notes TEXT, Status TEXT NOT NULL DEFAULT 'not_started',
-                 Position INTEGER NOT NULL DEFAULT 0, DueDate TEXT, CreatedAt TEXT NOT NULL,
-                 IssueId INTEGER);
-             CREATE TABLE reminders (id INTEGER PRIMARY KEY AUTOINCREMENT, Text TEXT NOT NULL,
-                 RemindAt TEXT NOT NULL, TimeOfDay TEXT NOT NULL,
-                 Repeat TEXT NOT NULL DEFAULT 'none', Weekdays TEXT NOT NULL DEFAULT '',
-                 MonthDay INTEGER, State TEXT NOT NULL DEFAULT 'pending', TodoId INTEGER,
-                 NoteId INTEGER, CreatedAt TEXT NOT NULL, UpdatedAt TEXT NOT NULL);
-             INSERT INTO todos (Title, CreatedAt) VALUES ('Old todo', 'x');
-             INSERT INTO reminders (Text, RemindAt, TimeOfDay, CreatedAt, UpdatedAt)
-                 VALUES ('Old reminder', '2026-11-09T09:00:00.000', '09:00', 'x', 'x');",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        for _ in 0..2 {
-            // second run is a no-op
-            super::migrate_mac_only(&pool).await.unwrap();
-        }
-        for table in ["todos", "reminders"] {
-            let flags: Vec<(i64,)> =
-                sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT MacOnly FROM {table}")))
-                    .fetch_all(&pool)
-                    .await
-                    .unwrap();
-            assert_eq!(flags, vec![(0,)], "{table}: existing rows stay synced");
-            sqlx::query(sqlx::AssertSqlSafe(format!(
-                "UPDATE {table} SET MacOnly = 1"
-            )))
-            .execute(&pool)
-            .await
-            .unwrap();
-            assert!(
-                sqlx::query(sqlx::AssertSqlSafe(format!(
-                    "UPDATE {table} SET MacOnly = 2"
-                )))
-                .execute(&pool)
-                .await
-                .is_err(),
-                "{table}: only 0 or 1"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn test_init_db_migrates_todos_and_reminders_without_mac_only() {
-        let db = TempDb::new("pre-mac-only");
-        {
-            use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-            let opts = SqliteConnectOptions::new()
-                .filename(&db.0)
-                .create_if_missing(true);
-            let pool = SqlitePoolOptions::new().connect_with(opts).await.unwrap();
-            let todo_line = ",\n    -- Keep off phone: never synced to Apple Reminders. Same as MAC_ONLY_COLUMN.\n    MacOnly   INTEGER NOT NULL DEFAULT 0 CHECK (MacOnly IN (0, 1))";
-            let reminder_line = "\n    -- Keep off phone (a reminder of a Mac-only todo is Mac-only too). Same as MAC_ONLY_COLUMN.\n    MacOnly   INTEGER NOT NULL DEFAULT 0 CHECK (MacOnly IN (0, 1)),";
-            let old_schema = super::SCHEMA_SQL
-                .replace(todo_line, "")
-                .replace(reminder_line, "");
-            assert_eq!(
-                old_schema.matches("MacOnly").count(),
-                0,
-                "old shape must drop both MacOnly columns"
-            );
-            sqlx::raw_sql(sqlx::AssertSqlSafe(old_schema))
-                .execute(&pool)
-                .await
-                .unwrap();
-            sqlx::raw_sql(
-                "INSERT INTO todos (Title, CreatedAt) VALUES ('Old todo', 'x');
-                 INSERT INTO reminders (Text, RemindAt, TimeOfDay, TodoId, CreatedAt, UpdatedAt)
-                     VALUES ('Old reminder', '2026-11-09T09:00:00.000', '09:00', 1, 'x', 'x');",
-            )
-            .execute(&pool)
-            .await
-            .unwrap();
-            pool.close().await;
-        }
-        for _ in 0..2 {
-            let pool = super::init_db(&db.0).await.unwrap();
-            let todo = crate::commands::todos::inner_get_todo(1, &pool)
-                .await
-                .unwrap();
-            assert_eq!((todo.title.as_str(), todo.mac_only), ("Old todo", false));
-            let reminder = crate::commands::reminders::inner_get_reminder(1, &pool)
-                .await
-                .unwrap();
-            assert_eq!((reminder.mac_only, reminder.todo_mac_only), (false, false));
-            pool.close().await;
-        }
-    }
-
-    #[tokio::test]
     async fn test_migrate_issues_drops_external_id() {
         use sqlx::sqlite::SqlitePoolOptions;
         let pool = SqlitePoolOptions::new()
@@ -1346,6 +1306,261 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(entries.0, 2, "time entries must survive the migration");
+    }
+
+    /// The schema a 1.6 database has: todos, reminders and the two-kind pairing table.
+    const OLD_TASK_TABLES: &str = "
+        CREATE TABLE todos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, Title TEXT NOT NULL, Notes TEXT,
+            Status TEXT NOT NULL DEFAULT 'not_started'
+                CHECK (Status IN ('not_started', 'in_progress', 'done')),
+            Position INTEGER NOT NULL DEFAULT 0, DueDate TEXT, CreatedAt TEXT NOT NULL,
+            IssueId INTEGER REFERENCES issues(id) ON DELETE SET NULL,
+            MacOnly INTEGER NOT NULL DEFAULT 0 CHECK (MacOnly IN (0, 1)));
+        CREATE TABLE reminders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, Text TEXT NOT NULL, RemindAt TEXT NOT NULL,
+            TimeOfDay TEXT NOT NULL, Repeat TEXT NOT NULL DEFAULT 'none',
+            Weekdays TEXT NOT NULL DEFAULT '', MonthDay INTEGER,
+            State TEXT NOT NULL DEFAULT 'pending',
+            TodoId INTEGER REFERENCES todos(id) ON DELETE CASCADE,
+            NoteId INTEGER REFERENCES notes(id) ON DELETE CASCADE,
+            CreatedAt TEXT NOT NULL, UpdatedAt TEXT NOT NULL,
+            MacOnly INTEGER NOT NULL DEFAULT 0, CHECK (TodoId IS NULL OR NoteId IS NULL));
+        CREATE INDEX idx_reminders_state ON reminders(State, RemindAt);
+        CREATE INDEX idx_reminders_todo ON reminders(TodoId);
+        CREATE TABLE apple_sync_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            Kind TEXT NOT NULL CHECK (Kind IN ('reminder', 'todo')),
+            BadgerId INTEGER NOT NULL, EkId TEXT NOT NULL, ExternalId TEXT,
+            BadgerSnap TEXT NOT NULL, PhoneSnap TEXT NOT NULL, PhoneDue TEXT,
+            SyncedAt TEXT NOT NULL, MissedPasses INTEGER NOT NULL DEFAULT 0,
+            UNIQUE (Kind, BadgerId), UNIQUE (EkId));
+    ";
+
+    /// Builds a 1.6-shaped database file: today's schema without the task tables, the old
+    /// tables with a linked todo, reminder and same-id pairings of both kinds, and the old
+    /// sync settings.
+    async fn build_pre_tasks_db(path: &std::path::Path, with_old_lists: bool) {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        let opts = SqliteConnectOptions::new()
+            .filename(path)
+            .create_if_missing(true)
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new().connect_with(opts).await.unwrap();
+        let new_tables = (
+            super::SCHEMA_SQL.find("-- Tasks: open or done").unwrap(),
+            super::SCHEMA_SQL
+                .find("-- The scratchpad: a single row")
+                .unwrap(),
+        );
+        let old_schema = format!(
+            "{}{}",
+            &super::SCHEMA_SQL[..new_tables.0],
+            &super::SCHEMA_SQL[new_tables.1..]
+        )
+        .replace(super::APPLE_SYNC_ITEMS_DDL, "");
+        sqlx::raw_sql(sqlx::AssertSqlSafe(old_schema))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(OLD_TASK_TABLES).execute(&pool).await.unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO customers (id, Name) VALUES (1, 'Kept');
+             INSERT INTO notes (id, Title, CreatedAt, UpdatedAt) VALUES (1, 'Kept note', 'x', 'x');
+             INSERT INTO todos (id, Title, CreatedAt) VALUES (1, 'Old todo', 'x');
+             INSERT INTO reminders (id, Text, RemindAt, TimeOfDay, TodoId, CreatedAt, UpdatedAt)
+                 VALUES (1, 'Old reminder', '2026-11-09T09:00:00.000', '09:00', 1, 'x', 'x');
+             INSERT INTO apple_sync_items (Kind, BadgerId, EkId, BadgerSnap, PhoneSnap, SyncedAt)
+                 VALUES ('todo', 1, 'ek-t', '{}', '{}', 'x'), ('reminder', 1, 'ek-r', '{}', '{}', 'x');
+             INSERT INTO app_settings (Key, Value) VALUES
+                 ('apple_sync_enabled', 'true'),
+                 ('apple_sync_last_sync_at', '2026-11-20T10:00:00.000'),
+                 ('apple_sync_paused', 'empty_fetch'),
+                 ('apple_sync_last_error', 'Boom'),
+                 ('apple_sync_skipped', '[]'),
+                 ('apple_sync_restore_pending', 'true'),
+                 ('theme', 'dark');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        if with_old_lists {
+            sqlx::raw_sql(
+                "INSERT INTO app_settings (Key, Value) VALUES
+                     ('apple_sync_reminders_list_id', 'cal-r'),
+                     ('apple_sync_todos_list_id', 'cal-t');",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        pool.close().await;
+    }
+
+    async fn settings(pool: &sqlx::SqlitePool) -> Vec<(String, String)> {
+        sqlx::query_as(
+            "SELECT Key, Value FROM app_settings WHERE Key != 'note_refs_version' ORDER BY Key",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    async fn columns(pool: &sqlx::SqlitePool, table: &str) -> Vec<String> {
+        sqlx::query_scalar("SELECT name FROM pragma_table_info(?) ORDER BY cid")
+            .bind(table)
+            .fetch_all(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_init_db_replaces_todos_and_reminders_with_tasks_once() {
+        let db = TempDb::new("pre-tasks");
+        build_pre_tasks_db(&db.0, true).await;
+
+        let pool = super::init_db(&db.0).await.unwrap();
+        let tables = object_names(&pool, "table").await;
+        assert!(!tables.contains(&"todos".to_string()), "{tables:?}");
+        assert!(!tables.contains(&"reminders".to_string()), "{tables:?}");
+        assert!(tables.contains(&"tasks".to_string()));
+        assert!(tables.contains(&"task_reminders".to_string()));
+        let indexes = object_names(&pool, "index").await;
+        assert!(
+            !indexes.iter().any(|i| i.starts_with("idx_reminders")),
+            "{indexes:?}"
+        );
+        assert!(
+            indexes.contains(&"idx_task_reminders_task".to_string()),
+            "{indexes:?}"
+        );
+        let pairings: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM apple_sync_items")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(pairings, 0, "pairings of both kinds are gone");
+        let cols = columns(&pool, "apple_sync_items").await;
+        assert!(!cols.contains(&"Kind".to_string()), "{cols:?}");
+        assert!(cols.contains(&"PhoneAlarms".to_string()), "{cols:?}");
+        let expected = vec![
+            ("apple_sync_enabled".to_string(), "true".to_string()),
+            (
+                "apple_sync_last_sync_at".to_string(),
+                "2026-11-20T10:00:00.000".to_string(),
+            ),
+            ("apple_sync_old_lists_note".to_string(), "true".to_string()),
+            ("tasks_migrated".to_string(), "1".to_string()),
+            ("theme".to_string(), "dark".to_string()),
+        ];
+        assert_eq!(settings(&pool).await, expected);
+        // Everything else is kept.
+        let kept: (String, String) =
+            sqlx::query_as("SELECT (SELECT Name FROM customers), (SELECT Title FROM notes)")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(kept, ("Kept".into(), "Kept note".into()));
+
+        // Second run is a no-op: new data survives.
+        sqlx::raw_sql(
+            "INSERT INTO tasks (id, Title, CreatedAt, UpdatedAt) VALUES (1, 'New', 'x', 'x');
+             INSERT INTO apple_sync_items (BadgerId, EkId, BadgerSnap, PhoneSnap, SyncedAt)
+                 VALUES (1, 'ek-1', '{}', '{}', 'x');
+             DELETE FROM app_settings WHERE Key = 'apple_sync_old_lists_note';",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let before = (
+            object_names(&pool, "table").await,
+            object_names(&pool, "index").await,
+        );
+        pool.close().await;
+        let pool = super::init_db(&db.0).await.unwrap();
+        let after = (
+            object_names(&pool, "table").await,
+            object_names(&pool, "index").await,
+        );
+        assert_eq!(before, after);
+        let kept: (i64, i64) = sqlx::query_as(
+            "SELECT (SELECT COUNT(*) FROM tasks), (SELECT COUNT(*) FROM apple_sync_items)",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(kept, (1, 1));
+        assert!(
+            !settings(&pool)
+                .await
+                .iter()
+                .any(|(k, _)| k == "apple_sync_old_lists_note"),
+            "a dismissed note stays dismissed"
+        );
+
+        // A downgrade recreates the old tables; re-upgrading never drops again.
+        sqlx::raw_sql(
+            "CREATE TABLE todos (id INTEGER PRIMARY KEY, Title TEXT NOT NULL);
+             INSERT INTO todos (id, Title) VALUES (7, 'From the old build');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+        let pool = super::init_db(&db.0).await.unwrap();
+        let (todos, tasks, pairings): (i64, i64, i64) = sqlx::query_as(
+            "SELECT (SELECT COUNT(*) FROM todos), (SELECT COUNT(*) FROM tasks),
+                    (SELECT COUNT(*) FROM apple_sync_items)",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!((todos, tasks, pairings), (1, 1, 1));
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn test_init_db_without_old_lists_sets_no_note() {
+        let db = TempDb::new("pre-tasks-no-lists");
+        build_pre_tasks_db(&db.0, false).await;
+        let pool = super::init_db(&db.0).await.unwrap();
+        let keys: Vec<String> = settings(&pool).await.into_iter().map(|(k, _)| k).collect();
+        assert!(
+            !keys.contains(&"apple_sync_old_lists_note".to_string()),
+            "{keys:?}"
+        );
+        assert!(keys.contains(&"tasks_migrated".to_string()));
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn test_fresh_db_gets_the_same_shape_as_a_migrated_one() {
+        let fresh = TempDb::new("fresh-tasks");
+        let pool = super::init_db(&fresh.0).await.unwrap();
+        let fresh_shape = (
+            object_names(&pool, "table").await,
+            object_names(&pool, "index").await,
+            columns(&pool, "apple_sync_items").await,
+            columns(&pool, "tasks").await,
+            columns(&pool, "task_reminders").await,
+        );
+        assert_eq!(
+            settings(&pool).await,
+            vec![("tasks_migrated".to_string(), "1".to_string())]
+        );
+        pool.close().await;
+
+        let old = TempDb::new("migrated-tasks");
+        build_pre_tasks_db(&old.0, true).await;
+        let pool = super::init_db(&old.0).await.unwrap();
+        let migrated_shape = (
+            object_names(&pool, "table").await,
+            object_names(&pool, "index").await,
+            columns(&pool, "apple_sync_items").await,
+            columns(&pool, "tasks").await,
+            columns(&pool, "task_reminders").await,
+        );
+        assert_eq!(fresh_shape, migrated_shape);
+        pool.close().await;
     }
 
     #[tokio::test]

@@ -1,6 +1,6 @@
 // Pure helpers for the Today page. Dates are local YYYY-MM-DD strings; callers pass
 // "today" in so these stay deterministic and testable.
-import type { TimeEntryRow, TodoRow } from '#lib/types.js';
+import type { TimeEntryRow } from '#lib/types.js';
 
 export interface DayTotal {
 	date: string; // YYYY-MM-DD
@@ -49,29 +49,6 @@ export function dailyTotals(entries: TimeEntryRow[], days: string[]): DayTotal[]
 /** Entries dated `todayIso`, in input order. */
 export function todayEntries(entries: TimeEntryRow[], todayIso: string): TimeEntryRow[] {
 	return entries.filter((e) => e.date === todayIso);
-}
-
-function isDueByToday(t: TodoRow, todayIso: string): boolean {
-	return t.status !== 'done' && t.due_date !== null && t.due_date <= todayIso;
-}
-
-/** Non-done todos due on or before today: by due date (overdue first), then board position. */
-export function needsAttention(todos: TodoRow[], todayIso: string): TodoRow[] {
-	return todos
-		.filter((t) => isDueByToday(t, todayIso))
-		.sort(
-			(a, b) =>
-				(a.due_date as string).localeCompare(b.due_date as string) ||
-				a.position - b.position ||
-				a.id - b.id
-		);
-}
-
-/** In-progress todos not already in needsAttention, in board order. */
-export function inProgress(todos: TodoRow[], todayIso: string): TodoRow[] {
-	return todos
-		.filter((t) => t.status === 'in_progress' && !isDueByToday(t, todayIso))
-		.sort((a, b) => a.position - b.position || a.id - b.id);
 }
 
 /** Fraction of `target` reached, clamped to 0..1; 0 when the target is off (<= 0). */

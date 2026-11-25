@@ -80,9 +80,10 @@ test('tagMatches is a nested prefix match', () => {
 	assert.ok(!tagMatches('acme', 'acme/web'));
 });
 
-test('entityTag recognises issue and todo chips', () => {
+test('entityTag recognises issue and task chips', () => {
 	assert.deepEqual(entityTag('issue/12'), { kind: 'issue', id: 12 });
-	assert.deepEqual(entityTag('todo/3'), { kind: 'todo', id: 3 });
+	assert.deepEqual(entityTag('task/3'), { kind: 'task', id: 3 });
+	assert.equal(entityTag('todo/3'), null, 'todo chips are gone with the todos');
 	assert.equal(entityTag('issue/x'), null);
 	assert.equal(entityTag('issue/12/a'), null);
 	assert.equal(entityTag('acme'), null);
@@ -124,14 +125,14 @@ test('filterTagOptions ranks tag prefix, then word starts, then substrings', () 
 		option('project', 'acme/website', 'Website', 'Acme'),
 		option('customer', 'bigcorp', 'BigCorp'),
 		option('issue', 'issue/12', 'Login fails — Acme / Website'),
-		option('todo', 'todo/3', 'Call Åsa about the website', null, 'in_progress')
+		option('task', 'task/3', 'Call Åsa about the website', null, 'open')
 	];
 	const tags = (q) => filterTagOptions(options, q).map((o) => o.tag);
 	assert.deepEqual(tags('acme'), ['acme', 'acme/website', 'issue/12']);
-	assert.deepEqual(tags('web'), ['acme/website', 'issue/12', 'todo/3']);
+	assert.deepEqual(tags('web'), ['acme/website', 'issue/12', 'task/3']);
 	assert.deepEqual(tags('Acme/W'), ['acme/website']);
 	assert.deepEqual(tags('login'), ['issue/12']);
-	assert.deepEqual(tags('åsa'), ['todo/3']);
+	assert.deepEqual(tags('åsa'), ['task/3']);
 	assert.deepEqual(tags('eet'), ['meeting']);
 	assert.deepEqual(tags('issue/1'), ['issue/12']);
 	assert.deepEqual(tags('zzz'), []);
@@ -170,16 +171,17 @@ test('wikilinkOptions lists matching titles and offers create without an exact m
 	assert.deepEqual(wikilinkOptions(notes, 'New idea'), { notes: [], create: 'New idea' });
 });
 
-test('chipFor resolves known issue and todo ids only', () => {
+test('chipFor resolves known issue and task ids only', () => {
 	const index = indexLinkTargets({
 		notes: [{ id: 7, title: 'Plan Å' }],
 		issues: [{ id: 12, title: 'Login fails', context: 'Acme / Web' }],
-		todos: [{ id: 3, title: 'Call Åsa', status: 'done' }]
+		tasks: [{ id: 3, title: 'Call Åsa', status: 'done' }]
 	});
 	assert.equal(index.notes.get('plan å'), 7);
 	assert.deepEqual(chipFor('issue/12', index), { kind: 'issue', id: 12, title: 'Login fails', status: null, detail: 'Acme / Web' });
-	assert.deepEqual(chipFor('todo/3', index), { kind: 'todo', id: 3, title: 'Call Åsa', status: 'done', detail: null });
-	assert.equal(chipFor('todo/4', index), null);
+	assert.deepEqual(chipFor('task/3', index), { kind: 'task', id: 3, title: 'Call Åsa', status: 'done', detail: null });
+	assert.equal(chipFor('task/4', index), null);
+	assert.equal(chipFor('todo/3', index), null);
 	assert.equal(chipFor('issue/3', index), null);
 	assert.equal(chipFor('acme', index), null);
 });

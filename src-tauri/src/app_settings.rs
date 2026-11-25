@@ -25,10 +25,16 @@ pub const BACKUP_DIR_KEY: &str = "backup_dir";
 pub const BACKUP_PUBLIC_KEY_KEY: &str = "backup_public_key";
 /// "true" while Apple Reminders sync is switched on.
 pub const APPLE_SYNC_ENABLED_KEY: &str = "apple_sync_enabled";
-/// EventKit `calendarIdentifier` of the "Badger Reminders" list.
-pub const APPLE_SYNC_REMINDERS_LIST_KEY: &str = "apple_sync_reminders_list_id";
-/// EventKit `calendarIdentifier` of the "Badger Todos" list.
-pub const APPLE_SYNC_TODOS_LIST_KEY: &str = "apple_sync_todos_list_id";
+/// EventKit `calendarIdentifier` of the "Badger" list tasks sync to.
+pub const APPLE_SYNC_LIST_KEY: &str = "apple_sync_list_id";
+/// Before tasks: the "Badger Reminders" list id. Only the tasks migration reads it (then
+/// clears it); the list itself is never touched.
+pub const LEGACY_APPLE_SYNC_REMINDERS_LIST_KEY: &str = "apple_sync_reminders_list_id";
+/// Before tasks: the "Badger Todos" list id (see above).
+pub const LEGACY_APPLE_SYNC_TODOS_LIST_KEY: &str = "apple_sync_todos_list_id";
+/// "true" while Settings shows the one-time note that the old "Badger Todos" / "Badger
+/// Reminders" lists can be deleted (set by the tasks migration, cleared on dismiss).
+pub const APPLE_SYNC_OLD_LISTS_NOTE_KEY: &str = "apple_sync_old_lists_note";
 /// Local timestamp of the last pass that finished without a pass-level error.
 pub const APPLE_SYNC_LAST_SYNC_KEY: &str = "apple_sync_last_sync_at";
 /// User-facing message of the last pass's error; unset when it went fine.
@@ -283,14 +289,15 @@ pub async fn set_backup_public_key(pool: &Pool<Sqlite>, key: Option<&str>) -> Re
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AppleSyncSettings {
     pub enabled: bool,
-    pub reminders_list_id: Option<String>,
-    pub todos_list_id: Option<String>,
+    pub list_id: Option<String>,
     pub last_sync_at: Option<String>,
     pub last_error: Option<String>,
     pub paused: Option<String>,
     /// JSON array; the sync module owns its shape.
     pub skipped: Option<String>,
     pub restore_pending: bool,
+    /// Settings shows the one-time "old lists can be deleted" note.
+    pub old_lists_note: bool,
 }
 
 pub async fn get_apple_sync_settings(pool: &Pool<Sqlite>) -> Result<AppleSyncSettings, AppError> {
@@ -303,13 +310,13 @@ pub async fn get_apple_sync_settings(pool: &Pool<Sqlite>) -> Result<AppleSyncSet
         let text = Some(value.clone()).filter(|v| !v.trim().is_empty());
         match key.as_str() {
             APPLE_SYNC_ENABLED_KEY => s.enabled = value == "true",
-            APPLE_SYNC_REMINDERS_LIST_KEY => s.reminders_list_id = text,
-            APPLE_SYNC_TODOS_LIST_KEY => s.todos_list_id = text,
+            APPLE_SYNC_LIST_KEY => s.list_id = text,
             APPLE_SYNC_LAST_SYNC_KEY => s.last_sync_at = text,
             APPLE_SYNC_LAST_ERROR_KEY => s.last_error = text,
             APPLE_SYNC_PAUSED_KEY => s.paused = text,
             APPLE_SYNC_SKIPPED_KEY => s.skipped = text,
             APPLE_SYNC_RESTORE_PENDING_KEY => s.restore_pending = value == "true",
+            APPLE_SYNC_OLD_LISTS_NOTE_KEY => s.old_lists_note = value == "true",
             _ => {}
         }
     }
@@ -343,16 +350,14 @@ pub async fn set_apple_sync_enabled(pool: &Pool<Sqlite>, enabled: bool) -> Resul
     .await
 }
 
-/// Stores (or forgets, for `None`) a list id; `key` is one of the two list keys.
-pub async fn set_apple_sync_list_id(
-    pool: &Pool<Sqlite>,
-    key: &str,
-    id: Option<&str>,
-) -> Result<(), AppError> {
-    if key != APPLE_SYNC_REMINDERS_LIST_KEY && key != APPLE_SYNC_TODOS_LIST_KEY {
-        return Err(AppError::Custom("Unknown list setting".to_string()));
-    }
-    put_value(pool, key, id).await
+/// Stores (or forgets, for `None`) the "Badger" list id.
+pub async fn set_apple_sync_list_id(pool: &Pool<Sqlite>, id: Option<&str>) -> Result<(), AppError> {
+    put_value(pool, APPLE_SYNC_LIST_KEY, id).await
+}
+
+/// Hides the one-time note about the old lists (Settings' dismiss).
+pub async fn dismiss_apple_sync_old_lists_note(pool: &Pool<Sqlite>) -> Result<(), AppError> {
+    put_value(pool, APPLE_SYNC_OLD_LISTS_NOTE_KEY, None).await
 }
 
 /// Records a pass's outcome in one transaction. `last_sync_at = None` keeps the previous
@@ -810,15 +815,12 @@ mod tests {
         );
 
         set_apple_sync_enabled(&pool, true).await.unwrap();
-        set_apple_sync_list_id(&pool, APPLE_SYNC_REMINDERS_LIST_KEY, Some("cal-r"))
+        set_apple_sync_list_id(&pool, Some("cal-1")).await.unwrap();
+        sqlx::query("INSERT INTO app_settings (Key, Value) VALUES (?, 'true')")
+            .bind(APPLE_SYNC_OLD_LISTS_NOTE_KEY)
+            .execute(&pool)
             .await
             .unwrap();
-        set_apple_sync_list_id(&pool, APPLE_SYNC_TODOS_LIST_KEY, Some("cal-t"))
-            .await
-            .unwrap();
-        assert!(set_apple_sync_list_id(&pool, THEME_KEY, Some("x"))
-            .await
-            .is_err());
         set_apple_sync_outcome(
             &pool,
             Some("2026-11-19T10:00:00.000"),
@@ -839,13 +841,13 @@ mod tests {
             s,
             AppleSyncSettings {
                 enabled: true,
-                reminders_list_id: Some("cal-r".to_string()),
-                todos_list_id: Some("cal-t".to_string()),
+                list_id: Some("cal-1".to_string()),
                 last_sync_at: Some("2026-11-19T10:00:00.000".to_string()),
                 last_error: Some("Boom".to_string()),
                 paused: Some("empty_fetch".to_string()),
                 skipped: Some("[]".to_string()),
                 restore_pending: true,
+                old_lists_note: true,
             }
         );
 
@@ -854,9 +856,8 @@ mod tests {
             .await
             .unwrap();
         set_apple_sync_enabled(&pool, false).await.unwrap();
-        set_apple_sync_list_id(&pool, APPLE_SYNC_TODOS_LIST_KEY, None)
-            .await
-            .unwrap();
+        set_apple_sync_list_id(&pool, None).await.unwrap();
+        dismiss_apple_sync_old_lists_note(&pool).await.unwrap();
         let mut conn = pool.acquire().await.unwrap();
         set_apple_sync_restore_pending(&mut conn, false)
             .await
@@ -864,8 +865,8 @@ mod tests {
         drop(conn);
         let s = get_apple_sync_settings(&pool).await.unwrap();
         assert!(!s.enabled);
-        assert_eq!(s.todos_list_id, None);
-        assert_eq!(s.reminders_list_id.as_deref(), Some("cal-r"));
+        assert_eq!(s.list_id, None);
+        assert!(!s.old_lists_note);
         assert_eq!(s.last_sync_at.as_deref(), Some("2026-11-19T10:00:00.000"));
         assert_eq!((s.last_error, s.paused, s.skipped), (None, None, None));
         assert!(!s.restore_pending);

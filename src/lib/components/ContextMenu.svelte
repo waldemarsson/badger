@@ -8,6 +8,10 @@
 		hint?: string;
 		/** Destructive: red, after a separator. */
 		danger?: boolean;
+		/** Shown but not runnable (e.g. "Added", "Needs a due date" in the hint). */
+		disabled?: boolean;
+		/** A separator above this item. */
+		separator?: boolean;
 		run: () => void;
 	}
 </script>
@@ -48,7 +52,7 @@
 	let closed = false;
 
 	/** Danger items get a separator above them (unless one already leads the list). */
-	const separated = $derived(items.map((item, i) => !!item.danger && i > 0 && !items[i - 1].danger));
+	const separated = $derived(items.map((item, i) => i > 0 && (!!item.separator || (!!item.danger && !items[i - 1].danger))));
 
 	function itemEls(): HTMLElement[] {
 		return [...menuEl.querySelectorAll<HTMLElement>('[role="menuitem"]')];
@@ -68,6 +72,7 @@
 
 	/** Closes first (focus back on the row), so an action that moves focus keeps it. */
 	function run(item: MenuItem): void {
+		if (item.disabled) return;
 		close(true);
 		item.run();
 	}
@@ -158,6 +163,8 @@
 			tabindex="-1"
 			class="ctx-menu-item"
 			class:ctx-menu-item-danger={item.danger}
+			class:ctx-menu-item-disabled={item.disabled}
+			aria-disabled={item.disabled || undefined}
 			onclick={() => run(item)}
 			onpointermove={(e) => {
 				if (document.activeElement !== e.currentTarget) e.currentTarget.focus({ preventScroll: true });

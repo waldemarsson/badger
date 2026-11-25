@@ -16,6 +16,7 @@ const {
 	taskGroup,
 	groupTasks,
 	completedTasks,
+	moreDone,
 	todayTasks,
 	dueTodayCount,
 	offsetLabel,
@@ -170,6 +171,13 @@ test('completed: newest first, split at this week’s Monday', () => {
 	const { thisWeek, older } = completedTasks([mon, wed, open, tue, sun], NOW);
 	assert.deepEqual(thisWeek.map((t) => t.title), ['wed', 'tue', 'mon']);
 	assert.deepEqual(older.map((t) => t.title), ['sun']);
+});
+
+test('moreDone: only when a limit is set and reached', () => {
+	const list = [task({ done: true }), task({ done: true }), task()];
+	assert.equal(moreDone(list, 2), true);
+	assert.equal(moreDone(list, 3), false);
+	assert.equal(moreDone(list, null), false);
 });
 
 test('Today card: overdue and due today, plus open tasks with a sent reminder', () => {
@@ -370,6 +378,9 @@ test('quick add: empty and too-long titles are caught inline', () => {
 	assert.equal(planError(plan('   ')), 'Type what the task is, not only when');
 	assert.equal(planError(plan('x'.repeat(501))), 'Title is too long (max 500 characters)');
 	assert.equal(planError(plan('Call Anna')), '');
+	// Counted in characters like Rust: 500 emoji fit, 501 don't.
+	assert.equal(planError(plan('🎉'.repeat(500))), '');
+	assert.equal(planError(plan('🎉'.repeat(501))), 'Title is too long (max 500 characters)');
 });
 
 test('undo (D21): entry passes the snapshot back unchanged and expires after the window', () => {

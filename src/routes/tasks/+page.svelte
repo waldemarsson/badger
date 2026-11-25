@@ -8,6 +8,7 @@
 	import type { LinkTargets, Task } from '#lib/types.js';
 	import {
 		completedTasks,
+		moreDone,
 		dueTodayCount,
 		groupTasks,
 		nextFocusId,
@@ -25,6 +26,7 @@
 		completeTask,
 		completing,
 		createTask,
+		loadAllDone,
 		openRequest,
 		refreshTasks,
 		reopenTask,
@@ -63,6 +65,7 @@
 	const selected = $derived(selectedId === null ? null : (tasks.list.find((t) => t.id === selectedId) ?? null));
 	let showDone = $state(false);
 	let showOlder = $state(false);
+	const hasMoreDone = $derived(moreDone(tasks.list, tasks.doneLimit));
 	let actionError = $state('');
 	let listEl = $state<HTMLElement>();
 	let quickInput = $state<HTMLInputElement>();
@@ -124,9 +127,14 @@
 		const t = tasks.list.find((x) => x.id === id);
 		if (t?.done) {
 			showDone = true;
-			if (!done.thisWeek.some((x) => x.id === id)) showOlder = true;
+			if (!done.thisWeek.some((x) => x.id === id)) showOlderDone();
 		}
 		void tick().then(() => listEl?.querySelector(`[data-task-row="${id}"]`)?.scrollIntoView({ block: 'nearest', behavior: motionMs(1) ? 'smooth' : 'auto' }));
+	}
+
+	function showOlderDone(): void {
+		showOlder = true;
+		void loadAllDone();
 	}
 
 	// Notification clicks and ⌘K ask through `openRequest`; links use `?id=` (and `?new=1`).
@@ -324,7 +332,7 @@
 							{:else}
 								<p class="task-help px-3 py-2">Nothing completed this week yet.</p>
 							{/each}
-							{#if done.older.length}
+							{#if done.older.length || hasMoreDone}
 								{#if showOlder}
 									<div transition:slide={{ duration: motionMs(200) }}>
 										{#each done.older as t (t.id)}
@@ -332,7 +340,7 @@
 										{/each}
 									</div>
 								{:else}
-									<button type="button" class="btn-secondary-sm ml-3 mt-2" onclick={() => (showOlder = true)}>Show older ({done.older.length})</button>
+									<button type="button" class="btn-secondary-sm ml-3 mt-2" onclick={showOlderDone}>Show older ({done.older.length}{hasMoreDone ? '+' : ''})</button>
 								{/if}
 							{/if}
 						</div>

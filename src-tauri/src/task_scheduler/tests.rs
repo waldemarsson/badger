@@ -118,6 +118,25 @@ async fn tick_sends_once_batches_and_keeps_the_badge_at_the_overdue_count() {
 }
 
 #[tokio::test]
+async fn tick_announces_a_reconciled_reminder_even_when_nothing_is_sent() {
+    let pool = crate::test_db().await;
+    let t = add("moved", "2026-11-09T09:00", &pool).await;
+    // A raw write moves the reminder's time without reconciling it.
+    sqlx::query("UPDATE task_reminders SET At = '2026-11-09T07:00:00.000' WHERE TaskId = ?")
+        .bind(t.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let sink = FakeSink::default();
+    assert_eq!(tick(&pool, at("2026-11-09T08:00"), &sink).await, 0);
+    assert!(sink.notified.lock().unwrap().is_empty());
+    assert_eq!(*sink.changed.lock().unwrap(), 1);
+    // Reconciled once: the next tick has nothing to announce.
+    tick(&pool, at("2026-11-09T08:00:30"), &sink).await;
+    assert_eq!(*sink.changed.lock().unwrap(), 1);
+}
+
+#[tokio::test]
 async fn launch_catch_up_sends_one_batched_notification() {
     let pool = crate::test_db().await;
     for i in 0..5 {

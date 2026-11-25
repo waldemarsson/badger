@@ -17,11 +17,15 @@ import {
 } from '#lib/tasks.js';
 
 const CLOCK_MS = 30_000;
+/** Completed tasks loaded until "Show older" asks for all of them. */
+export const DONE_LIMIT = 100;
 
-export const tasks = $state<{ list: Task[]; loaded: boolean; error: string }>({
+/** `doneLimit`: how many completed tasks `list_tasks` returns (null: all). */
+export const tasks = $state<{ list: Task[]; loaded: boolean; error: string; doneLimit: number | null }>({
 	list: [],
 	loaded: false,
-	error: ''
+	error: '',
+	doneLimit: DONE_LIMIT
 });
 
 /** Epoch ms, ticking every 30 s while watched: overdue counts, groups and labels follow it. */
@@ -59,7 +63,7 @@ export async function refreshTasks(): Promise<void> {
 	try {
 		do {
 			again = false;
-			tasks.list = await invoke<Task[]>('list_tasks');
+			tasks.list = await invoke<Task[]>('list_tasks', { doneLimit: tasks.doneLimit });
 			tasks.error = '';
 			tasks.loaded = true;
 			clock.ms = Date.now();
@@ -98,6 +102,13 @@ export function watchTasks(onopen: (id: number | null) => void): () => void {
 		window.removeEventListener('focus', onFocus);
 		clearInterval(timer);
 	};
+}
+
+/** Loads every completed task ("Show older"). */
+export function loadAllDone(): Promise<void> {
+	if (tasks.doneLimit === null) return Promise.resolve();
+	tasks.doneLimit = null;
+	return refreshTasks();
 }
 
 /** Asks /tasks to select and scroll to a task (null: just the page). */
@@ -191,6 +202,10 @@ export async function deleteTask(id: number): Promise<void> {
 	}
 }
 
+/** Tasks whose `complete_task` is on its way, so a second click (any motion setting) is ignored. */
+// eslint-disable-next-line svelte/prefer-svelte-reactivity -- a guard, never rendered
+const completingIds = new Set<number>();
+
 const wait = (ms: number) => new Promise((done) => setTimeout(done, ms));
 
 /**
@@ -199,9 +214,17 @@ const wait = (ms: number) => new Promise((done) => setTimeout(done, ms));
  * reduced motion. Resolves to '' or the error message.
  */
 export async function completeTask(task: Task, onleave?: () => void): Promise<string> {
-	if (completing.rows[task.id]) return '';
+	if (completingIds.has(task.id) || completing.rows[task.id]) return '';
+	completingIds.add(task.id);
+	try {
+		return await runCompletion(task, onleave);
+	} finally {
+		completingIds.delete(task.id);
+	}
+}
+
+async function runCompletion(task: Task, onleave?: () => void): Promise<string> {
 	const animate = !reducedMotion();
-	// eslint-disable-next-line svelte/prefer-svelte-reactivity -- a timestamp, never mutated or rendered
 	const started = new Date();
 	const startedMs = started.getTime();
 	if (animate) completing.rows[task.id] = { phase: 'tick', task: $state.snapshot(task) as Task };

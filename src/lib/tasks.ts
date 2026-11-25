@@ -176,6 +176,11 @@ export function groupTasks(tasks: readonly Task[], now: Date): TaskGroup[] {
 	})).filter((g) => g.items.length > 0);
 }
 
+/** True when completed tasks beyond the loaded ones may exist. */
+export function moreDone(list: readonly Task[], doneLimit: number | null): boolean {
+	return doneLimit !== null && list.filter((t) => t.done).length >= doneLimit;
+}
+
 /** Done tasks, newest first, split at this week's Monday. */
 export function completedTasks(tasks: readonly Task[], now: Date): { thisWeek: Task[]; older: Task[] } {
 	const monday = weekStart(ymd(now));
@@ -496,7 +501,7 @@ export function planChips(plan: QuickAddPlan, now: Date): Chip[] {
 /** Inline problem with a plan before it is sent (Rust validates again). */
 export function planError(plan: QuickAddPlan): string {
 	if (!plan.title) return 'Type what the task is, not only when';
-	if (plan.title.length > MAX_TITLE) return `Title is too long (max ${MAX_TITLE} characters)`;
+	if ([...plan.title].length > MAX_TITLE) return `Title is too long (max ${MAX_TITLE} characters)`;
 	return '';
 }
 

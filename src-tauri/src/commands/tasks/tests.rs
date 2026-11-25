@@ -1,5 +1,6 @@
 use super::*;
 use crate::commands::customers::inner_create_customer;
+use crate::commands::issues::inner_resolve_issue;
 use crate::commands::projects::inner_create_project;
 
 // 2026-11-19 is a Thursday.
@@ -72,7 +73,7 @@ fn ts(s: &str) -> Option<String> {
 }
 
 async fn fire(now: &str, pool: &Pool<Sqlite>) -> Vec<FiredReminder> {
-    inner_fire_due(pool, at(now)).await.unwrap()
+    inner_fire_due(pool, at(now)).await.unwrap().fired
 }
 
 async fn overdue(now: &str, pool: &Pool<Sqlite>) -> i64 {

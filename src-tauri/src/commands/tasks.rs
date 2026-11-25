@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Pool, Sqlite, SqliteConnection};
 use tauri::{AppHandle, State};
 
-use super::issues::inner_resolve_issue;
+use super::issues::resolve_issue_in;
 use crate::recurrence::{
     format_timestamp, local_exists, local_now, month_day_column, next_occurrence, parse_timestamp,
     parse_weekdays, repeat_name, resolve_gap, weekdays_column, Rule,
@@ -1015,22 +1015,29 @@ pub async fn inner_delete_task(id: i64, pool: &Pool<Sqlite>) -> Result<(), AppEr
     Ok(())
 }
 
-/// Creates (or reuses a same-title) issue in `project_id` and links the task.
+/// Creates (or reuses a same-title) issue in `project_id` and links the task, in one
+/// transaction, so a task deleted meanwhile never leaves a new issue behind.
 pub async fn inner_create_issue_for_task(
     task_id: i64,
     project_id: i64,
     issue_title: &str,
     pool: &Pool<Sqlite>,
 ) -> Result<Task, AppError> {
-    inner_get_task(task_id, pool).await?; // fail before creating an issue
-    let issue_id = inner_resolve_issue(project_id, issue_title, pool).await?;
-    sqlx::query("UPDATE tasks SET IssueId = ?, UpdatedAt = ? WHERE id = ?")
+    let mut tx = pool.begin().await?;
+    get_task_in(task_id, &mut tx).await?; // fail before creating an issue
+    let issue_id = resolve_issue_in(project_id, issue_title, &mut tx).await?;
+    let result = sqlx::query("UPDATE tasks SET IssueId = ?, UpdatedAt = ? WHERE id = ?")
         .bind(issue_id)
         .bind(stamp())
         .bind(task_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
-    inner_get_task(task_id, pool).await
+    if result.rows_affected() == 0 {
+        return Err(not_found());
+    }
+    let task = get_task_in(task_id, &mut tx).await?;
+    tx.commit().await?;
+    Ok(task)
 }
 
 /// Adds a reminder (at most ten per task). A custom time must be in the future; a relative
@@ -1157,6 +1164,14 @@ pub struct FiredReminder {
     pub fire_at: NaiveDateTime,
 }
 
+/// What one "fire due" step did: the reminders it sent, and the tasks whose stale reminders it
+/// reconciled (their state may have changed though nothing was sent).
+#[derive(Debug, Default)]
+pub struct DueRun {
+    pub fired: Vec<FiredReminder>,
+    pub reconciled: Vec<i64>,
+}
+
 #[derive(Debug, Clone, FromRow)]
 struct PendingRow {
     id: i64,
@@ -1177,11 +1192,8 @@ struct PendingRow {
 /// version it was computed from (`FiredFor`, `SnoozedUntil`, the task's `UpdatedAt`), so a
 /// concurrent edit, snooze or completion wins and a stale time never fires. A reminder whose
 /// `FiredFor` no longer matches its time is reconciled instead (silently). Returns what was
-/// sent, by fire time.
-pub async fn inner_fire_due(
-    pool: &Pool<Sqlite>,
-    now: NaiveDateTime,
-) -> Result<Vec<FiredReminder>, AppError> {
+/// sent, by fire time, and the reconciled task ids.
+pub async fn inner_fire_due(pool: &Pool<Sqlite>, now: NaiveDateTime) -> Result<DueRun, AppError> {
     let rows = sqlx::query_as::<_, PendingRow>(
         "SELECT r.id, r.TaskId AS task_id, r.OffsetMinutes AS offset_minutes, r.At AS at, \
              r.SnoozedUntil AS snoozed_until, r.FiredFor AS fired_for, t.Title AS title, \
@@ -1228,13 +1240,16 @@ pub async fn inner_fire_due(
     }
     stale.sort_unstable();
     stale.dedup();
-    for task_id in stale {
+    for &task_id in &stale {
         let mut tx = pool.begin().await?;
         reconcile_reminders(task_id, now, &mut tx).await?;
         tx.commit().await?;
     }
     fired.sort_by_key(|f| (f.fire_at, f.reminder_id));
-    Ok(fired)
+    Ok(DueRun {
+        fired,
+        reconciled: stale,
+    })
 }
 
 /// The conditional pending → sent write: only while the reminder and its task are exactly as

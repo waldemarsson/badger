@@ -11,7 +11,7 @@ use sqlx::{Pool, Sqlite};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::tasks::{
-    inner_count_overdue, inner_fire_due, FiredReminder, UNDO_WINDOW_SECS,
+    inner_count_overdue, inner_fire_due, DueRun, FiredReminder, UNDO_WINDOW_SECS,
 };
 use crate::recurrence::local_now;
 
@@ -97,28 +97,28 @@ pub trait TaskSink {
 
 /// One scheduler step: send due reminders, notify (unless the window is focused, where the
 /// toasts cover it, and leaving out reminders the phone alarms for through Apple Reminders
-/// sync), announce the change, and recompute the badge. Never fails: errors are logged and
+/// sync), announce the change (sent or reconciled reminders), and recompute the badge. Never fails: errors are logged and
 /// the next tick retries. Returns how many reminders were sent.
 pub async fn tick(pool: &Pool<Sqlite>, now: chrono::NaiveDateTime, sink: &impl TaskSink) -> usize {
-    let fired = match inner_fire_due(pool, now).await {
-        Ok(rows) => rows,
+    let DueRun { fired, reconciled } = match inner_fire_due(pool, now).await {
+        Ok(run) => run,
         Err(e) => {
             tracing::error!("Tasks: sending due reminders failed: {}", e);
-            Vec::new()
+            DueRun::default()
         }
     };
-    if !fired.is_empty() {
-        if !sink.main_window_focused() {
-            let on_phone = crate::apple_sync::phone_alarms_cover(pool, &fired).await;
-            let notify: Vec<FiredReminder> = fired
-                .iter()
-                .filter(|f| !on_phone.contains(&f.reminder_id))
-                .cloned()
-                .collect();
-            if let Some(n) = notification_for(&notify) {
-                sink.notify(&n);
-            }
+    if !fired.is_empty() && !sink.main_window_focused() {
+        let on_phone = crate::apple_sync::phone_alarms_cover(pool, &fired).await;
+        let notify: Vec<FiredReminder> = fired
+            .iter()
+            .filter(|f| !on_phone.contains(&f.reminder_id))
+            .cloned()
+            .collect();
+        if let Some(n) = notification_for(&notify) {
+            sink.notify(&n);
         }
+    }
+    if !fired.is_empty() || !reconciled.is_empty() {
         sink.changed();
     }
     match inner_count_overdue(pool, now).await {

@@ -625,7 +625,8 @@ async fn a_phone_completion_wins_over_a_badger_snooze_and_stops_the_reminders() 
     assert!(get(&pool, t.id).await.done);
     let sent = crate::commands::tasks::inner_fire_due(&pool, at("2026-11-19T13:00:10"))
         .await
-        .unwrap();
+        .unwrap()
+        .fired;
     assert!(
         sent.is_empty(),
         "done wins: the snoozed reminder never fires"
@@ -1187,7 +1188,8 @@ async fn a_synced_reminder_is_left_to_the_phone_unless_snoozed_or_off_the_phone(
 
     let fired = inner_fire_due(&pool, at("2026-11-19T12:30:10"))
         .await
-        .unwrap();
+        .unwrap()
+        .fired;
     assert_eq!(fired.len(), 3);
     let skip = phone_alarms_cover(&pool, &fired).await;
     assert!(

@@ -31,6 +31,8 @@ Todos and reminders were merged into tasks with a fresh start: no data is migrat
 
 The migration runs once, guarded by the `tasks_migrated` row in `app_settings`, not by whether the old tables exist: after a downgrade (which recreates them) and a re-upgrade nothing is dropped again. The marker is also set on a fresh database, where the migration has nothing to drop. `NOTE_REFS_VERSION` was bumped with it, so the first start rebuilds `note_refs` and old `#todo/<id>` references stop being links.
 
+Downgrading to 1.6 or older after this upgrade is not supported. Nothing is lost (the new tables stay put for a re-upgrade), but the old build's Apple Reminders sync fails every pass, because `apple_sync_items` no longer has the `Kind` column. With the list ids cleared, it would also create new "Badger Todos" and "Badger Reminders" lists on the phone. Turn sync off before downgrading.
+
 ### Manual order
 
 The notes tree order is the user's, stored in `Position`; there is no sort toggle. Rust returns it in tree order and the frontend preserves it (no sorting by name or date).

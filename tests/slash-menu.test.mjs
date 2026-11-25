@@ -95,10 +95,10 @@ test('formatLocalDate is YYYY-MM-DD in local time, zero-padded', () => {
 	assert.equal(formatLocalDate(new Date(999, 8, 9)), '0999-09-09');
 });
 
-test('menu items are table, code block, task list, callout and date', () => {
+test('menu items are table, code block, calculation, task list, callout and date', () => {
 	assert.deepEqual(
 		SLASH_ITEMS.map((i) => i.id),
-		['table', 'code', 'task', 'callout', 'date']
+		['table', 'code', 'calc', 'task', 'callout', 'date']
 	);
 	for (const i of SLASH_ITEMS) {
 		assert.ok(i.label, `${i.id} has a label`);
@@ -128,6 +128,17 @@ test('table snippet: header, delimiter, two rows, 3 columns, a stop per cell, th
 test('code block snippet: fence with a language stop, then a body stop', () => {
 	const t = item('code').template(fixedDate);
 	assert.equal(t, '```${}\n${}\n```');
+});
+
+test('calculation snippet: a ```calc fence with the cursor on its body line', () => {
+	assert.equal(item('calc').label, 'Calculation');
+	assert.equal(item('calc').template(fixedDate), '```calc\n${}\n```');
+	assert.deepEqual(slashInsertion(item('calc'), 'Budget ', null, fixedDate), {
+		deleteBefore: 1,
+		template: '\n```calc\n${}\n```'
+	});
+	// From an empty list item it replaces the markers, like a code block.
+	assert.deepEqual(slashInsertion(item('calc'), '- ', 'prev', fixedDate), { deleteBefore: 2, template: '```calc\n${}\n```' });
 });
 
 test('task, callout and date insert their text with the cursor after it', () => {
@@ -273,5 +284,11 @@ test('slashItemsAt: only inline items inside a raw table row', () => {
 	assert.deepEqual(ids(doc.indexOf('/ |')), ['date']);
 	assert.deepEqual(ids(doc.indexOf('a')), ['date']);
 	assert.deepEqual(ids(doc.indexOf('---')), ['date']);
-	assert.deepEqual(ids(doc.lastIndexOf('/')), ['table', 'code', 'task', 'callout', 'date']);
+	assert.deepEqual(ids(doc.lastIndexOf('/')), ['table', 'code', 'calc', 'task', 'callout', 'date']);
+});
+
+test('applySlashItem: calculation inserts an empty, closed ```calc block', () => {
+	const doc = insert('Budget /calc', 'calc');
+	assert.equal(doc, 'Budget\n```calc\n\n```');
+	assert.deepEqual(nodes(doc, 'FencedCode'), ['```calc\n\n```']);
 });

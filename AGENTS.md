@@ -64,7 +64,7 @@ Gotchas:
 - **Types:** keep `src/lib/types.ts` in sync with the Rust structs (snake_case fields).
 - **Imports:** SvelteKit 3 removed `$lib`; use `#lib/...` (package.json `imports`) with an explicit extension (`#lib/types.js`, `#lib/x.svelte.js`, `#lib/components/X.svelte`). Extensionless `#lib` imports build but fail `npm run check`.
 - **Config:** SvelteKit config lives in the `sveltekit({...})` plugin in `vite.config.ts`; `svelte.config.js` is no longer supported.
-- **Pure helpers** go in `src/lib/*.ts`; test them with `node:test` under `tests/`.
+- **Pure helpers** go in `src/lib/*.ts`; test them with `node:test` under `tests/`. A tested module that imports `#lib/x.js` needs `import './helpers/lib-resolve.mjs'` first in the test (node can't resolve `.js` to `.ts`); see `tests/calc.test.mjs`.
 - **Styles:** use Tailwind utilities in markup. Shared or `@apply` classes go in `src/app.css` under `@layer components`, not in component `<style>` blocks, because svelte-check warns about `@apply` there.
 - **Dynamic classes:** Tailwind only emits `app.css` component classes whose full name appears literally in `src/**` (`content` scan). Write out `cm-link-kind-task` in full; never build it as `` `cm-link-kind-${x}` ``.
 - **Icons:** `@lucide/svelte`, imported per icon (`import X from '@lucide/svelte/icons/x'`).

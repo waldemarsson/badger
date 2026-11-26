@@ -255,15 +255,19 @@
 
   // ── Command palette shortcut ──────────────────────────────────────────────────
   let shortcutError = $state('');
+  // Per recorder; `palette.recording` (shared) only tells the palette to ignore keys.
+  let recordingPalette = $state(false);
 
   // WebKit does not focus buttons on click, so focus explicitly to receive keydown.
   function startRecording(e: MouseEvent & { currentTarget: HTMLButtonElement }) {
     shortcutError = '';
+    recordingPalette = true;
     palette.recording = true;
     e.currentTarget.focus();
   }
 
   function stopRecording() {
+    recordingPalette = false;
     palette.recording = false;
   }
 
@@ -277,7 +281,7 @@
   }
 
   async function onRecorderKeydown(e: KeyboardEvent) {
-    if (!palette.recording) return;
+    if (!recordingPalette) return;
     if (e.key === 'Tab') return stopRecording();
     e.preventDefault();
     e.stopPropagation();
@@ -622,7 +626,7 @@
         <div class="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            class="inline-flex min-w-[9rem] items-center justify-center rounded-lg px-4 py-2 font-mono text-sm font-medium ring-1 transition {palette.recording
+            class="inline-flex min-w-[9rem] items-center justify-center rounded-lg px-4 py-2 font-mono text-sm font-medium ring-1 transition {recordingPalette
               ? 'bg-sky-50 text-sky-700 ring-2 ring-sky-400 dark:bg-sky-500/10 dark:text-sky-300 dark:ring-sky-400'
               : 'bg-white text-slate-800 ring-slate-200 hover:ring-slate-300 dark:bg-neutral-800 dark:text-neutral-100 dark:ring-neutral-700 dark:hover:ring-neutral-600'}"
             aria-label="Command palette shortcut — click, then press the new combination"
@@ -630,9 +634,9 @@
             onkeydown={onRecorderKeydown}
             onblur={stopRecording}
           >
-            {palette.recording ? 'Press shortcut…' : formatShortcut(palette.shortcut)}
+            {recordingPalette ? 'Press shortcut…' : formatShortcut(palette.shortcut)}
           </button>
-          {#if palette.recording}
+          {#if recordingPalette}
             <span class="text-xs text-slate-500 dark:text-neutral-400">Esc to cancel</span>
           {:else if palette.shortcut !== DEFAULT_SHORTCUT}
             <button type="button" class="btn-secondary-sm" onclick={() => saveShortcut(DEFAULT_SHORTCUT)}>

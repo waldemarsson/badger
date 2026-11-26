@@ -112,6 +112,8 @@ Keep using the same certificate. A new certificate changes the signing requireme
 
 ### Updater and release signing
 
+The global shortcut uses `tauri-plugin-global-shortcut` and the menu-bar item the `tray-icon` feature of `tauri` (both Rust-only: no JS package, no capability entry).
+
 In-app updates use `tauri-plugin-updater` (Rust-only: no JS package, no capability entry). `tauri.conf.json` sets `bundle.createUpdaterArtifacts: true` and `plugins.updater` with the public key and one endpoint, `https://github.com/waldemarsson/badger/releases/latest/download/latest.json`, so the repo must stay public. The update signing key is separate from Apple code signing:
 
 - The private key and its password live with the maintainer (generated with `npm run tauri signer generate -- -w ~/.tauri/badger.key`, backed up in a password manager) and in the GitHub Actions secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Never commit them. Losing either strands every install: they only accept updates signed by this key.

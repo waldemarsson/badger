@@ -28,7 +28,7 @@
 		SCRATCHPAD_SHORTCUT,
 		shiftDate
 	} from '#lib/palette.js';
-	import { changes, logTimeRequest, palette, showToast, type LogTimePrefill } from '#lib/palette-state.svelte.js';
+	import { changes, logTimeRequest, palette, paletteRequest, showToast, type LogTimePrefill } from '#lib/palette-state.svelte.js';
 	import { splitHighlights } from '#lib/notes.js';
 	import { splitSearchQuery, tagTerm } from '#lib/note-links.js';
 	import { HYBRID_DEBOUNCE_MS, keepActiveIndex, qualifiesForSemantic, semanticReady, shouldApply, type SearchResponse } from '#lib/semantic.js';
@@ -501,6 +501,14 @@
 		seenLogTimeRequest = logTimeRequest.id;
 		const prefill = untrack(() => (logTimeRequest.prefill ? { ...logTimeRequest.prefill } : null));
 		void openPalette().then(() => startLogTime(prefill));
+	});
+
+	// The global shortcut (Rust shows the window first) asks through `requestPalette`.
+	let seenPaletteRequest = paletteRequest.id;
+	$effect(() => {
+		if (paletteRequest.id === seenPaletteRequest) return;
+		seenPaletteRequest = paletteRequest.id;
+		if (!untrack(() => open)) void openPalette();
 	});
 
 	onMount(() => {

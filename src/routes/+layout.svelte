@@ -17,8 +17,11 @@
   import { overdueCount } from '#lib/tasks.js';
   import { scratchpad, toggleScratchpad } from '#lib/scratchpad-state.svelte.js';
   import { checkForUpdate, updater } from '#lib/updater-state.svelte.js';
-  import { showToast } from '#lib/palette-state.svelte.js';
+  import { requestLogTime, requestPalette, showToast } from '#lib/palette-state.svelte.js';
   import type { PaletteSettings } from '#lib/types.js';
+
+  /** Rust's `tray::ACTION_EVENT`: the menu bar and the global shortcut ask for these. */
+  const APP_ACTION_EVENT = 'app-action';
   import CommandPalette from '#lib/components/CommandPalette.svelte';
   import Toast from '#lib/components/Toast.svelte';
   import ReminderToasts from '#lib/components/ReminderToasts.svelte';
@@ -91,6 +94,16 @@
     })
       .then((stop) => (disposed ? stop() : (unlisten = stop)))
       .catch(() => {});
+    // Menu bar and global shortcut (Rust has already shown and focused the window).
+    let stopAction: (() => void) | null = null;
+    listen<{ action: string }>(APP_ACTION_EVENT, ({ payload }) => {
+      // eslint-disable-next-line svelte/no-navigation-without-resolve -- resolved path plus a query string
+      if (payload.action === 'new-task') void goto(`${resolve('/tasks')}?new=1`);
+      else if (payload.action === 'log-time') requestLogTime();
+      else if (payload.action === 'palette') requestPalette();
+    })
+      .then((stop) => (disposed ? stop() : (stopAction = stop)))
+      .catch(() => {});
     const stopSemantic = watchSemanticStatus();
     const stopAppleSync = watchAppleSync(); // "Keep off phone" controls show while sync is on
     // The shared tasks list (sync, scheduler and other windows' writes arrive as events).
@@ -110,6 +123,7 @@
     return () => {
       disposed = true;
       unlisten?.();
+      stopAction?.();
       stopSemantic();
       stopAppleSync();
       stopTasks();

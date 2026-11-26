@@ -7,6 +7,7 @@ pub mod db;
 pub mod error;
 pub mod flush_guard;
 pub mod frontmatter;
+pub mod global_shortcut;
 pub mod js_runner;
 pub mod logger;
 pub mod note_links;
@@ -15,6 +16,7 @@ pub mod runtime_paths;
 pub mod semantic;
 pub mod startup_backup;
 pub mod task_scheduler;
+pub mod tray;
 
 #[cfg(debug_assertions)]
 pub mod dev_seed;
@@ -82,9 +84,11 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(global_shortcut::plugin())
         .manage(flush_guard::FlushGuard::default())
         .manage(commands::playground::RunState::default())
         .manage(apple_sync::runner::SyncHandle::default())
+        .manage(tray::TrayState::default())
         .on_menu_event(|app, event| {
             if event.id() == flush_guard::QUIT_MENU_ID {
                 app.exit(0); // goes through RunEvent::ExitRequested → flush guard
@@ -157,6 +161,19 @@ pub fn run() {
             // scheduler ticks every 30 s; its first tick catches up on reminders that came
             // due while the app was closed.
             task_scheduler::install_click_handler(app.handle());
+            // ── Menu bar and global shortcut ─────────────────────────────────
+            // The tray is filled by the scheduler's first tick (and refreshed on writes).
+            if let Err(e) = tray::install(app.handle()) {
+                tracing::error!("Tray: not installed: {}", e);
+            }
+            tauri::async_runtime::spawn(tray::run(app.handle().clone(), pool_for_tasks.clone()));
+            {
+                let app = app.handle().clone();
+                let pool = pool_for_tasks.clone();
+                tauri::async_runtime::spawn(async move {
+                    global_shortcut::install(&app, &pool).await;
+                });
+            }
             tauri::async_runtime::spawn(task_scheduler::run(app.handle().clone(), pool_for_tasks));
 
             // ── Apple Reminders sync ─────────────────────────────────────────
@@ -297,6 +314,8 @@ pub fn run() {
                     commands::settings::set_theme,
                     commands::settings::get_palette_settings,
                     commands::settings::set_palette_shortcut,
+                    commands::settings::get_global_shortcut,
+                    commands::settings::set_global_shortcut,
                     commands::settings::set_palette_last_used,
                     commands::settings::get_daily_target,
                     commands::settings::set_daily_target,
@@ -438,6 +457,8 @@ pub fn run() {
                     commands::settings::set_theme,
                     commands::settings::get_palette_settings,
                     commands::settings::set_palette_shortcut,
+                    commands::settings::get_global_shortcut,
+                    commands::settings::set_global_shortcut,
                     commands::settings::set_palette_last_used,
                     commands::settings::get_daily_target,
                     commands::settings::set_daily_target,

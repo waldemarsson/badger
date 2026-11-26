@@ -1,6 +1,6 @@
-//! Menu-bar (tray) item: today's logged hours as its title, and a native menu with the
-//! tasks needing attention (overdue, due today, or with a sent reminder, like Today's
-//! Tasks card) and quick actions.
+//! Menu-bar (tray) item: the app icon alone (no title), with a native menu showing today's
+//! logged hours, the tasks needing attention (overdue, due today, or with a sent reminder,
+//! like Today's Tasks card) and quick actions.
 //!
 //! [`nudge`] asks [`run`] to rebuild the menu from [`TrayModel`]: on every scheduler tick
 //! (so the date rolls over), after task writes (`task_scheduler::tasks_refreshed`) and after
@@ -67,15 +67,6 @@ pub struct TrayState(Mutex<Option<TrayModel>>);
 pub fn format_hours(h: f64) -> String {
     let s = format!("{:.2}", (h * 100.0).round() / 100.0);
     s.trim_end_matches('0').trim_end_matches('.').to_string()
-}
-
-/// The menu-bar title: today's hours, or empty (icon only) when none are logged.
-pub fn title(model: &TrayModel) -> String {
-    if model.hours_today > 0.0 {
-        format!("{} h", format_hours(model.hours_today))
-    } else {
-        String::new()
-    }
 }
 
 /// The disabled summary line at the top of the menu.
@@ -291,7 +282,7 @@ pub async fn run(app: AppHandle, pool: Pool<Sqlite>) {
     }
 }
 
-/// Rebuilds the menu and title when what they show changed. Never fails: errors are logged.
+/// Rebuilds the menu when what it shows changed. Never fails: errors are logged.
 async fn refresh(app: &AppHandle, pool: &Pool<Sqlite>) {
     let now = local_now();
     let model = match load_model(pool, now).await {
@@ -317,9 +308,7 @@ async fn refresh(app: &AppHandle, pool: &Pool<Sqlite>) {
         return;
     };
     let today = now.date().format("%Y-%m-%d").to_string();
-    let result = build_menu(app, &model, &today)
-        .and_then(|menu| tray.set_menu(Some(menu)))
-        .and_then(|()| tray.set_title(Some(title(&model))));
+    let result = build_menu(app, &model, &today).and_then(|menu| tray.set_menu(Some(menu)));
     if let Err(e) = result {
         tracing::error!("Tray: couldn't update the menu: {}", e);
     }
@@ -340,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn labels_and_titles() {
+    fn labels() {
         assert_eq!(format_hours(5.5), "5.5");
         assert_eq!(format_hours(8.0), "8");
         assert_eq!(format_hours(0.25), "0.25");
@@ -349,11 +338,9 @@ mod tests {
             daily_target: 8.0,
             ..TrayModel::default()
         };
-        assert_eq!(title(&model), "");
         assert_eq!(summary(&model), "Today: 0 of 8 h logged");
         model.hours_today = 5.5;
         model.daily_target = 0.0;
-        assert_eq!(title(&model), "5.5 h");
         assert_eq!(summary(&model), "Today: 5.5 h logged");
 
         let today = "2026-11-26";

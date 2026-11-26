@@ -1,0 +1,72 @@
+[
+	{
+		"name": "no frontmatter",
+		"md": "# Title\n\ntags: a\n",
+		"body": "# Title\n\ntags: a\n",
+		"tags": [],
+		"aliases": []
+	},
+	{
+		"name": "flow lists, plain scalars and quotes",
+		"md": "---\ntags: [acme, \"Acme/Web\", '#x']\naliases: Weekly sync, \"Sync\"\ntitle: Ignored\n---\nBody #inline\n",
+		"body": "Body #inline\n",
+		"tags": ["acme", "Acme/Web", "x"],
+		"aliases": ["Weekly sync", "Sync"]
+	},
+	{
+		"name": "block lists, comments and case-insensitive keys",
+		"md": "---\nTags:\n  - one\n  # skipped\n- two\nAliases:\n  - \"Alpha Beta\"\nother: [z]\n...\n",
+		"body": "",
+		"tags": ["one", "two"],
+		"aliases": ["Alpha Beta"]
+	},
+	{
+		"name": "plain tags split on commas and spaces, leading # dropped",
+		"md": "---\ntags: a, b c  #d\n---\n",
+		"body": "",
+		"tags": ["a", "b", "c", "d"],
+		"aliases": []
+	},
+	{
+		"name": "indented keys and a bare comment value are not values",
+		"md": "---\nmeta:\n  tags: [no]\ntags: # nothing\naliases: \"\"\n---\nx",
+		"body": "x",
+		"tags": [],
+		"aliases": []
+	},
+	{
+		"name": "unclosed block is not frontmatter",
+		"md": "---\ntags: [a]\nno end",
+		"body": "---\ntags: [a]\nno end",
+		"tags": [],
+		"aliases": []
+	},
+	{
+		"name": "only at the very start",
+		"md": "\n---\ntags: [a]\n---\n",
+		"body": "\n---\ntags: [a]\n---\n",
+		"tags": [],
+		"aliases": []
+	},
+	{
+		"name": "a longer rule does not open, trailing spaces allowed, CRLF",
+		"md": "---  \r\naliases: [Ä]\r\n---  \r\nBody",
+		"body": "Body",
+		"tags": [],
+		"aliases": ["Ä"]
+	},
+	{
+		"name": "four dashes is a rule",
+		"md": "----\ntags: [a]\n---\n",
+		"body": "----\ntags: [a]\n---\n",
+		"tags": [],
+		"aliases": []
+	},
+	{
+		"name": "empty block",
+		"md": "---\n---\nText",
+		"body": "Text",
+		"tags": [],
+		"aliases": []
+	}
+]

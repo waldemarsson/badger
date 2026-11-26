@@ -99,11 +99,22 @@ impl Resolver {
             let notes: Vec<(i64, String)> = sqlx::query_as("SELECT id, Title FROM notes")
                 .fetch_all(pool)
                 .await?;
+            let mut titles = HashMap::new();
             for (id, title) in notes {
+                titles.insert(id, title.clone());
                 resolver
                     .notes
                     .entry(title.to_lowercase())
                     .or_insert((id, title));
+            }
+            // A note title wins over another note's alias.
+            for alias in crate::commands::notes::load_aliases(pool).await? {
+                if let Some(title) = titles.get(&alias.id) {
+                    resolver
+                        .notes
+                        .entry(alias.title.to_lowercase())
+                        .or_insert((alias.id, title.clone()));
+                }
             }
         }
         let mut issues = BTreeSet::new();
@@ -234,7 +245,22 @@ pub fn render(markdown: &str, refs: &[Ref], mode: RenderMode, resolver: &Resolve
             .count()
     };
 
-    for (event, range) in Parser::new_ext(markdown, options).into_offset_iter() {
+    // Frontmatter is not markdown: the read view shows it as written in a muted block
+    // (so text a stray top `---` pair captured is never hidden); Copy as HTML drops it.
+    let frontmatter = crate::frontmatter::parse(markdown);
+    let offset = frontmatter.as_ref().map_or(0, |f| f.body);
+    if let (Some(f), RenderMode::Read) = (&frontmatter, mode) {
+        let inner = markdown[f.inner.clone()].trim_end();
+        if !inner.is_empty() {
+            events.push(Event::Html(CowStr::from(format!(
+                "<pre class=\"note-frontmatter\">{}</pre>\n",
+                escape(inner)
+            ))));
+        }
+    }
+
+    for (event, range) in Parser::new_ext(&markdown[offset..], options).into_offset_iter() {
+        let range = range.start + offset..range.end + offset;
         match event {
             // Text in a tag or wikilink: pulldown-cmark may split one ref over several
             // text events (`[`, `[`, `Foo`, `]`, `]`); the ref is emitted where it starts.
@@ -698,6 +724,22 @@ mod tests {
 
     fn render_with(markdown: &str, mode: RenderMode) -> String {
         render(markdown, &note_links::extract(markdown), mode, &resolver())
+    }
+
+    #[test]
+    fn frontmatter_is_a_muted_block_in_read_mode_and_dropped_in_copy_mode() {
+        let md = "---\ntags: [a]\nnote: <b> & \"q\"\n---\n[[plan]]";
+        assert_eq!(
+            render_with(md, RenderMode::Read),
+            "<pre class=\"note-frontmatter\">tags: [a]\nnote: &lt;b&gt; &amp; &quot;q&quot;</pre>\n\
+             <p><a href=\"#\" class=\"note-wikilink\" data-note=\"plan\" data-note-id=\"3\">plan</a></p>\n"
+        );
+        assert_eq!(render_with(md, RenderMode::Copy), "<p>plan</p>\n");
+        // A later `---` pair is still a rule and a heading.
+        assert_eq!(
+            render_with("x\n\n---\na\n---", RenderMode::Copy),
+            "<p>x</p>\n<hr />\n<h2 id=\"a\">a</h2>\n"
+        );
     }
 
     #[test]

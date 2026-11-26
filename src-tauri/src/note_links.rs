@@ -51,9 +51,22 @@ pub fn is_tag_char(c: char) -> bool {
     c.is_alphanumeric() || matches!(c, '_' | '-' | '/')
 }
 
-/// All tags and wikilinks in `src`, in source order.
+/// All tags and wikilinks in `src`, in source order. Frontmatter `tags:` values come
+/// first (their ranges cover the value, without `#`); the body after it is parsed alone.
 pub fn extract(src: &str) -> Vec<Ref> {
-    let mut out = Vec::new();
+    let mut out: Vec<Ref> = crate::frontmatter::tag_ranges(src)
+        .into_iter()
+        .filter_map(|r| {
+            let tag = parse_tag(&format!("#{}", &src[r.clone()]), 0)?;
+            // The whole value must be the tag: `a.b` or `a b` is not one.
+            (tag.range.len() == r.len() + 1).then(|| Ref {
+                range: r.clone(),
+                target_range: r,
+                ..tag
+            })
+        })
+        .collect();
+    let offset = crate::frontmatter::body_start(src);
     // Nesting depth of links, images, code blocks and HTML blocks: no refs inside.
     let mut skip = 0usize;
     let mut run: Option<Range<usize>> = None;
@@ -63,7 +76,8 @@ pub fn extract(src: &str) -> Vec<Ref> {
         }
     };
 
-    for (event, range) in Parser::new_ext(src, markdown_options()).into_offset_iter() {
+    for (event, range) in Parser::new_ext(&src[offset..], markdown_options()).into_offset_iter() {
+        let range = range.start + offset..range.end + offset;
         match event {
             Event::Start(
                 Tag::Link { .. }
@@ -448,6 +462,15 @@ mod tests {
             rewrite_links("[[new]]", "new", "New").as_deref(),
             Some("[[New]]"),
             "case-only rename"
+        );
+    }
+
+    #[test]
+    fn rewrite_tags_reaches_frontmatter_values() {
+        let body = "---\ntags: [Acme/web, \"acme\"]\n---\n#acme";
+        assert_eq!(
+            rewrite_tags(body, "acme", "globex").as_deref(),
+            Some("---\ntags: [globex/web, \"globex\"]\n---\n#globex")
         );
     }
 

@@ -123,6 +123,17 @@ const editorTheme = EditorView.theme({
 	},
 	'.cm-md-codeblock-first': { borderTopLeftRadius: '0.6rem', borderTopRightRadius: '0.6rem', paddingTop: '0.3rem' },
 	'.cm-md-codeblock-last': { borderBottomLeftRadius: '0.6rem', borderBottomRightRadius: '0.6rem', paddingBottom: '0.3rem' },
+	// YAML frontmatter (live-preview.ts): source kept, muted like code.
+	'.cm-md-frontmatter': {
+		fontFamily: mono,
+		fontSize: '0.85em',
+		color: 'var(--note-muted)',
+		backgroundColor: 'var(--note-code-bg)',
+		margin: '0 1.25rem',
+		padding: '0 0.75rem'
+	},
+	'.cm-md-frontmatter-first': { borderTopLeftRadius: '0.6rem', borderTopRightRadius: '0.6rem', paddingTop: '0.3rem' },
+	'.cm-md-frontmatter-last': { borderBottomLeftRadius: '0.6rem', borderBottomRightRadius: '0.6rem', paddingBottom: '0.3rem', marginBottom: '0.5rem' },
 	'.cm-md-codeinfo': {
 		fontFamily: 'inherit',
 		fontSize: '0.75rem',

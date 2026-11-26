@@ -1,3 +1,4 @@
+import './helpers/lib-resolve.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
@@ -184,6 +185,23 @@ test('chipFor resolves known issue and task ids only', () => {
 	assert.equal(chipFor('todo/3', index), null);
 	assert.equal(chipFor('issue/3', index), null);
 	assert.equal(chipFor('acme', index), null);
+});
+
+test('indexLinkTargets resolves frontmatter aliases, titles first', () => {
+	const index = indexLinkTargets({
+		notes: [
+			{ id: 1, title: 'Weekly sync' },
+			{ id: 2, title: 'Plan' }
+		],
+		aliases: [
+			{ id: 1, title: 'Sync' },
+			{ id: 1, title: 'plan' }
+		],
+		issues: [],
+		tasks: []
+	});
+	assert.equal(index.notes.get('sync'), 1);
+	assert.equal(index.notes.get('plan'), 2);
 });
 
 // ── extractRefs with ranges (the editor scans only its visible lines) ──

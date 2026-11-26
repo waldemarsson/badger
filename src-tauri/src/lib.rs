@@ -6,6 +6,7 @@ pub mod commands;
 pub mod db;
 pub mod error;
 pub mod flush_guard;
+pub mod frontmatter;
 pub mod js_runner;
 pub mod logger;
 pub mod note_links;

@@ -3,6 +3,7 @@
 // Needs no DOM (testable under node:test); the editor wiring lives in src/lib/editor/.
 import type { SyntaxNode, Tree } from '@lezer/common';
 import { GFM, parser } from '@lezer/markdown';
+import { frontmatterTagSpans, parseFrontmatter } from '#lib/frontmatter.js';
 
 export type RefKind = 'tag' | 'link';
 
@@ -130,6 +131,19 @@ function wholeLines(src: string, ranges: readonly TextRange[]): TextRange[] {
 export function extractRefs(src: string, tree: Tree = markdownParser.parse(src), ranges?: readonly TextRange[]): NoteRef[] {
 	const labels = definedLabels(src, tree);
 	const out: NoteRef[] = [];
+	// Frontmatter `tags:` values come first; the rest of the block is never scanned.
+	const frontmatter = parseFrontmatter(src);
+	if (frontmatter) {
+		const lines = ranges && wholeLines(src, ranges);
+		for (const span of frontmatterTagSpans(src)) {
+			if (lines && !lines.some((r) => r.from <= span.from && span.to <= r.to)) continue;
+			const tag = parseTag(`#${src.slice(span.from, span.to)}`, 0, span.to - span.from + 1);
+			// The whole value must be the tag: `a.b` or `a b` is not one.
+			if (!tag || tag.to !== span.to - span.from + 1) continue;
+			out.push({ ...tag, from: span.from, to: span.to, targetFrom: span.from, targetTo: span.to });
+		}
+	}
+	const bodyFrom = frontmatter?.body ?? 0;
 	const scanSegment = (from: number, to: number) => {
 		// Lines are separate runs, as in the Rust extractor.
 		let start = from;
@@ -141,7 +155,7 @@ export function extractRefs(src: string, tree: Tree = markdownParser.parse(src),
 		}
 	};
 	for (const span of ranges ? wholeLines(src, ranges) : [{ from: 0, to: src.length }]) {
-		const blocked: [number, number][] = [];
+		const blocked: [number, number][] = bodyFrom > 0 ? [[0, bodyFrom]] : [];
 		tree.iterate({
 			from: span.from,
 			to: span.to,
@@ -485,6 +499,8 @@ export function wikilinkOptions<T extends { title: string }>(
 /** What `get_link_targets` returns (src/lib/types.ts). */
 export interface LinkTargetData {
 	notes: { id: number; title: string }[];
+	/** Frontmatter aliases (`title` is the alias); a note title wins over an alias. */
+	aliases?: { id: number; title: string }[];
 	issues: { id: number; title: string; context: string }[];
 	tasks: { id: number; title: string; status: string }[];
 }
@@ -497,8 +513,13 @@ export interface LinkIndex {
 }
 
 export function indexLinkTargets(data: LinkTargetData): LinkIndex {
+	const notes = new Map(data.notes.map((n) => [n.title.toLowerCase(), n.id]));
+	for (const a of data.aliases ?? []) {
+		const key = a.title.toLowerCase();
+		if (!notes.has(key)) notes.set(key, a.id);
+	}
 	return {
-		notes: new Map(data.notes.map((n) => [n.title.toLowerCase(), n.id])),
+		notes,
 		issues: new Map(data.issues.map((i) => [i.id, { title: i.title, context: i.context }])),
 		tasks: new Map(data.tasks.map((t) => [t.id, { title: t.title, status: t.status }]))
 	};

@@ -273,6 +273,7 @@ export interface Backlink {
 /** get_link_targets: what wikilinks and #issue/#task chips resolve to. */
 export interface LinkTargets {
 	notes: { id: number; title: string }[];
+	aliases: { id: number; title: string }[]; // frontmatter aliases: title is the alias
 	issues: { id: number; title: string; context: string }[]; // context: "Customer / Project"
 	tasks: { id: number; title: string; status: 'open' | 'done' }[];
 }

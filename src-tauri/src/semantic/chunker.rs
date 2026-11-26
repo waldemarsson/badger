@@ -43,6 +43,8 @@ pub fn chunk_note(
     };
     let options =
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+    // Frontmatter is metadata, not prose: it is not embedded.
+    let body = &body[crate::frontmatter::body_start(body)..];
     for event in Parser::new_ext(body, options) {
         match event {
             Event::Start(Tag::Heading { level, .. }) => {

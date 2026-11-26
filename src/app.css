@@ -1308,6 +1308,13 @@
     border-left: 1px solid var(--note-border);
   }
 
+  /* Frontmatter (rendered in Rust as written): muted, smaller than code. */
+  .note-prose pre.note-frontmatter {
+    @apply text-[0.85em];
+    color: var(--note-muted);
+    background-color: var(--note-code-bg);
+  }
+
   /* ```calc blocks (src/lib/calc-reader.ts): expression/result rows inside the kept <pre>. */
   .note-prose pre.calc-block {
     @apply px-4 py-2;

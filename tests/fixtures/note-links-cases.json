@@ -1,6 +1,15 @@
 {
 	"extract": [
 		{
+			"name": "frontmatter tags are refs, its other values and # comments are not",
+			"md": "---\ntags: [Acme, \"x y\", a.b]\nnote: \"#nope [[Nope]]\"\n---\n#inline [[Link]]",
+			"refs": [
+				{ "kind": "tag", "target": "acme", "text": "Acme" },
+				{ "kind": "tag", "target": "inline", "text": "#inline" },
+				{ "kind": "link", "target": "link", "text": "[[Link]]", "title": "Link" }
+			]
+		},
+		{
 			"name": "plain and nested tags, case kept in text, target lowercased",
 			"md": "Meet #acme and #Acme/Web today",
 			"refs": [

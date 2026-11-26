@@ -15,6 +15,7 @@ import {
 import type { SyntaxNode } from '@lezer/common';
 import { focusField, revealedLines, selectionTouchesLines } from '#lib/editor/focus.js';
 import { togglesTask } from '#lib/editor/task-keys.js';
+import { parseFrontmatter } from '#lib/frontmatter.js';
 
 const hidden = Decoration.replace({});
 
@@ -293,8 +294,24 @@ function build(view: EditorView): { decorations: DecorationSet; atomic: Decorati
 		if (inlineMarks.has(name) && !isRevealed(node.from)) hide(node.from, node.to);
 	};
 
+	// Frontmatter: muted source lines. Lezer parses it as a rule and a heading, so nodes
+	// starting inside it are not decorated (the cheap prefix check skips the doc copy).
+	const frontmatter = state.sliceDoc(0, 3) === '---' ? parseFrontmatter(state.doc.toString()) : null;
+	const bodyFrom = frontmatter?.body ?? 0;
+	if (frontmatter) {
+		const starts = lineStarts(state, 0, frontmatter.closeTo);
+		starts.forEach((start, i) => {
+			let cls = 'cm-md-frontmatter';
+			if (i === 0) cls += ' cm-md-frontmatter-first';
+			if (i === starts.length - 1) cls += ' cm-md-frontmatter-last';
+			decos.push(line(cls, start));
+		});
+	}
+
 	const tree = syntaxTree(state);
-	for (const { from, to } of view.visibleRanges) tree.iterate({ from, to, enter: (n) => visit(n.node) });
+	for (const { from, to } of view.visibleRanges) {
+		tree.iterate({ from, to, enter: (n) => (n.from < bodyFrom && n.name !== 'Document' ? n.to > bodyFrom : visit(n.node)) });
+	}
 
 	return { decorations: Decoration.set(decos, true), atomic: Decoration.set(atomic, true) };
 }

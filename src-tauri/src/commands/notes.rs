@@ -17,8 +17,8 @@ const UNTITLED: &str = "Untitled";
 /// rebuilds `note_refs` and `notes_fts` (see `db::backfill_note_refs`). 2: JSON notes are
 /// title-only. 3: `#task/<id>` chips replace `#todo/<id>` (the tasks migration). Older builds
 /// reset it to their own value when they rebuild, so after a downgrade (which indexes JSON
-/// bodies as markdown) the next start of this build rebuilds again.
-pub const NOTE_REFS_VERSION: &str = "3";
+/// bodies as markdown) the next start of this build rebuilds again. 4: frontmatter `tags:`.
+pub const NOTE_REFS_VERSION: &str = "4";
 pub const NOTE_REFS_VERSION_KEY: &str = "note_refs_version";
 /// Note (and scratchpad) kinds: the editor mode stored in `Kind`.
 pub const KIND_MARKDOWN: &str = "markdown";
@@ -265,7 +265,9 @@ fn is_setext_underline(line: &str) -> bool {
 /// Plain-text preview: the first non-empty body line that is not a code fence, table
 /// delimiter row or setext underline, with leading markers stripped, at most 120 chars.
 /// A leading heading that repeats the title is skipped, so the list doesn't show it twice.
+/// Frontmatter is skipped too.
 pub fn excerpt(body: &str, title: &str) -> String {
+    let body = &body[crate::frontmatter::body_start(body)..];
     let lines: Vec<&str> = body.lines().map(str::trim).collect();
     let mut first = true;
     for (i, &line) in lines.iter().enumerate() {
@@ -1238,6 +1240,9 @@ pub struct TaskTarget {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LinkTargets {
     pub notes: Vec<NoteTarget>,
+    /// Frontmatter `aliases:` (`title` is the alias). A note title wins over an alias.
+    #[serde(default)]
+    pub aliases: Vec<NoteTarget>,
     pub issues: Vec<IssueTarget>,
     pub tasks: Vec<TaskTarget>,
 }
@@ -1370,7 +1375,27 @@ pub async fn inner_list_tag_suggestions(
         .collect())
 }
 
-/// Note titles, issues and tasks for resolving wikilinks and chips in the editor.
+/// Frontmatter `aliases:` of markdown notes as (note id, alias), in note id order.
+pub(crate) async fn load_aliases<'e, E>(exec: E) -> Result<Vec<NoteTarget>, sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let rows: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT id, Body FROM notes WHERE Kind = 'markdown' AND Body LIKE '---%' ORDER BY id",
+    )
+    .fetch_all(exec)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .flat_map(|(id, body)| {
+            crate::frontmatter::aliases(&body)
+                .into_iter()
+                .map(move |title| NoteTarget { id, title })
+        })
+        .collect())
+}
+
+/// Note titles, aliases, issues and tasks for resolving wikilinks and chips in the editor.
 pub async fn inner_get_link_targets(pool: &Pool<Sqlite>) -> Result<LinkTargets, AppError> {
     let notes = sqlx::query_as::<_, NoteTarget>("SELECT id, Title AS title FROM notes ORDER BY id")
         .fetch_all(pool)
@@ -1389,19 +1414,21 @@ pub async fn inner_get_link_targets(pool: &Pool<Sqlite>) -> Result<LinkTargets, 
     )
     .fetch_all(pool)
     .await?;
+    let aliases = load_aliases(pool).await?;
     Ok(LinkTargets {
         notes,
+        aliases,
         issues,
         tasks,
     })
 }
 
-/// The line of `body` around its first wikilink to `target`: markers stripped, at most
-/// `MAX_EXCERPT_CHARS` characters, starting a little before the link when cut.
-fn backlink_snippet(body: &str, target: &str) -> String {
+/// The line of `body` around its first wikilink to one of `targets`: markers stripped, at
+/// most `MAX_EXCERPT_CHARS` characters, starting a little before the link when cut.
+fn backlink_snippet(body: &str, targets: &[String]) -> String {
     let Some(at) = note_links::extract(body)
         .into_iter()
-        .find(|r| r.kind == RefKind::Link && r.target == target)
+        .find(|r| r.kind == RefKind::Link && targets.contains(&r.target))
         .map(|r| r.range.start)
     else {
         return String::new();
@@ -1434,19 +1461,27 @@ fn backlink_snippet(body: &str, target: &str) -> String {
     out
 }
 
-/// Notes that link to note `id` (title matched case-insensitively), excluding itself,
-/// most recently updated first.
+/// Notes that link to note `id` (its title or a frontmatter alias, matched
+/// case-insensitively), excluding itself, most recently updated first.
 pub async fn inner_list_backlinks(id: i64, pool: &Pool<Sqlite>) -> Result<Vec<Backlink>, AppError> {
     let note = inner_get_note(id, pool).await?;
-    let target = note.title.to_lowercase();
+    let mut targets = vec![note.title.to_lowercase()];
+    if note.kind == KIND_MARKDOWN {
+        for alias in crate::frontmatter::aliases(&note.body) {
+            let alias = alias.to_lowercase();
+            if !targets.contains(&alias) {
+                targets.push(alias);
+            }
+        }
+    }
     let rows: Vec<(i64, String, String)> = sqlx::query_as(
         "SELECT n.id, n.Title, n.Body FROM notes n
-         JOIN note_refs r ON r.NoteId = n.id
-         WHERE r.Kind = 'link' AND r.Target = ? AND n.id != ?
+         WHERE n.id != ? AND n.id IN (SELECT NoteId FROM note_refs
+             WHERE Kind = 'link' AND Target IN (SELECT value FROM json_each(?)))
          ORDER BY n.UpdatedAt DESC, n.id",
     )
-    .bind(&target)
     .bind(id)
+    .bind(serde_json::to_string(&targets).unwrap_or_default())
     .fetch_all(pool)
     .await?;
     Ok(rows
@@ -1454,7 +1489,7 @@ pub async fn inner_list_backlinks(id: i64, pool: &Pool<Sqlite>) -> Result<Vec<Ba
         .map(|(id, title, body)| Backlink {
             id,
             title,
-            snippet: backlink_snippet(&body, &target),
+            snippet: backlink_snippet(&body, &targets),
         })
         .collect())
 }
@@ -2438,13 +2473,59 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn frontmatter_aliases_resolve_links_and_backlinks() {
+        let pool = crate::test_db().await;
+        let target = note_with(
+            "Weekly sync",
+            "---\naliases: [Sync, Plan]\ntags: [Acme]\n---\nAgenda",
+            &pool,
+        )
+        .await;
+        let plan = note_with("Plan", "a real title", &pool).await;
+        let a = note_with("A", "see [[sync]] and [[Weekly Sync]]", &pool).await;
+        let b = note_with("B", "[[Plan]] is the other note", &pool).await;
+        let links = inner_list_backlinks(target, &pool).await.unwrap();
+        let got: Vec<(i64, &str)> = links.iter().map(|l| (l.id, l.snippet.as_str())).collect();
+        // B links the title "Plan", which wins over the alias, but backlinks list it too.
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert!(got.contains(&(a, "see [[sync]] and [[Weekly Sync]]")));
+        assert!(got.iter().any(|(id, _)| *id == b));
+
+        let targets = inner_get_link_targets(&pool).await.unwrap();
+        let aliases: Vec<(i64, &str)> = targets
+            .aliases
+            .iter()
+            .map(|t| (t.id, t.title.as_str()))
+            .collect();
+        assert_eq!(aliases, vec![(target, "Sync"), (target, "Plan")]);
+        assert!(targets.notes.iter().any(|n| n.id == plan));
+
+        let refs: Vec<(String, String)> =
+            sqlx::query_as("SELECT Kind, Target FROM note_refs WHERE NoteId = ? ORDER BY Target")
+                .bind(target)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(refs, vec![("tag".to_string(), "acme".to_string())]);
+        let listed = inner_list_notes(&pool).await.unwrap();
+        let excerpt = &listed.iter().find(|n| n.id == target).unwrap().excerpt;
+        assert_eq!(excerpt, "Agenda");
+    }
+
+    #[test]
+    fn excerpt_skips_frontmatter() {
+        assert_eq!(excerpt("---\ntags: [a]\n---\n\nBody line", ""), "Body line");
+        assert_eq!(excerpt("---\nno close", ""), "no close");
+    }
+
     #[test]
     fn backlink_snippet_windows_long_lines_around_the_link() {
         let body = format!("{} [[Target]] {}", "a".repeat(150), "b".repeat(150));
-        let s = backlink_snippet(&body, "target");
+        let s = backlink_snippet(&body, &["target".to_string()]);
         assert!(s.starts_with('…') && s.ends_with('…'), "{s}");
         assert!(s.contains("[[Target]]"), "{s}");
-        assert_eq!(backlink_snippet("no link", "target"), "");
+        assert_eq!(backlink_snippet("no link", &["target".to_string()]), "");
     }
 
     #[tokio::test]

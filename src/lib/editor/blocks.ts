@@ -6,6 +6,7 @@ import { Prec, StateField, type EditorState, type Range } from '@codemirror/stat
 import { Decoration, EditorView, keymap, WidgetType, type DecorationSet } from '@codemirror/view';
 import { focusField, selectionTouches, selectionTouchesLines } from '#lib/editor/focus.js';
 import { parseInline, parseTable, type InlineSpan } from '#lib/notes.js';
+import { bodyStart } from '#lib/frontmatter.js';
 
 const ROW_HEIGHT = 34; // px, a height estimate until the widget is measured
 
@@ -109,9 +110,13 @@ interface Blocks {
 function build(state: EditorState): Blocks {
 	const decos: Range<Decoration>[] = [];
 	const atomic: Range<Decoration>[] = [];
+	// Lezer parses frontmatter as markdown (its closing `---` as a setext underline): skip it.
+	const bodyFrom = state.sliceDoc(0, 3) === '---' ? bodyStart(state.doc.toString()) : 0;
 	syntaxTree(state).iterate({
+		from: bodyFrom,
 		enter: (node) => {
 			if (containers.has(node.name)) return;
+			if (node.from < bodyFrom) return false;
 			if (node.name === 'Table') {
 				const from = state.doc.lineAt(node.from).from;
 				const to = state.doc.lineAt(node.to).to;

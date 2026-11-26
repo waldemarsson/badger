@@ -213,6 +213,14 @@ Renames rewrite bodies in the same transaction: a note rename retargets `[[Old]]
 
 `search_notes` treats each `#term` in the query as a tag filter (AND, prefix-nested) and the rest as the text search; a tag-only query lists every tagged note (the note list and ⌘K both). In the editor, resolution data (note titles, entity names, task status) sits in a CodeMirror `StateField` the page fills from `get_link_targets` and `list_tag_suggestions` (`src/lib/editor/links.ts`); ⌘-click follows (a wikilink opens its note, creating it first through `create_note_titled` when unresolved; a tag or chip filters the list). The read view follows on a plain click through `data-tag` / `data-note` attributes on the rendered anchors, checked before the external-URL path. A collapsible "Linked mentions" strip under the note lists the notes linking to it (`list_backlinks`, one-line snippet, no unlinked mentions).
 
+### Frontmatter
+
+A markdown note may start with Obsidian-style YAML frontmatter: a `---` line at the very top, closed by the next `---` or `...` line (trailing spaces allowed). Only the top counts; a later `---` pair stays a rule and a setext heading, which is why pulldown-cmark's metadata option (it matches anywhere) is not used. `src-tauri/src/frontmatter.rs` and its twin `src/lib/frontmatter.ts` find the block and read two keys with a small YAML subset (`key: a, b`, `key: [a, "b"]`, or `- a` lines below `key:`; keys case-insensitive; anything else ignored); both pass `tests/fixtures/frontmatter-cases.json`.
+
+- `tags:` values are tags (a leading `#` optional): indexed in `note_refs`, rewritten by customer and project renames, and highlighted in the editor. A value that is not one whole valid tag is ignored. Other frontmatter text is never scanned for `#tags` or `[[links]]`.
+- `aliases:` values resolve wikilinks to the note (`get_link_targets` returns them as `aliases`; the read view's resolver and `list_backlinks` use them too). A note title wins over another note's alias. `[[` completion offers titles only, and renaming a note does not rewrite links to its aliases.
+- The editor shows the block as muted monospace source (Lezer still parses it as markdown, so live preview and `blocks.ts` skip nodes inside it); the read view shows it as written in a muted block, and Copy as HTML drops it. The list excerpt and semantic embeddings skip it; full-text search still indexes its text.
+
 ### Notes folders
 
 Rules and data semantics (name validation, suffixing on clashes, delete-to-parent, manual order, restore) are in `docs/data-and-backup.md`. Rust owns them in `src-tauri/src/commands/folders.rs`; the frontend only builds the view.

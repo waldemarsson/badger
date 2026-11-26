@@ -1,5 +1,8 @@
 <script lang="ts" generics="Href extends string">
 	import { invoke } from '@tauri-apps/api/core';
+	import { emit, listen } from '@tauri-apps/api/event';
+	import { LogicalSize } from '@tauri-apps/api/dpi';
+	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { onMount, tick, untrack } from 'svelte';
@@ -16,6 +19,7 @@
 	import Sparkles from '@lucide/svelte/icons/sparkles';
 	import StickyNote from '@lucide/svelte/icons/sticky-note';
 	import Sunset from '@lucide/svelte/icons/sunset';
+	import Check from '@lucide/svelte/icons/check';
 	import { today } from '#lib/date-ranges.js';
 	import {
 		filterItems,
@@ -28,7 +32,7 @@
 		SCRATCHPAD_SHORTCUT,
 		shiftDate
 	} from '#lib/palette.js';
-	import { changes, logTimeRequest, palette, paletteRequest, showToast, type LogTimePrefill } from '#lib/palette-state.svelte.js';
+	import { changes, logTimeRequest, palette, showToast, TIME_ENTRIES_EVENT, type LogTimePrefill } from '#lib/palette-state.svelte.js';
 	import { splitHighlights } from '#lib/notes.js';
 	import { splitSearchQuery, tagTerm } from '#lib/note-links.js';
 	import { HYBRID_DEBOUNCE_MS, keepActiveIndex, qualifiesForSemantic, semanticReady, shouldApply, type SearchResponse } from '#lib/semantic.js';
@@ -44,11 +48,19 @@
 
 	let {
 		pages,
-		navigate
+		navigate,
+		floating = false
 	}: {
 		pages: readonly { href: Href; label: string }[];
 		navigate: (href: Href) => void;
+		/** In the floating window (global shortcut): always open, no backdrop, hides the window. */
+		floating?: boolean;
 	} = $props();
+
+	/** Rust's `palette_window::OPEN_EVENT`: the shortcut was pressed again. */
+	const OPEN_EVENT = 'palette://open';
+	/** How long the floating palette shows what it did before it hides. */
+	const DONE_MS = 900;
 
 	type Step = 'root' | 'task' | 'project' | 'issue' | 'hours' | 'notes';
 	/** `aliases`: extra words it matches (old names), never shown. */
@@ -76,7 +88,11 @@
 	let input = $state<HTMLInputElement>();
 	let dateInput = $state<HTMLInputElement>();
 	let list = $state<HTMLElement>();
+	let frame = $state<HTMLElement>();
 	let returnFocus: HTMLElement | null = null;
+	/** Floating only: the confirmation shown before the window hides. */
+	let done = $state('');
+	let doneTimer: ReturnType<typeof setTimeout> | undefined;
 
 	// Shared, so ⌘J (layout) can stand down while the palette has the keys.
 	$effect(() => {
@@ -101,7 +117,7 @@
 			label: p.label,
 			group: 'Go to',
 			run: () => {
-				close();
+				if (!floating) close(); // the floating window hides when the main one takes over
 				navigate(p.href);
 			}
 		}))
@@ -208,6 +224,8 @@
 	// ── Open / close ───────────────────────────────────────────────────────────────
 
 	async function openPalette(): Promise<void> {
+		clearTimeout(doneTimer);
+		done = '';
 		returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 		step = 'root';
 		texts = emptyTexts();
@@ -227,6 +245,23 @@
 		open = false;
 		returnFocus?.focus();
 		returnFocus = null;
+		if (floating) void invoke('dismiss_palette').catch(() => {});
+	}
+
+	/** A finished action: a toast in the main window; the floating one says it, then hides. */
+	function finish(message: string): void {
+		if (!floating) {
+			showToast(message);
+			close();
+			return;
+		}
+		done = message;
+		doneTimer = setTimeout(close, DONE_MS);
+	}
+
+	/** Floating: hand an action that needs the main window to it (Rust shows it). */
+	function toMain(action: 'goto' | 'scratchpad' | 'handover', href: string | null = null): void {
+		invoke('palette_to_main', { action, href }).catch((e) => (error = String(e)));
 	}
 
 	async function goTo(next: Step, index = 0): Promise<void> {
@@ -340,8 +375,8 @@
 			// Remembering the selection is best-effort; the entry is already saved.
 			await invoke('set_palette_last_used', { projectId: row.project_id, issueId: row.issue_id }).catch(() => {});
 			changes.timeEntries += 1;
-			showToast(`Logged ${parsed.hours}h on ${row.issue_title}`);
-			close();
+			if (floating) void emit(TIME_ENTRIES_EVENT).catch(() => {}); // the main window reloads
+			finish(`Logged ${parsed.hours}h on ${row.issue_title}`);
 		} catch (e) {
 			error = String(e);
 		} finally {
@@ -378,8 +413,7 @@
 		try {
 			const { input, reminders } = planInput(plan);
 			const t = await createTask(input, reminders);
-			showToast(t.due_date ? `Task added · due ${formatDay(t.due_date, new Date())}${t.due_time ? ` ${t.due_time}` : ''}` : 'Task added');
-			close();
+			finish(t.due_date ? `Task added · due ${formatDay(t.due_date, new Date())}${t.due_time ? ` ${t.due_time}` : ''}` : 'Task added');
 		} catch (e) {
 			error = String(e);
 		} finally {
@@ -391,6 +425,7 @@
 
 	/** The notes page creates the note on `?new=1`, so ⌘N and the palette share one path. */
 	function createNote(): void {
+		if (floating) return toMain('goto', `${resolve('/notes')}?new=1`);
 		close();
 		// eslint-disable-next-line svelte/no-navigation-without-resolve -- resolved path plus a query string
 		void goto(`${resolve('/notes')}?new=1`);
@@ -398,6 +433,7 @@
 
 	/** The playground creates the script on `?new=1` (like New note), so its title gets focus. */
 	function createScript(): void {
+		if (floating) return toMain('goto', `${resolve('/playground')}?new=1`);
 		close();
 		// eslint-disable-next-line svelte/no-navigation-without-resolve -- resolved path plus a query string
 		void goto(`${resolve('/playground')}?new=1`);
@@ -405,18 +441,21 @@
 
 	/** After close() restored focus, so the drawer returns there and its caret lands in the pad. */
 	function showScratchpad(): void {
+		if (floating) return toMain('scratchpad');
 		close();
 		openScratchpad();
 	}
 
 	/** Today's handover editor takes the request on mount, or at once when Today is open. */
 	function writeHandover(): void {
+		if (floating) return toMain('handover');
 		close();
 		requestHandoverFocus();
 		if (page.url.pathname !== resolve('/')) void goto(resolve('/'));
 	}
 
 	function openNote(id: number): void {
+		if (floating) return toMain('goto', `${resolve('/notes')}?id=${id}`);
 		close();
 		// eslint-disable-next-line svelte/no-navigation-without-resolve -- resolved path plus a query string
 		void goto(`${resolve('/notes')}?id=${id}`);
@@ -503,17 +542,34 @@
 		void openPalette().then(() => startLogTime(prefill));
 	});
 
-	// The global shortcut (Rust shows the window first) asks through `requestPalette`.
-	let seenPaletteRequest = paletteRequest.id;
-	$effect(() => {
-		if (paletteRequest.id === seenPaletteRequest) return;
-		seenPaletteRequest = paletteRequest.id;
-		if (!untrack(() => open)) void openPalette();
-	});
-
 	onMount(() => {
 		window.addEventListener('keydown', onWindowKeydown, true);
-		return () => window.removeEventListener('keydown', onWindowKeydown, true);
+		if (!floating) return () => window.removeEventListener('keydown', onWindowKeydown, true);
+		// Floating: open now (first press), and again on each later press.
+		void openPalette();
+		let stopOpen: (() => void) | null = null;
+		let disposed = false;
+		listen(OPEN_EVENT, () => void openPalette())
+			.then((stop) => (disposed ? stop() : (stopOpen = stop)))
+			.catch(() => {});
+		return () => {
+			disposed = true;
+			stopOpen?.();
+			clearTimeout(doneTimer);
+			window.removeEventListener('keydown', onWindowKeydown, true);
+		};
+	});
+
+	// Floating: the window follows the card's height, so clicks below it reach the app underneath.
+	$effect(() => {
+		if (!floating || !frame) return;
+		const el = frame;
+		const resize = new ResizeObserver(() => {
+			const size = new LogicalSize(window.innerWidth, Math.ceil(el.getBoundingClientRect().height));
+			void getCurrentWindow().setSize(size).catch(() => {});
+		});
+		resize.observe(el);
+		return () => resize.disconnect();
 	});
 
 	$effect(() => {
@@ -615,16 +671,32 @@
 	<p class="px-3 py-6 text-center text-sm text-slate-500 dark:text-neutral-400">{message}</p>
 {/snippet}
 
-{#if open}
+{#if floating && done}
+	<div bind:this={frame} class="p-3">
+		<div
+			class="flex items-center gap-3 rounded-2xl bg-white px-4 py-3 text-sm text-slate-700 shadow-lg ring-1 ring-slate-200 dark:bg-neutral-900 dark:text-neutral-300 dark:ring-neutral-800"
+			role="status"
+			in:fade={{ duration: 150 }}
+		>
+			<Check size={18} class="shrink-0 text-emerald-500 dark:text-emerald-400" />
+			<span class="min-w-0 flex-1 truncate">{done}</span>
+		</div>
+	</div>
+{:else if open}
 	<div
-		class="fixed inset-0 z-[60] flex items-start justify-center bg-slate-950/40 p-4 pt-[15vh] backdrop-blur-[2px] dark:bg-black/60"
-		transition:fade={{ duration: 150 }}
+		bind:this={frame}
+		class={floating
+			? 'p-3'
+			: 'fixed inset-0 z-[60] flex items-start justify-center bg-slate-950/40 p-4 pt-[15vh] backdrop-blur-[2px] dark:bg-black/60'}
+		transition:fade={{ duration: floating ? 0 : 150 }}
 		onmousedown={(e) => e.target === e.currentTarget && close()}
 		role="presentation"
 		data-above-scratchpad
 	>
 		<div
-			class="w-full max-w-xl overflow-hidden rounded-2xl bg-white shadow-2xl ring-1 ring-slate-200 dark:bg-neutral-900 dark:ring-neutral-800"
+			class="w-full overflow-hidden rounded-2xl bg-white ring-1 ring-slate-200 dark:bg-neutral-900 dark:ring-neutral-800 {floating
+				? 'shadow-lg'
+				: 'max-w-xl shadow-2xl'}"
 			transition:scale={{ start: 0.96, duration: 150 }}
 			role="dialog"
 			aria-modal="true"

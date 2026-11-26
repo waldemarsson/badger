@@ -34,12 +34,8 @@ export function requestLogTime(prefill: LogTimePrefill | null = null): void {
 	logTimeRequest.id += 1;
 }
 
-/** Pending "open the palette" request (the global shortcut); the palette reacts to each new `id`. */
-export const paletteRequest = $state({ id: 0 });
-
-export function requestPalette(): void {
-	paletteRequest.id += 1;
-}
+/** The floating palette window emits this after logging time; the main window bumps `changes`. */
+export const TIME_ENTRIES_EVENT = 'palette://time-entries-changed';
 
 export function showToast(message: string): void {
 	toast.message = message;

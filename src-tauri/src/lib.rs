@@ -11,6 +11,7 @@ pub mod global_shortcut;
 pub mod js_runner;
 pub mod logger;
 pub mod note_links;
+pub mod palette_window;
 pub mod recurrence;
 pub mod runtime_paths;
 pub mod semantic;
@@ -316,6 +317,8 @@ pub fn run() {
                     commands::settings::set_palette_shortcut,
                     commands::settings::get_global_shortcut,
                     commands::settings::set_global_shortcut,
+                    palette_window::dismiss_palette,
+                    palette_window::palette_to_main,
                     commands::settings::set_palette_last_used,
                     commands::settings::get_daily_target,
                     commands::settings::set_daily_target,
@@ -459,6 +462,8 @@ pub fn run() {
                     commands::settings::set_palette_shortcut,
                     commands::settings::get_global_shortcut,
                     commands::settings::set_global_shortcut,
+                    palette_window::dismiss_palette,
+                    palette_window::palette_to_main,
                     commands::settings::set_palette_last_used,
                     commands::settings::get_daily_target,
                     commands::settings::set_daily_target,

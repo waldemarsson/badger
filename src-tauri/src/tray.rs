@@ -34,7 +34,10 @@ const ID_QUIT: &str = "tray-quit";
 
 #[derive(Debug, Clone, Serialize)]
 struct ActionPayload {
-    action: &'static str,
+    action: String,
+    /// The app path for `goto` (from the floating palette).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    href: Option<String>,
 }
 
 /// A task row in the menu.
@@ -229,17 +232,21 @@ pub fn show_main_window(app: &AppHandle) {
 }
 
 /// Shows the window and asks the frontend to perform `action`.
-pub fn request_action(app: &AppHandle, action: &'static str) {
+pub fn request_action(app: &AppHandle, action: impl Into<String>, href: Option<String>) {
     show_main_window(app);
-    if let Err(e) = app.emit(ACTION_EVENT, ActionPayload { action }) {
+    let payload = ActionPayload {
+        action: action.into(),
+        href,
+    };
+    if let Err(e) = app.emit_to("main", ACTION_EVENT, payload) {
         tracing::debug!("Tray: {} not sent: {}", ACTION_EVENT, e);
     }
 }
 
 fn on_menu_event(app: &AppHandle, id: &str) {
     match id {
-        ID_NEW_TASK => request_action(app, "new-task"),
-        ID_LOG_TIME => request_action(app, "log-time"),
+        ID_NEW_TASK => request_action(app, "new-task", None),
+        ID_LOG_TIME => request_action(app, "log-time", None),
         ID_OPEN => show_main_window(app),
         ID_ALL_TASKS => crate::task_scheduler::open_tasks(app, None),
         ID_QUIT => app.exit(0), // goes through RunEvent::ExitRequested → flush guard

@@ -145,6 +145,10 @@ pub fn on_run_event<R: Runtime>(app: &AppHandle<R>, event: &RunEvent) {
             event: WindowEvent::CloseRequested { api, .. },
             ..
         } => {
+            // The floating palette only hides (palette_window.rs) and holds nothing to save.
+            if label == crate::palette_window::LABEL {
+                return;
+            }
             let Some(guard) = app.try_state::<FlushGuard>() else {
                 return;
             };

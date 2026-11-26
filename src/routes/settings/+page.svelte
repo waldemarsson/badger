@@ -297,7 +297,7 @@
     await saveShortcut(shortcut);
   }
 
-  // ── Global shortcut (shows Badger with ⌘K open from any app) ────────────────────
+  // ── Global shortcut (a floating ⌘K over any app) ───────────────────────────────
   let globalShortcut = $state<string | null>(null);
   let recordingGlobal = $state(false);
   let globalShortcutError = $state('');
@@ -649,7 +649,7 @@
       <section class="panel-card mt-4 space-y-4">
         <div>
           <h2 class="panel-title">Global shortcut</h2>
-          <p class="panel-copy">Brings Badger to the front with the command palette open, from any app. Needs ⌘, ⌃ or ⌥.</p>
+          <p class="panel-copy">Opens the command palette over any app, without bringing up the Badger window. Needs ⌘, ⌃ or ⌥.</p>
         </div>
 
         <div class="flex flex-wrap items-center gap-2">

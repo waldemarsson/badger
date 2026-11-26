@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "palette",
+  "description": "Capability for the floating command palette window (global shortcut)",
+  "windows": ["palette"],
+  "permissions": ["core:default", "core:window:allow-set-size", "core:window:allow-set-theme"]
+}

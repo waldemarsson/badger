@@ -12,6 +12,12 @@
     @apply m-0 min-h-screen bg-white font-sans text-slate-950 antialiased dark:bg-neutral-900 dark:text-neutral-100;
   }
 
+  /* The floating palette window is transparent around its card (src/routes/palette). */
+  html.palette-window,
+  html.palette-window body {
+    @apply min-h-0 bg-transparent dark:bg-transparent;
+  }
+
   h1,
   h2,
   h3,

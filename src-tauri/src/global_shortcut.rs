@@ -1,5 +1,5 @@
-//! The global "show Badger" shortcut (Settings › Preferences): works from any app, brings
-//! the window to the front and opens the command palette. Off until set.
+//! The global shortcut (Settings › Preferences): works from any app and opens the floating
+//! command palette (see `palette_window.rs`) without bringing up the main window. Off until set.
 //!
 //! The setting is stored in the palette's canonical form (`Meta+Shift+B`, built by
 //! `src/lib/palette.ts`); [`accelerator`] maps it to the plugin's syntax.
@@ -57,12 +57,12 @@ pub async fn inner_set_global_shortcut(
     Ok(shortcut.map(String::from))
 }
 
-/// The plugin, with the handler every registered shortcut runs: show the window, open ⌘K.
+/// The plugin, with the handler every registered shortcut runs: toggle the floating palette.
 pub fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
     tauri_plugin_global_shortcut::Builder::new()
         .with_handler(|app, _shortcut, event| {
             if event.state == ShortcutState::Pressed {
-                crate::tray::request_action(app, "palette");
+                crate::palette_window::toggle(app);
             }
         })
         .build()

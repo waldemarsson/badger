@@ -77,6 +77,7 @@ pub fn register(app: &AppHandle, shortcut: Option<&str>) -> Result<(), AppError>
         gs.register(parse(s)?).map_err(|_| {
             AppError::Custom("That shortcut is already used by another app".to_string())
         })?;
+        crate::palette_window::preload(app);
     }
     Ok(())
 }

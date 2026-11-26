@@ -1,6 +1,6 @@
 //! The floating command palette the global shortcut opens: a small frameless window over
 //! whatever app is in front, so the main window is not brought up for a quick Log time or
-//! New task. It is created on the first press and hidden (never closed) afterwards.
+//! New task. It is built hidden when a shortcut is registered and hidden (never closed) after use.
 //!
 //! On macOS it is a non-activating panel (`tauri-nspanel`), like Spotlight: it takes the
 //! keyboard without activating Badger, so the menu bar stays on the app in front and focus
@@ -32,9 +32,23 @@ pub fn toggle(app: &AppHandle) {
                 tracing::debug!("Palette: {} not sent: {}", OPEN_EVENT, e);
             }
         }
-        // The page opens itself on its first load.
-        None => {
-            if let Err(e) = create(app) {
+        // Not preloaded (yet): build it now. The page opens itself on its first load.
+        None => match build(app) {
+            Ok(window) => {
+                place(app, &window);
+                show(app, &window);
+            }
+            Err(e) => tracing::error!("Palette: window not created: {}", e),
+        },
+    });
+}
+
+/// Builds the hidden palette ahead of the first press (when a shortcut is registered), so a
+/// press only shows it: creating a window can activate Badger.
+pub fn preload(app: &AppHandle) {
+    on_main_thread(app, |app| {
+        if app.get_webview_window(LABEL).is_none() {
+            if let Err(e) = build(app) {
                 tracing::error!("Palette: window not created: {}", e);
             }
         }
@@ -50,15 +64,12 @@ fn on_main_thread(app: &AppHandle, f: impl FnOnce(&AppHandle) + Send + 'static) 
 }
 
 #[cfg(target_os = "macos")]
-fn create(app: &AppHandle) -> tauri::Result<()> {
-    let window = mac::create(app)?;
-    place(app, &window);
-    show(app, &window);
-    Ok(())
+fn build(app: &AppHandle) -> tauri::Result<WebviewWindow> {
+    mac::build(app)
 }
 
 #[cfg(not(target_os = "macos"))]
-fn create(app: &AppHandle) -> tauri::Result<()> {
+fn build(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     use tauri::{WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
     let window = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("palette".into()))
@@ -86,9 +97,7 @@ fn create(app: &AppHandle) -> tauri::Result<()> {
             _ => {}
         }
     });
-    place(app, &window);
-    show(app, &window);
-    Ok(())
+    Ok(window)
 }
 
 #[cfg(target_os = "macos")]
@@ -162,7 +171,7 @@ mod mac {
         })
     }
 
-    pub fn create(app: &AppHandle) -> tauri::Result<WebviewWindow> {
+    pub fn build(app: &AppHandle) -> tauri::Result<WebviewWindow> {
         let panel = PanelBuilder::<_, PalettePanel>::new(app, LABEL)
             .url(WebviewUrl::App("palette".into()))
             .title("Badger")
@@ -171,7 +180,6 @@ mod mac {
             .floating(true)
             .has_shadow(false) // the card draws its own
             .transparent(true)
-            .no_activate(true) // creating the window must not activate Badger either
             .add_style_mask(StyleMask::empty().nonactivating_panel())
             .collection_behavior(
                 CollectionBehavior::new()

@@ -163,6 +163,13 @@ pub fn on_run_event<R: Runtime>(app: &AppHandle<R>, event: &RunEvent) {
                             Some(window) => {
                                 if let Err(e) = window.destroy() {
                                     tracing::error!("Flush guard: failed to close window: {}", e);
+                                } else if app
+                                    .webview_windows()
+                                    .keys()
+                                    .all(|l| l == crate::palette_window::LABEL)
+                                {
+                                    // The hidden palette alone would keep the app running.
+                                    app.exit(0);
                                 }
                             }
                             None => app.exit(0),

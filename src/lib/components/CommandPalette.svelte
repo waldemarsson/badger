@@ -229,6 +229,7 @@
 		returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 		step = 'root';
 		texts = emptyTexts();
+		issueTargets = null; // refetched, so issues added since the last open match #tags
 		highlight = 0;
 		error = '';
 		busy = false;
@@ -242,6 +243,8 @@
 	}
 
 	function close(): void {
+		clearTimeout(doneTimer);
+		done = ''; // or the next show flashes the old confirmation
 		open = false;
 		returnFocus?.focus();
 		returnFocus = null;
@@ -549,7 +552,13 @@
 		void openPalette();
 		let stopOpen: (() => void) | null = null;
 		let disposed = false;
-		listen(OPEN_EVENT, () => void openPalette())
+		listen(OPEN_EVENT, () => {
+			void openPalette();
+			// This window outlives Settings changes: pick up a new ⌘K shortcut.
+			invoke<PaletteSettings>('get_palette_settings')
+				.then((s) => (palette.shortcut = normalizeShortcut(s.shortcut)))
+				.catch(() => {});
+		})
 			.then((stop) => (disposed ? stop() : (stopOpen = stop)))
 			.catch(() => {});
 		return () => {

@@ -18,7 +18,8 @@ use crate::recurrence::local_now;
 use crate::AppError;
 
 const TRAY_ID: &str = "badger-tray";
-/// Frontend action request: `"new-task"`, `"log-time"` or `"palette"`.
+/// Frontend action request: `"new-task"`, `"log-time"` (menu bar) or `"goto"`, `"scratchpad"`,
+/// `"handover"` (floating palette, see `palette_window.rs`).
 pub const ACTION_EVENT: &str = "app-action";
 /// Tasks listed in the menu; the rest are summarised in a "more" item.
 const MAX_TASKS: usize = 5;

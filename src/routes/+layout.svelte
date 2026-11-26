@@ -22,7 +22,7 @@
   import { navLinks, type Href } from '#lib/nav.js';
   import type { PaletteSettings } from '#lib/types.js';
 
-  /** Rust's `tray::ACTION_EVENT`: the menu bar and the global shortcut ask for these. */
+  /** Rust's `tray::ACTION_EVENT`: the menu bar and the floating palette ask for these. */
   const APP_ACTION_EVENT = 'app-action';
   import CommandPalette from '#lib/components/CommandPalette.svelte';
   import Toast from '#lib/components/Toast.svelte';

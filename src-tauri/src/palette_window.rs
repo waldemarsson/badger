@@ -2,17 +2,13 @@
 //! whatever app is in front, so the main window is not brought up for a quick Log time or
 //! New task. It is created on the first press and hidden (never closed) afterwards.
 //!
-//! Esc, a finished action or clicking away hides it. When Badger was not the active app
-//! before the press, dismissing also hides the app (macOS), which hands focus back to the
-//! app the user was in. Actions that need the main window (Go to, open a note) go through
+//! On macOS it is a non-activating panel (`tauri-nspanel`), like Spotlight: it takes the
+//! keyboard without activating Badger, so the menu bar stays on the app in front and focus
+//! goes back there when it hides. Esc, a finished action, pressing the shortcut again or
+//! clicking away hides it. Actions that need the main window (Go to, open a note) go through
 //! [`palette_to_main`]: Rust hides the palette, shows the main window and re-emits the
 //! action there as [`crate::tray::ACTION_EVENT`].
-use std::sync::atomic::{AtomicBool, Ordering};
-
-use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
-    WindowEvent,
-};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewWindow};
 
 use crate::AppError;
 
@@ -25,28 +21,13 @@ const HEIGHT: f64 = 420.0;
 /// Top edge as a fraction of the monitor height, like Spotlight.
 const TOP_FRACTION: f64 = 0.2;
 
-/// Whether another app was in front when the palette opened (dismiss hands focus back).
-static CAME_FROM_OTHER_APP: AtomicBool = AtomicBool::new(false);
-
-/// Global shortcut: open the palette, or dismiss it when it already has focus.
+/// Global shortcut: open the palette, or hide it when it is showing.
 pub fn toggle(app: &AppHandle) {
-    let existing = app.get_webview_window(LABEL);
-    if let Some(window) = &existing {
-        if window.is_visible().unwrap_or(false) && window.is_focused().unwrap_or(false) {
-            dismiss(app);
-            return;
-        }
-    }
-    let badger_active = app
-        .webview_windows()
-        .values()
-        .any(|w| w.label() != LABEL && w.is_focused().unwrap_or(false));
-    CAME_FROM_OTHER_APP.store(!badger_active, Ordering::SeqCst);
-    match existing {
+    on_main_thread(app, |app| match app.get_webview_window(LABEL) {
+        Some(window) if window.is_visible().unwrap_or(false) => hide(app),
         Some(window) => {
             place(app, &window);
-            step("show", window.show());
-            step("focus", window.set_focus());
+            show(app, &window);
             if let Err(e) = window.emit_to(LABEL, OPEN_EVENT, ()) {
                 tracing::debug!("Palette: {} not sent: {}", OPEN_EVENT, e);
             }
@@ -57,10 +38,29 @@ pub fn toggle(app: &AppHandle) {
                 tracing::error!("Palette: window not created: {}", e);
             }
         }
+    });
+}
+
+/// AppKit (the panel) must be driven from the main thread.
+fn on_main_thread(app: &AppHandle, f: impl FnOnce(&AppHandle) + Send + 'static) {
+    let handle = app.clone();
+    if let Err(e) = app.run_on_main_thread(move || f(&handle)) {
+        tracing::error!("Palette: not run on the main thread: {}", e);
     }
 }
 
+#[cfg(target_os = "macos")]
 fn create(app: &AppHandle) -> tauri::Result<()> {
+    let window = mac::create(app)?;
+    place(app, &window);
+    show(app, &window);
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn create(app: &AppHandle) -> tauri::Result<()> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder, WindowEvent};
+
     let window = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("palette".into()))
         .title("Badger")
         .inner_size(WIDTH, HEIGHT)
@@ -73,13 +73,12 @@ fn create(app: &AppHandle) -> tauri::Result<()> {
         .visible_on_all_workspaces(true)
         .visible(false)
         .build()?;
-    place(app, &window);
     window.on_window_event({
         let window = window.clone();
         move |event| match event {
-            // Clicking another app hides it, like Spotlight. That app is already in front.
+            // Clicking another app hides it, like Spotlight.
             WindowEvent::Focused(false) => step("hide", window.hide()),
-            // ⌘W: hide; closing would recreate the webview on the next press.
+            // Closing would recreate the webview on the next press.
             WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 step("hide", window.hide());
@@ -87,8 +86,32 @@ fn create(app: &AppHandle) -> tauri::Result<()> {
             _ => {}
         }
     });
-    window.show()?;
-    window.set_focus()
+    place(app, &window);
+    show(app, &window);
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn show(app: &AppHandle, _window: &WebviewWindow) {
+    mac::show(app);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn show(_app: &AppHandle, window: &WebviewWindow) {
+    step("show", window.show());
+    step("focus", window.set_focus());
+}
+
+#[cfg(target_os = "macos")]
+fn hide(app: &AppHandle) {
+    mac::hide(app);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn hide(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(LABEL) {
+        step("hide", window.hide());
+    }
 }
 
 /// Centres the window horizontally on the monitor under the cursor, near the top.
@@ -106,20 +129,98 @@ fn place(app: &AppHandle, window: &WebviewWindow) {
     step("position", window.set_position(PhysicalPosition::new(x, y)));
 }
 
-/// Hides the palette and, when another app was in front before, hands focus back to it.
-fn dismiss(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window(LABEL) {
-        step("hide", window.hide());
-    }
-    #[cfg(target_os = "macos")]
-    if CAME_FROM_OTHER_APP.swap(false, Ordering::SeqCst) {
-        step("hide app", app.hide());
-    }
-}
-
 fn step(what: &str, result: tauri::Result<()>) {
     if let Err(e) = result {
         tracing::debug!("Palette: window {} failed: {}", what, e);
+    }
+}
+
+/// The non-activating panel. `-> ()` in `panel_event!` and the generated items need the allows.
+#[cfg(target_os = "macos")]
+#[allow(dead_code, clippy::unused_unit)]
+mod mac {
+    use std::sync::Arc;
+
+    use tauri::{AppHandle, LogicalSize, Manager, Size, WebviewUrl, WebviewWindow};
+    use tauri_nspanel::{
+        tauri_panel, CollectionBehavior, ManagerExt, PanelBuilder, PanelLevel, StyleMask,
+    };
+
+    use super::{HEIGHT, LABEL, WIDTH};
+
+    tauri_panel! {
+        panel!(PalettePanel {
+            config: {
+                can_become_key_window: true,
+                is_floating_panel: true
+            }
+        })
+
+        panel_event!(PalettePanelEvents {
+            window_did_resign_key(notification: &NSNotification) -> (),
+            window_should_close(window: &NSWindow) -> Bool
+        })
+    }
+
+    pub fn create(app: &AppHandle) -> tauri::Result<WebviewWindow> {
+        let panel = PanelBuilder::<_, PalettePanel>::new(app, LABEL)
+            .url(WebviewUrl::App("palette".into()))
+            .title("Badger")
+            .size(Size::Logical(LogicalSize::new(WIDTH, HEIGHT)))
+            .level(PanelLevel::Status) // above full-screen apps and the menu bar
+            .floating(true)
+            .has_shadow(false) // the card draws its own
+            .transparent(true)
+            .no_activate(true) // creating the window must not activate Badger either
+            .add_style_mask(StyleMask::empty().nonactivating_panel())
+            .collection_behavior(
+                CollectionBehavior::new()
+                    .can_join_all_spaces()
+                    .full_screen_auxiliary(),
+            )
+            .with_window(|w| {
+                w.decorations(false)
+                    .transparent(true)
+                    .resizable(false)
+                    .visible(false)
+            })
+            .build()?;
+
+        // Replaces Tauri's window delegate, so these stand in for its focus and close events.
+        let events = PalettePanelEvents::new();
+        let weak = Arc::downgrade(&panel);
+        events.window_did_resign_key(move |_| {
+            // Clicking another app (or the main window taking over) hides it, like Spotlight.
+            if let Some(panel) = weak.upgrade() {
+                panel.hide();
+            }
+        });
+        let weak = Arc::downgrade(&panel);
+        events.window_should_close(move |_| {
+            // ⌘W hides it; closing would recreate the webview on the next press.
+            if let Some(panel) = weak.upgrade() {
+                panel.hide();
+            }
+            Bool::NO
+        });
+        panel.set_event_handler(Some(events.as_ref()));
+
+        // Not `panel.to_window()`: that turns the panel back into a plain window.
+        app.get_webview_window(LABEL)
+            .ok_or(tauri::Error::WindowNotFound)
+    }
+
+    pub fn show(app: &AppHandle) {
+        match app.get_webview_panel(LABEL) {
+            Ok(panel) => panel.show_and_make_key(),
+            Err(e) => tracing::error!("Palette: no panel to show: {:?}", e),
+        }
+    }
+
+    pub fn hide(app: &AppHandle) {
+        if let Ok(panel) = app.get_webview_panel(LABEL) {
+            panel.hide();
+        }
     }
 }
 
@@ -140,7 +241,7 @@ pub fn validate_main_action(action: &str, href: Option<&str>) -> Result<(), AppE
 /// Esc or a finished action in the palette window.
 #[tauri::command]
 pub fn dismiss_palette(app: AppHandle) {
-    dismiss(&app);
+    on_main_thread(&app, hide);
 }
 
 /// Hides the palette, shows the main window and asks it to run `action`.
@@ -151,9 +252,10 @@ pub fn palette_to_main(
     app: AppHandle,
 ) -> Result<(), AppError> {
     validate_main_action(&action, href.as_deref())?;
-    CAME_FROM_OTHER_APP.store(false, Ordering::SeqCst); // Badger stays in front
-    dismiss(&app);
-    crate::tray::request_action(&app, action, href);
+    on_main_thread(&app, move |app| {
+        hide(app);
+        crate::tray::request_action(app, action, href);
+    });
     Ok(())
 }
 

@@ -13,12 +13,14 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
 # Native reminder notifications (Rust-only: no JS package, no capability entry).
 tauri-plugin-notification = "2.8"
 # In-app updates from GitHub Releases (Rust-only: no JS package, no capability entry).
 tauri-plugin-updater = "2.14"
+# Global "show Badger" shortcut set in Settings (Rust-only: no JS package, no capability entry).
+tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sqlx = { version = "0.9", features = ["sqlite", "runtime-tokio", "macros"] }

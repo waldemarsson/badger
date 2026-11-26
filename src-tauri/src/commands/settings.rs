@@ -115,6 +115,35 @@ pub async fn set_expanded_folders(
     inner_set_expanded_folders(ids, &pool).await
 }
 
+/// The global "show Badger" shortcut, or `None` when off.
+#[tauri::command]
+pub async fn get_global_shortcut(
+    pool: State<'_, Pool<Sqlite>>,
+) -> Result<Option<String>, AppError> {
+    crate::global_shortcut::inner_get_global_shortcut(pool.inner()).await
+}
+
+/// Registers first, so a shortcut another app owns is refused and the old one is restored.
+#[tauri::command]
+pub async fn set_global_shortcut(
+    shortcut: Option<String>,
+    app: tauri::AppHandle,
+    pool: State<'_, Pool<Sqlite>>,
+) -> Result<Option<String>, AppError> {
+    let wanted = shortcut.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    if let Some(s) = wanted {
+        crate::global_shortcut::parse(s)?;
+    }
+    if let Err(e) = crate::global_shortcut::register(&app, wanted) {
+        let previous = crate::global_shortcut::inner_get_global_shortcut(pool.inner()).await?;
+        if let Err(restore) = crate::global_shortcut::register(&app, previous.as_deref()) {
+            tracing::error!("Global shortcut: previous not restored: {}", restore);
+        }
+        return Err(e);
+    }
+    crate::global_shortcut::inner_set_global_shortcut(wanted, pool.inner()).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

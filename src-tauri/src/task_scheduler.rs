@@ -136,6 +136,8 @@ pub async fn run(app: AppHandle, pool: Pool<Sqlite>) {
     loop {
         interval.tick().await;
         tick(&pool, local_now(), &sink).await;
+        // Also rolls the menu bar over to a new day.
+        crate::tray::nudge();
     }
 }
 
@@ -193,7 +195,7 @@ pub fn install_click_handler(app: &AppHandle) {
             .notification()
             .map(|n| i64::from(n.id()))
             .filter(|id| *id > 0);
-        open_from_notification(&handle, id);
+        open_tasks(&handle, id);
     });
     if let Err(e) = installed {
         tracing::error!("Tasks: notification click handler not installed: {}", e);
@@ -201,19 +203,9 @@ pub fn install_click_handler(app: &AppHandle) {
 }
 
 /// Shows, unminimizes and focuses the window, then asks the frontend to open the task
-/// (`/tasks?id=…`) or, for a batch, the tasks page.
-fn open_from_notification(app: &AppHandle, task_id: Option<i64>) {
-    if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
-        for (step, result) in [
-            ("show", window.show()),
-            ("unminimize", window.unminimize()),
-            ("focus", window.set_focus()),
-        ] {
-            if let Err(e) = result {
-                tracing::debug!("Tasks: window {} failed: {}", step, e);
-            }
-        }
-    }
+/// (`/tasks?id=…`) or, for a batch, the tasks page. Notification clicks and the menu bar.
+pub fn open_tasks(app: &AppHandle, task_id: Option<i64>) {
+    crate::tray::show_main_window(app);
     if let Err(e) = app.emit(OPEN_EVENT, OpenPayload { task_id }) {
         tracing::debug!("Tasks: open event not sent: {}", e);
     }
@@ -240,6 +232,7 @@ pub async fn tasks_changed_later(app: &AppHandle, pool: &Pool<Sqlite>) {
 /// [`tasks_changed`] without the sync nudge, for sync's own writes.
 pub async fn tasks_refreshed(app: &AppHandle, pool: &Pool<Sqlite>) {
     emit_changed(app);
+    crate::tray::nudge();
     match inner_count_overdue(pool, local_now()).await {
         Ok(count) => set_badge(app, count),
         Err(e) => tracing::error!("Tasks: couldn't count overdue tasks: {}", e),

@@ -46,6 +46,9 @@
       void refreshSemanticStatus();
     }
     void loadDailyTarget();
+    invoke<string | null>('get_global_shortcut')
+      .then((s) => (globalShortcut = s))
+      .catch(() => {});
     getVersion().then((v) => (appVersion = v)).catch(() => {});
     void loadAppleSync();
     let disposed = false;
@@ -292,6 +295,53 @@
     }
     stopRecording();
     await saveShortcut(shortcut);
+  }
+
+  // ── Global shortcut (shows Badger with ⌘K open from any app) ────────────────────
+  let globalShortcut = $state<string | null>(null);
+  let recordingGlobal = $state(false);
+  let globalShortcutError = $state('');
+
+  function startGlobalRecording(e: MouseEvent & { currentTarget: HTMLButtonElement }) {
+    globalShortcutError = '';
+    recordingGlobal = true;
+    palette.recording = true; // the palette ignores keys while recording
+    e.currentTarget.focus();
+  }
+
+  function stopGlobalRecording() {
+    recordingGlobal = false;
+    palette.recording = false;
+  }
+
+  async function saveGlobalShortcut(shortcut: string | null) {
+    try {
+      globalShortcut = await invoke<string | null>('set_global_shortcut', { shortcut });
+      globalShortcutError = '';
+    } catch (e) {
+      globalShortcutError = String(e);
+    }
+  }
+
+  async function onGlobalRecorderKeydown(e: KeyboardEvent) {
+    if (!recordingGlobal) return;
+    if (e.key === 'Tab') return stopGlobalRecording();
+    e.preventDefault();
+    e.stopPropagation();
+    const noModifiers = !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey;
+    if (e.key === 'Escape' && noModifiers) {
+      globalShortcutError = '';
+      return stopGlobalRecording();
+    }
+    const shortcut = shortcutFromEvent(e);
+    if (!shortcut) return; // modifier still being held
+    const problem = recorderProblem(shortcut);
+    if (problem) {
+      globalShortcutError = problem;
+      return;
+    }
+    stopGlobalRecording();
+    await saveGlobalShortcut(shortcut);
   }
 
   // ── Backup state ──────────────────────────────────────────────────────────────
@@ -593,6 +643,37 @@
 
         {#if shortcutError}
           <p class="form-error">{shortcutError}</p>
+        {/if}
+      </section>
+
+      <section class="panel-card mt-4 space-y-4">
+        <div>
+          <h2 class="panel-title">Global shortcut</h2>
+          <p class="panel-copy">Brings Badger to the front with the command palette open, from any app. Needs ⌘, ⌃ or ⌥.</p>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            class="inline-flex min-w-[9rem] items-center justify-center rounded-lg px-4 py-2 font-mono text-sm font-medium ring-1 transition {recordingGlobal
+              ? 'bg-sky-50 text-sky-700 ring-2 ring-sky-400 dark:bg-sky-500/10 dark:text-sky-300 dark:ring-sky-400'
+              : 'bg-white text-slate-800 ring-slate-200 hover:ring-slate-300 dark:bg-neutral-800 dark:text-neutral-100 dark:ring-neutral-700 dark:hover:ring-neutral-600'}"
+            aria-label="Global shortcut — click, then press the new combination"
+            onclick={startGlobalRecording}
+            onkeydown={onGlobalRecorderKeydown}
+            onblur={stopGlobalRecording}
+          >
+            {recordingGlobal ? 'Press shortcut…' : globalShortcut ? formatShortcut(globalShortcut) : 'Off'}
+          </button>
+          {#if recordingGlobal}
+            <span class="text-xs text-slate-500 dark:text-neutral-400">Esc to cancel</span>
+          {:else if globalShortcut}
+            <button type="button" class="btn-secondary-sm" onclick={() => saveGlobalShortcut(null)}>Turn off</button>
+          {/if}
+        </div>
+
+        {#if globalShortcutError}
+          <p class="form-error">{globalShortcutError}</p>
         {/if}
       </section>
 

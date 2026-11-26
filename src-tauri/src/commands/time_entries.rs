@@ -137,7 +137,7 @@ pub async fn create_time_entry(
     notes: Option<String>,
     pool: State<'_, Pool<Sqlite>>,
 ) -> Result<TimeEntryRow, AppError> {
-    inner_create_time_entry(
+    let row = inner_create_time_entry(
         project_id,
         &issue_identifier,
         &date,
@@ -145,7 +145,9 @@ pub async fn create_time_entry(
         notes.as_deref(),
         pool.inner(),
     )
-    .await
+    .await?;
+    crate::tray::nudge();
+    Ok(row)
 }
 
 #[tauri::command]
@@ -158,7 +160,7 @@ pub async fn update_time_entry(
     notes: Option<String>,
     pool: State<'_, Pool<Sqlite>>,
 ) -> Result<TimeEntryRow, AppError> {
-    inner_update_time_entry(
+    let row = inner_update_time_entry(
         id,
         project_id,
         &issue_identifier,
@@ -167,12 +169,16 @@ pub async fn update_time_entry(
         notes.as_deref(),
         pool.inner(),
     )
-    .await
+    .await?;
+    crate::tray::nudge();
+    Ok(row)
 }
 
 #[tauri::command]
 pub async fn delete_time_entry(id: i64, pool: State<'_, Pool<Sqlite>>) -> Result<(), AppError> {
-    inner_delete_time_entry(id, pool.inner()).await
+    inner_delete_time_entry(id, pool.inner()).await?;
+    crate::tray::nudge();
+    Ok(())
 }
 
 // ── count_project_time_entries (used by frontend delete guard) ────────────────

@@ -9,6 +9,8 @@ pub const DEFAULT_THEME: &str = "system";
 const THEMES: [&str; 3] = ["system", "light", "dark"];
 pub const PALETTE_SHORTCUT_KEY: &str = "palette_shortcut";
 pub const DEFAULT_PALETTE_SHORTCUT: &str = "Meta+K";
+/// Global "show Badger" shortcut (palette format, e.g. `Meta+Shift+B`); empty = off.
+pub const GLOBAL_SHORTCUT_KEY: &str = "global_shortcut";
 pub const PALETTE_LAST_PROJECT_KEY: &str = "palette_last_project_id";
 pub const PALETTE_LAST_ISSUE_KEY: &str = "palette_last_issue_id";
 const MAX_SHORTCUT_LEN: usize = 64;
@@ -186,6 +188,17 @@ pub async fn set_palette_shortcut(pool: &Pool<Sqlite>, shortcut: &str) -> Result
 
     set_value(pool, PALETTE_SHORTCUT_KEY, shortcut).await?;
     Ok(shortcut.to_string())
+}
+
+/// The raw global shortcut setting (validated by `crate::global_shortcut`).
+pub async fn get_global_shortcut(pool: &Pool<Sqlite>) -> Result<Option<String>, AppError> {
+    get_value(pool, GLOBAL_SHORTCUT_KEY).await
+}
+
+/// Stores the global shortcut (`""` = off); the caller has validated it.
+pub async fn set_global_shortcut(pool: &Pool<Sqlite>, shortcut: &str) -> Result<(), AppError> {
+    set_value(pool, GLOBAL_SHORTCUT_KEY, shortcut).await?;
+    Ok(())
 }
 
 pub async fn set_palette_last_used(

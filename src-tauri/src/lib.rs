@@ -11,6 +11,7 @@ pub mod global_shortcut;
 pub mod js_runner;
 pub mod logger;
 pub mod note_links;
+pub mod palette_window;
 pub mod recurrence;
 pub mod runtime_paths;
 pub mod semantic;
@@ -79,7 +80,11 @@ async fn run_daily_backups(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // The floating palette is a non-activating panel on macOS (palette_window.rs).
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(tauri_nspanel::init());
+    builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
@@ -316,6 +321,8 @@ pub fn run() {
                     commands::settings::set_palette_shortcut,
                     commands::settings::get_global_shortcut,
                     commands::settings::set_global_shortcut,
+                    palette_window::dismiss_palette,
+                    palette_window::palette_to_main,
                     commands::settings::set_palette_last_used,
                     commands::settings::get_daily_target,
                     commands::settings::set_daily_target,
@@ -459,6 +466,8 @@ pub fn run() {
                     commands::settings::set_palette_shortcut,
                     commands::settings::get_global_shortcut,
                     commands::settings::set_global_shortcut,
+                    palette_window::dismiss_palette,
+                    palette_window::palette_to_main,
                     commands::settings::set_palette_last_used,
                     commands::settings::get_daily_target,
                     commands::settings::set_daily_target,

@@ -13,7 +13,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+# `macos-private-api`: the floating palette window is transparent (rounded card, no box).
+tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
 tauri-plugin-dialog = "2"
 # Native reminder notifications (Rust-only: no JS package, no capability entry).
 tauri-plugin-notification = "2.8"
@@ -49,6 +50,8 @@ rquickjs = "0.14"
 
 # Apple Reminders sync (EventKit). macOS only; the rest of the app never links it.
 [target.'cfg(target_os = "macos")'.dependencies]
+# The floating palette as a non-activating panel (the menu bar stays on the app in front).
+tauri-nspanel = "2.1"
 objc2 = "0.6"
 block2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "NSArray", "NSCalendar", "NSDate", "NSError", "NSNotification", "NSObject", "NSOperation", "NSString", "NSTimeZone"] }

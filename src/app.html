@@ -13,6 +13,8 @@
 				const dark = mode === 'dark' || (mode !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
 				document.documentElement.classList.toggle('dark', dark);
 				document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+				// The floating palette window: transparent around its card, from the first paint.
+				if (location.pathname === '/palette') document.documentElement.classList.add('palette-window');
 			})();
 		</script>
 		%sveltekit.head%

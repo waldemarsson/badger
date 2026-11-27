@@ -15,12 +15,14 @@
   import { watchAppleSync } from '#lib/apple-sync-state.svelte.js';
   import { clock, requestOpen, tasks, watchTasks } from '#lib/tasks-state.svelte.js';
   import { overdueCount } from '#lib/tasks.js';
-  import { scratchpad, toggleScratchpad } from '#lib/scratchpad-state.svelte.js';
+  import { openScratchpad, scratchpad, toggleScratchpad } from '#lib/scratchpad-state.svelte.js';
   import { checkForUpdate, updater } from '#lib/updater-state.svelte.js';
-  import { requestLogTime, requestPalette, showToast } from '#lib/palette-state.svelte.js';
+  import { changes, requestLogTime, showToast, TIME_ENTRIES_EVENT } from '#lib/palette-state.svelte.js';
+  import { requestHandoverFocus } from '#lib/handover-state.svelte.js';
+  import { navLinks, type Href } from '#lib/nav.js';
   import type { PaletteSettings } from '#lib/types.js';
 
-  /** Rust's `tray::ACTION_EVENT`: the menu bar and the global shortcut ask for these. */
+  /** Rust's `tray::ACTION_EVENT`: the menu bar and the floating palette ask for these. */
   const APP_ACTION_EVENT = 'app-action';
   import CommandPalette from '#lib/components/CommandPalette.svelte';
   import Toast from '#lib/components/Toast.svelte';
@@ -32,19 +34,8 @@
 
   let { children } = $props();
 
-  // Every page, for ⌘K. The nav bar groups them below.
-  const navLinks = [
-    { href: '/', label: 'Today' },
-    { href: '/tasks', label: 'Tasks' },
-    { href: '/notes', label: 'Notes' },
-    { href: '/playground', label: 'Playground' },
-    { href: '/timesheet', label: 'Timesheet' },
-    { href: '/travel', label: 'Travel' },
-    { href: '/reports/weekly', label: 'Weekly report' },
-    { href: '/reports/monthly', label: 'Monthly report' },
-    { href: '/settings', label: 'Settings' },
-  ] as const;
-  type Href = (typeof navLinks)[number]['href'];
+  // The floating palette window (global shortcut) loads /palette: no chrome, no app wiring.
+  const floating = page.url.pathname === resolve('/palette');
 
   // One "Reports" tab covers both reports and reopens the last one viewed this session.
   let lastReport = $state<'/reports/weekly' | '/reports/monthly'>('/reports/weekly');
@@ -84,6 +75,7 @@
     invoke<PaletteSettings>('get_palette_settings')
       .then((s) => (palette.shortcut = normalizeShortcut(s.shortcut)))
       .catch(() => {});
+    if (floating) return watchSemanticStatus(); // the palette's note search uses it
 
     // Quit/close guard: save what pages have pending, then let Rust exit.
     let unlisten: (() => void) | null = null;
@@ -94,15 +86,26 @@
     })
       .then((stop) => (disposed ? stop() : (unlisten = stop)))
       .catch(() => {});
-    // Menu bar and global shortcut (Rust has already shown and focused the window).
+    // Menu bar and the floating palette (Rust has already shown and focused the window).
     let stopAction: (() => void) | null = null;
-    listen<{ action: string }>(APP_ACTION_EVENT, ({ payload }) => {
+    listen<{ action: string; href?: string }>(APP_ACTION_EVENT, ({ payload }) => {
       // eslint-disable-next-line svelte/no-navigation-without-resolve -- resolved path plus a query string
       if (payload.action === 'new-task') void goto(`${resolve('/tasks')}?new=1`);
       else if (payload.action === 'log-time') requestLogTime();
-      else if (payload.action === 'palette') requestPalette();
+      // eslint-disable-next-line svelte/no-navigation-without-resolve -- the palette sends resolved paths
+      else if (payload.action === 'goto' && payload.href?.startsWith('/')) void goto(payload.href);
+      else if (payload.action === 'scratchpad') openScratchpad();
+      else if (payload.action === 'handover') {
+        requestHandoverFocus();
+        if (page.url.pathname !== resolve('/')) void goto(resolve('/'));
+      }
     })
       .then((stop) => (disposed ? stop() : (stopAction = stop)))
+      .catch(() => {});
+    // Time logged in the floating palette: Today and Timesheet reload.
+    let stopEntries: (() => void) | null = null;
+    listen(TIME_ENTRIES_EVENT, () => (changes.timeEntries += 1))
+      .then((stop) => (disposed ? stop() : (stopEntries = stop)))
       .catch(() => {});
     const stopSemantic = watchSemanticStatus();
     const stopAppleSync = watchAppleSync(); // "Keep off phone" controls show while sync is on
@@ -124,6 +127,7 @@
       disposed = true;
       unlisten?.();
       stopAction?.();
+      stopEntries?.();
       stopSemantic();
       stopAppleSync();
       stopTasks();
@@ -148,6 +152,9 @@
   }
 </script>
 
+{#if floating}
+{@render children()}
+{:else}
 <nav class="border-b border-slate-100 dark:border-neutral-800/60 bg-white dark:bg-neutral-900">
   <div class="nav-shell">
     <span class="nav-brand">Badger</span>
@@ -193,3 +200,4 @@
 <ReminderToasts />
 <TaskUndoToast />
 <Toast />
+{/if}
